@@ -40,12 +40,21 @@ pub async fn list_resources<H: HttpClient>(
         None => std::collections::HashMap::default(),
     };
     let mut views = Vec::with_capacity(resources.len());
-    // As the browser extension: a resource that does not decrypt is listed with its error.
+    let mut new_session_keys = Vec::new();
+    // A resource that does not decrypt is listed with its error.
     for resource in resources {
         let id = resource.id.clone();
-        let metadata = client.decrypt_resource_metadata(&resource).await;
+        let metadata = client
+            .decrypt_resource_metadata_keeping_session_key(&resource)
+            .await;
         let view = match metadata {
-            Ok(metadata) => ResourceView::new(resource, metadata, &resource_types)?,
+            Ok(Some((metadata, session_key))) => {
+                if let Some(session_key) = session_key {
+                    new_session_keys.push((id.clone(), session_key));
+                }
+                ResourceView::new(resource, Some(metadata), &resource_types)?
+            }
+            Ok(None) => ResourceView::new(resource, None, &resource_types)?,
             Err(error) => ResourceView::new(resource, None, &resource_types)?.with_error(&error),
         };
         let view = match secrets.remove(&id) {
@@ -55,6 +64,8 @@ pub async fn list_resources<H: HttpClient>(
         };
         views.push(view);
     }
+    // The next listing decrypts these faster; failing to save them only loses that.
+    let _ = client.save_session_keys(&new_session_keys).await;
     if let Some(search) = search {
         let needle = search.to_lowercase();
         views.retain(|view| view.name.to_lowercase().contains(&needle));
