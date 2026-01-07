@@ -63,6 +63,12 @@ pub enum CryptoError {
 
     #[error("PGP encryption failed: {0}")]
     Encrypt(String),
+
+    #[error(
+        "The shared metadata key changed: {pinned} was trusted, the server now uses {active}. \
+         Check the new key with your administrator, then run `passbolt verify` to trust it."
+    )]
+    UntrustedMetadataKey { pinned: String, active: String },
 }
 
 /// Structured API error with optional validation details.

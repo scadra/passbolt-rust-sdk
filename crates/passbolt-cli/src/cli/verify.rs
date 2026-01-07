@@ -18,7 +18,8 @@ use crate::config::Config;
 #[derive(Args, Debug)]
 pub struct VerifyArgs {}
 
-/// Pin the server public key, once the server proved it holds the private key.
+/// Pin the server public key, once the server proved it holds the private key, then the
+/// active shared metadata key: new shared metadata is never encrypted for another one.
 pub async fn run(_args: &VerifyArgs, config: &Config) -> Result<()> {
     let private_key = passbolt_sdk::crypto::parse_private_key(&config.private_key_text()?)?;
     let http = passbolt_sdk::NativeHttpClient::new(&config.http_config()?)?;
@@ -38,5 +39,21 @@ pub async fn run(_args: &VerifyArgs, config: &Config) -> Result<()> {
     Config::save_server_public_key(&server_public_key)?;
 
     println!("Server key {fingerprint} pinned: each login now checks the server holds it.");
+
+    let client = crate::util::session::get_client(config).await?;
+    let metadata_keys = client.metadata_keys().await;
+    client.logout().await;
+    match metadata_keys
+        .ok()
+        .and_then(|keys| keys.active_fingerprint())
+    {
+        Some(fingerprint) => {
+            Config::save_metadata_key_fingerprint(&fingerprint)?;
+            println!(
+                "Metadata key {fingerprint} pinned: shared metadata is only encrypted for it."
+            );
+        }
+        None => println!("No shared metadata key to pin."),
+    }
     Ok(())
 }

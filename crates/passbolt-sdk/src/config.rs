@@ -33,6 +33,9 @@ pub struct SdkConfig {
     pub proxy: String,
     /// Server public key pinned by `passbolt verify`: proven at each login with a fresh token.
     pub server_public_key: String,
+    /// Fingerprint of the shared metadata key pinned by `passbolt verify`: new shared metadata
+    /// is not encrypted for another key. Empty: any active key.
+    pub metadata_key_fingerprint: String,
     /// go-passbolt-cli verification: a token encrypted for the server, sent again at each login…
     pub server_verify_enc_token: String,
     /// …and the token the server must return.

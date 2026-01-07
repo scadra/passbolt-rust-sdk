@@ -65,6 +65,9 @@ pub struct Config {
     /// Server public key pinned by `passbolt verify`.
     #[serde(default)]
     pub server_public_key: String,
+    /// Fingerprint of the shared metadata key pinned by `passbolt verify`.
+    #[serde(default)]
+    pub metadata_key_fingerprint: String,
     #[serde(default)]
     pub server_verify_token: String,
     #[serde(default)]
@@ -174,6 +177,14 @@ impl Config {
         stored.save_to(&path)
     }
 
+    /// Pin the shared metadata key fingerprint in the config file, changing nothing else in it.
+    pub fn save_metadata_key_fingerprint(fingerprint: &str) -> Result<()> {
+        let path = Self::config_path()?;
+        let mut stored = Self::read(&path, false)?;
+        stored.metadata_key_fingerprint = fingerprint.to_string();
+        stored.save_to(&path)
+    }
+
     fn read(path: &Path, with_environment: bool) -> Result<Self> {
         let mut settings = config::Config::builder();
         if path.exists() {
@@ -246,6 +257,7 @@ impl Config {
             tls_client_private_key: self.tls_client_private_key.clone(),
             proxy: self.proxy.clone(),
             server_public_key: self.server_public_key.clone(),
+            metadata_key_fingerprint: self.metadata_key_fingerprint.clone(),
             server_verify_enc_token: self.server_verify_enc_token.clone(),
             server_verify_token: self.server_verify_token.clone(),
         })

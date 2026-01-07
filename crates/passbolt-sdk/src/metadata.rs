@@ -131,6 +131,16 @@ impl MetadataKeys {
         })
     }
 
+    /// Fingerprint of the active key, the one new shared metadata is encrypted for.
+    #[must_use]
+    pub fn active_fingerprint(&self) -> Option<String> {
+        use pgp::types::PublicKeyTrait;
+
+        self.active
+            .as_ref()
+            .map(|active| hex::encode_upper(active.public_key.fingerprint().as_bytes()))
+    }
+
     /// The number of keys the user can decrypt metadata with.
     #[must_use]
     pub fn len(&self) -> usize {

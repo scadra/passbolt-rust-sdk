@@ -122,6 +122,6 @@ pub async fn encrypt_metadata<H: HttpClient>(
         let (public_key, gpgkey_id) = public_key_of(me)?;
         metadata::encrypt_for_user(metadata, &user, &public_key, gpgkey_id)
     } else {
-        client.metadata_keys().await?.encrypt(metadata, &user)
+        client.encrypt_shared_metadata(metadata).await
     }
 }

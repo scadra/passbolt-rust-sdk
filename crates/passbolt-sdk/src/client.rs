@@ -39,6 +39,8 @@ pub struct PassboltSdk<H: HttpClient> {
     pub user_id: String,
     /// Shared v5 metadata keys, fetched and decrypted at most once per session.
     metadata_keys: OnceLock<Arc<MetadataKeys>>,
+    /// Fingerprint of the trusted shared metadata key; `None` trusts the active one.
+    trusted_metadata_key: Option<String>,
     /// The user's session keys of resource metadata, read at most once per session.
     session_keys: OnceLock<Arc<SessionKeys>>,
     resource_types: OnceLock<Arc<Vec<ResourceType>>>,
@@ -190,6 +192,8 @@ impl<H: HttpClient> PassboltSdk<H> {
             passphrase,
             user_id: std::mem::take(&mut tokens.user_id),
             metadata_keys: OnceLock::new(),
+            trusted_metadata_key: Some(sdk_config.metadata_key_fingerprint.clone())
+                .filter(|fingerprint| !fingerprint.is_empty()),
             session_keys: OnceLock::new(),
             resource_types: OnceLock::new(),
             metadata_settings: OnceLock::new(),
@@ -587,6 +591,28 @@ impl<H: HttpClient> PassboltSdk<H> {
         Ok(Arc::clone(
             self.metadata_keys.get_or_init(|| decrypted_keys),
         ))
+    }
+
+    /// Encrypt `metadata` for the active shared key, if it is the trusted one, as the browser
+    /// extension checks before writing shared metadata.
+    pub(crate) async fn encrypt_shared_metadata(
+        &self,
+        metadata: &ResourceMetadata,
+    ) -> Result<metadata::EncryptedMetadata, PassboltError> {
+        let metadata_keys = self.metadata_keys().await?;
+        if let (Some(pinned), Some(active)) = (
+            &self.trusted_metadata_key,
+            metadata_keys.active_fingerprint(),
+        ) {
+            if !pinned.eq_ignore_ascii_case(&active) {
+                return Err(CryptoError::UntrustedMetadataKey {
+                    pinned: pinned.clone(),
+                    active,
+                }
+                .into());
+            }
+        }
+        metadata_keys.encrypt(metadata, &self.user_signer())
     }
 
     /// The user's session keys of resource metadata, read once per session. Empty when they
