@@ -358,7 +358,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         .into())
     }
 
-    async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, PassboltError> {
+    pub(crate) async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, PassboltError> {
         let url = format!("{}{path}", self.base_url);
         let response = self.http_get(&url).await?;
         self.parse_response(&response)
@@ -402,7 +402,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         self.parse_response(&response)
     }
 
-    async fn post<T: DeserializeOwned>(
+    pub(crate) async fn post<T: DeserializeOwned>(
         &self,
         path: &str,
         body: &Value,

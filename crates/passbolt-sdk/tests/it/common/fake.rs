@@ -84,6 +84,8 @@ struct PagedList {
 #[allow(clippy::struct_excessive_bools)] // independent switches of the fake server
 struct State {
     routes: Vec<Route>,
+    /// Bodies answered once each, in order, before the route of the same request.
+    queued_bodies: Vec<(&'static str, String, std::collections::VecDeque<Value>)>,
     paged_lists: Vec<PagedList>,
     requests: Vec<RecordedRequest>,
     login_token: Option<String>,
@@ -185,6 +187,15 @@ impl FakePassbolt {
             message: message.to_string(),
             body,
         });
+    }
+
+    /// Answer the next requests to `method path` with `bodies`, one each, then with its route.
+    pub fn on_in_turn(&self, method: &'static str, path: &str, bodies: Vec<Value>) {
+        self.state
+            .lock()
+            .unwrap()
+            .queued_bodies
+            .push((method, path.to_string(), bodies.into()));
     }
 
     /// Answer `GET path?page=N` with `pages[N - 1]` (an empty list past the end) and
@@ -515,7 +526,15 @@ impl FakePassbolt {
     }
 
     fn canned_response(&self, method: &str, path: &str) -> HttpResponse {
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        let queued_body = state
+            .queued_bodies
+            .iter_mut()
+            .find(|(queued_method, queued_path, _)| *queued_method == method && queued_path == path)
+            .and_then(|(_, _, bodies)| bodies.pop_front());
+        if let Some(body) = queued_body {
+            return json_response(200, "", path, &body);
+        }
         state
             .routes
             .iter()
