@@ -207,10 +207,7 @@ async fn move_metadata_to_the_shared_key<H: HttpClient>(
         .decrypt_resource_metadata(resource)
         .await?
         .ok_or_else(|| PassboltError::InvalidArgument("The resource has no metadata".into()))?;
-    let encrypted = client
-        .metadata_keys()
-        .await?
-        .encrypt(&metadata, &client.user_signer())?;
+    let encrypted = client.encrypt_shared_metadata(&metadata).await?;
     let payload = UpdateResourcePayload {
         name: None,
         username: None,

@@ -24,7 +24,7 @@ use crate::config::SdkConfig;
 use crate::crypto::{self, PrivateKey};
 use crate::error::{ApiError, AuthError, CryptoError, PassboltError};
 use crate::http::{HttpClient, HttpResponse};
-use crate::metadata::{self, MetadataKeys};
+use crate::metadata::{self, MetadataKeys, SessionKeys, SessionKeysBundle};
 use crate::mfa::MfaProvider;
 #[allow(clippy::wildcard_imports)] // too many types to enumerate explicitly
 use crate::types::*;
@@ -39,6 +39,10 @@ pub struct PassboltSdk<H: HttpClient> {
     pub user_id: String,
     /// Shared v5 metadata keys, fetched and decrypted at most once per session.
     metadata_keys: OnceLock<Arc<MetadataKeys>>,
+    /// Fingerprint of the trusted shared metadata key; `None` trusts the active one.
+    trusted_metadata_key: Option<String>,
+    /// The user's session keys of resource metadata, read at most once per session.
+    session_keys: OnceLock<Arc<SessionKeys>>,
     resource_types: OnceLock<Arc<Vec<ResourceType>>>,
     metadata_settings: OnceLock<Arc<MetadataSettings>>,
     /// Answers the MFA challenge the server sends on any request after login.
@@ -188,6 +192,9 @@ impl<H: HttpClient> PassboltSdk<H> {
             passphrase,
             user_id: std::mem::take(&mut tokens.user_id),
             metadata_keys: OnceLock::new(),
+            trusted_metadata_key: Some(sdk_config.metadata_key_fingerprint.clone())
+                .filter(|fingerprint| !fingerprint.is_empty()),
+            session_keys: OnceLock::new(),
             resource_types: OnceLock::new(),
             metadata_settings: OnceLock::new(),
             mfa_provider,
@@ -351,7 +358,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         .into())
     }
 
-    async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, PassboltError> {
+    pub(crate) async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, PassboltError> {
         let url = format!("{}{path}", self.base_url);
         let response = self.http_get(&url).await?;
         self.parse_response(&response)
@@ -395,7 +402,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         self.parse_response(&response)
     }
 
-    async fn post<T: DeserializeOwned>(
+    pub(crate) async fn post<T: DeserializeOwned>(
         &self,
         path: &str,
         body: &Value,
@@ -586,24 +593,120 @@ impl<H: HttpClient> PassboltSdk<H> {
         ))
     }
 
+    /// Encrypt `metadata` for the active shared key, if it is the trusted one, as the browser
+    /// extension checks before writing shared metadata.
+    pub(crate) async fn encrypt_shared_metadata(
+        &self,
+        metadata: &ResourceMetadata,
+    ) -> Result<metadata::EncryptedMetadata, PassboltError> {
+        let metadata_keys = self.metadata_keys().await?;
+        if let (Some(pinned), Some(active)) = (
+            &self.trusted_metadata_key,
+            metadata_keys.active_fingerprint(),
+        ) {
+            if !pinned.eq_ignore_ascii_case(&active) {
+                return Err(CryptoError::UntrustedMetadataKey {
+                    pinned: pinned.clone(),
+                    active,
+                }
+                .into());
+            }
+        }
+        metadata_keys.encrypt(metadata, &self.user_signer())
+    }
+
+    /// The user's session keys of resource metadata, read once per session. Empty when they
+    /// cannot be read: they only make decryption faster.
+    pub async fn session_keys(&self) -> Arc<SessionKeys> {
+        if let Some(session_keys) = self.session_keys.get() {
+            return Arc::clone(session_keys);
+        }
+        let bundles: Vec<SessionKeysBundle> = self
+            .get("/metadata/session-keys.json")
+            .await
+            .unwrap_or_default();
+        let session_keys = Arc::new(SessionKeys::decrypt(
+            &bundles,
+            &self.private_key.key,
+            self.passphrase.expose_secret(),
+        ));
+        Arc::clone(self.session_keys.get_or_init(|| session_keys))
+    }
+
+    /// Add `new` session keys to the user's bundle, created if there is none.
+    pub async fn save_session_keys(
+        &self,
+        new: &[(String, crypto::SessionKey)],
+    ) -> Result<(), PassboltError> {
+        if new.is_empty() {
+            return Ok(());
+        }
+        let session_keys = self.session_keys().await;
+        let now = chrono::Utc::now().to_rfc3339();
+        let plaintext = session_keys.merged_bundle_data(new, &now)?;
+        let me = self.get_me().await?;
+        let (public_key, _) = crate::resource::document::public_key_of(&me)?;
+        let data = crypto::sign_and_encrypt(&plaintext, &[self.user_signer()], &[&public_key])?;
+        let _: Value = match session_keys.bundle() {
+            Some((id, modified)) => {
+                let body = serde_json::json!({ "data": data, "modified": modified });
+                self.put_request(
+                    &format!("/metadata/session-keys/{}.json", uuid_segment(id)?),
+                    &body,
+                )
+                .await?
+            }
+            None => {
+                self.post(
+                    "/metadata/session-keys.json",
+                    &serde_json::json!({ "data": data }),
+                )
+                .await?
+            }
+        };
+        Ok(())
+    }
+
+    /// Decrypt the `metadata` of a v5 resource, with its session key when known; also gives
+    /// the session key of the metadata when it was not known.
+    pub(crate) async fn decrypt_resource_metadata_keeping_session_key(
+        &self,
+        resource: &Resource,
+    ) -> Result<Option<(ResourceMetadata, Option<crypto::SessionKey>)>, PassboltError> {
+        if !resource.is_v5() {
+            return Ok(None);
+        }
+        let session_keys = self.session_keys().await;
+        let decrypt = |shared_keys: &MetadataKeys| {
+            metadata::decrypt_resource_metadata_with_session_keys(
+                resource,
+                &self.private_key.key,
+                self.passphrase.expose_secret(),
+                shared_keys,
+                &session_keys,
+            )
+        };
+        let personal = resource.metadata_key_type.as_deref() == Some("user_key");
+        // The shared keys are fetched only if the session key is missing or stale.
+        if personal || session_keys.get(&resource.id).is_some() {
+            let decrypted = decrypt(&MetadataKeys::default());
+            if personal || decrypted.is_ok() {
+                return decrypted;
+            }
+        }
+        let shared_keys = self.metadata_keys().await?;
+        decrypt(&shared_keys)
+    }
+
     /// Decrypt the `metadata` of a v5 resource; `None` for a v4 resource.
     pub async fn decrypt_resource_metadata(
         &self,
         resource: &Resource,
     ) -> Result<Option<ResourceMetadata>, PassboltError> {
-        let needs_shared_keys =
-            resource.is_v5() && resource.metadata_key_type.as_deref() != Some("user_key");
-        let shared_keys = if needs_shared_keys {
-            self.metadata_keys().await?
-        } else {
-            Arc::default()
-        };
-        metadata::decrypt_resource_metadata(
-            resource,
-            &self.private_key.key,
-            self.passphrase.expose_secret(),
-            &shared_keys,
-        )
+        let decrypted = self
+            .decrypt_resource_metadata_keeping_session_key(resource)
+            .await?;
+        Ok(decrypted.map(|(metadata, _)| metadata))
     }
 
     // ── Batch decrypt (native only — requires tokio JoinSet) ────────────────

@@ -18,7 +18,7 @@ use pgp::{SignedPublicKey, SignedSecretKey};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 
-use crate::crypto::{self, Signer};
+use crate::crypto::{self, SessionKey, Signer};
 use crate::error::{CryptoError, PassboltError};
 use crate::types::{MetadataKey, Resource, ResourceMetadata};
 
@@ -131,6 +131,16 @@ impl MetadataKeys {
         })
     }
 
+    /// Fingerprint of the active key, the one new shared metadata is encrypted for.
+    #[must_use]
+    pub fn active_fingerprint(&self) -> Option<String> {
+        use pgp::types::PublicKeyTrait;
+
+        self.active
+            .as_ref()
+            .map(|active| hex::encode_upper(active.public_key.fingerprint().as_bytes()))
+    }
+
     /// The number of keys the user can decrypt metadata with.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -224,33 +234,205 @@ pub fn decrypt_resource_metadata(
     user_passphrase: &str,
     shared_keys: &MetadataKeys,
 ) -> Result<Option<ResourceMetadata>, PassboltError> {
+    let decrypted = decrypt_resource_metadata_with_session_keys(
+        resource,
+        user_key,
+        user_passphrase,
+        shared_keys,
+        &SessionKeys::default(),
+    )?;
+    Ok(decrypted.map(|(metadata, _)| metadata))
+}
+
+/// Like [`decrypt_resource_metadata`], with the session key of the resource when the user has it.
+///
+/// Much faster than a public key decryption. Also gives the session key of the metadata
+/// when it was not known, to save it.
+pub fn decrypt_resource_metadata_with_session_keys(
+    resource: &Resource,
+    user_key: &SignedSecretKey,
+    user_passphrase: &str,
+    shared_keys: &MetadataKeys,
+    session_keys: &SessionKeys,
+) -> Result<Option<(ResourceMetadata, Option<SessionKey>)>, PassboltError> {
     let Some(armored) = resource.armored_metadata() else {
         return Ok(None);
     };
     let failure = |reason: String| {
         CryptoError::Decrypt(format!("resource {} metadata: {reason}", resource.id))
     };
-
-    let plaintext = if resource.metadata_key_type.as_deref() == Some("user_key") {
-        crypto::decrypt_message(armored, user_key, user_passphrase)
+    // A stale session key (the metadata changed since) falls back to the keys.
+    let known = session_keys
+        .get(&resource.id)
+        .and_then(|session_key| crypto::decrypt_with_session_key(armored, session_key).ok());
+    let (plaintext, new_session_key) = if let Some(plaintext) = known {
+        (plaintext, None)
     } else {
-        let key_id = resource.metadata_key_id.as_deref().unwrap_or_default();
-        let metadata_key = shared_keys
-            .private_keys
-            .get(key_id)
-            .ok_or_else(|| failure(format!("the metadata key {key_id} is not shared with you")))?;
-        crypto::decrypt_message(
-            armored,
-            &metadata_key.key,
-            metadata_key.passphrase.expose_secret(),
-        )
-    }
-    .map_err(|error| failure(error.to_string()))?;
+        let (key, passphrase) = if resource.metadata_key_type.as_deref() == Some("user_key") {
+            (user_key, user_passphrase)
+        } else {
+            let key_id = resource.metadata_key_id.as_deref().unwrap_or_default();
+            let metadata_key = shared_keys.private_keys.get(key_id).ok_or_else(|| {
+                failure(format!("the metadata key {key_id} is not shared with you"))
+            })?;
+            (&metadata_key.key, metadata_key.passphrase.expose_secret())
+        };
+        let (plaintext, session_key) =
+            crypto::decrypt_message_keeping_session_key(armored, key, passphrase)
+                .map_err(|error| failure(error.to_string()))?;
+        (plaintext, Some(session_key))
+    };
 
     let metadata: ResourceMetadata = serde_json::from_slice(&plaintext)
         .map_err(|error| failure(format!("invalid JSON: {error}")))?;
     if metadata.object_type.as_deref() != Some(RESOURCE_METADATA_OBJECT_TYPE) {
         return Err(failure(format!("unexpected object_type {:?}", metadata.object_type)).into());
     }
-    Ok(Some(metadata))
+    Ok(Some((metadata, new_session_key)))
+}
+
+const SESSION_KEYS_OBJECT_TYPE: &str = "PASSBOLT_SESSION_KEYS";
+
+/// One session key of a bundle, as the browser extension writes it.
+#[derive(serde::Serialize, Deserialize)]
+struct SessionKeyEntry {
+    foreign_model: String,
+    foreign_id: String,
+    session_key: String,
+    #[serde(default)]
+    modified: Option<String>,
+}
+
+#[derive(serde::Serialize, Deserialize)]
+struct SessionKeysBundleData {
+    object_type: String,
+    session_keys: Vec<SessionKeyEntry>,
+}
+
+/// A `/metadata/session-keys.json` bundle: session keys encrypted for the user.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SessionKeysBundle {
+    pub id: String,
+    pub data: String,
+    #[serde(default)]
+    pub modified: Option<String>,
+}
+
+/// The user's session keys of resource metadata, by resource id, and the bundle they came
+/// from, to update it.
+#[derive(Default)]
+pub struct SessionKeys {
+    keys: HashMap<String, (SessionKey, Option<String>)>,
+    /// `(id, modified)` of the latest bundle, the one to update.
+    bundle: Option<(String, String)>,
+}
+
+/// Lists the resource ids only: the keys are secret.
+impl std::fmt::Debug for SessionKeys {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_set().entries(self.keys.keys()).finish()
+    }
+}
+
+impl SessionKeys {
+    /// Read the bundles; one that cannot be read is skipped: session keys are a cache.
+    #[must_use]
+    pub fn decrypt(
+        bundles: &[SessionKeysBundle],
+        user_key: &SignedSecretKey,
+        user_passphrase: &str,
+    ) -> Self {
+        let mut session_keys = Self::default();
+        let mut latest = bundles.iter().collect::<Vec<_>>();
+        latest.sort_by(|first, second| first.modified.cmp(&second.modified));
+        for bundle in latest {
+            let Ok(plaintext) = crypto::decrypt_message(&bundle.data, user_key, user_passphrase)
+            else {
+                continue;
+            };
+            let Ok(data) = serde_json::from_slice::<SessionKeysBundleData>(&plaintext) else {
+                continue;
+            };
+            if data.object_type != SESSION_KEYS_OBJECT_TYPE {
+                continue;
+            }
+            for entry in data
+                .session_keys
+                .into_iter()
+                .filter(|entry| entry.foreign_model == "Resource")
+            {
+                if let Ok(session_key) = SessionKey::parse(&entry.session_key) {
+                    session_keys
+                        .keys
+                        .insert(entry.foreign_id, (session_key, entry.modified));
+                }
+            }
+            if let Some(modified) = &bundle.modified {
+                session_keys.bundle = Some((bundle.id.clone(), modified.clone()));
+            }
+        }
+        session_keys
+    }
+
+    #[must_use]
+    pub fn get(&self, resource_id: &str) -> Option<&SessionKey> {
+        self.keys
+            .get(resource_id)
+            .map(|(session_key, _)| session_key)
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    /// `(id, modified)` of the bundle to update; `None` to create one.
+    #[must_use]
+    pub const fn bundle(&self) -> Option<&(String, String)> {
+        self.bundle.as_ref()
+    }
+
+    /// The bundle content with `new` session keys added, by resource id, at `modified`.
+    pub fn merged_bundle_data(
+        &self,
+        new: &[(String, SessionKey)],
+        modified: &str,
+    ) -> Result<String, PassboltError> {
+        let mut entries: HashMap<&str, SessionKeyEntry> = self
+            .keys
+            .iter()
+            .map(|(resource_id, (session_key, entry_modified))| {
+                (
+                    resource_id.as_str(),
+                    SessionKeyEntry {
+                        foreign_model: "Resource".into(),
+                        foreign_id: resource_id.clone(),
+                        session_key: session_key.to_passbolt_string(),
+                        modified: entry_modified.clone(),
+                    },
+                )
+            })
+            .collect();
+        for (resource_id, session_key) in new {
+            entries.insert(
+                resource_id,
+                SessionKeyEntry {
+                    foreign_model: "Resource".into(),
+                    foreign_id: resource_id.clone(),
+                    session_key: session_key.to_passbolt_string(),
+                    modified: Some(modified.to_string()),
+                },
+            );
+        }
+        let data = SessionKeysBundleData {
+            object_type: SESSION_KEYS_OBJECT_TYPE.into(),
+            session_keys: entries.into_values().collect(),
+        };
+        Ok(serde_json::to_string(&data)?)
+    }
 }

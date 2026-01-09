@@ -436,3 +436,43 @@ async fn free_fields_and_notes_follow_the_type(
 
     assert!(error.contains(expected), "{error}");
 }
+
+async fn create_with_pinned_metadata_key(
+    fake: &FakePassbolt,
+    fingerprint: &str,
+) -> Result<Value, PassboltError> {
+    let mut config = ada_config();
+    config.metadata_key_fingerprint = fingerprint.into();
+    let client = passbolt_sdk::PassboltSdk::login(fake.clone(), &config, None, 3)
+        .await
+        .unwrap();
+    create::create_resource(&client, &github()).await?;
+    Ok(fake.body_of("POST", "/resources.json"))
+}
+
+#[tokio::test]
+async fn shared_metadata_is_encrypted_for_the_pinned_key() {
+    let fake = shared_keys_server(data::metadata_keys(&[("mk1", &METADATA)]));
+
+    let body = create_with_pinned_metadata_key(&fake, &METADATA.fingerprint().to_lowercase())
+        .await
+        .unwrap();
+
+    assert_eq!(body["metadata_key_id"], "mk1");
+}
+
+#[tokio::test]
+async fn shared_metadata_is_not_encrypted_for_another_key_than_the_pinned_one() {
+    let fake = shared_keys_server(data::metadata_keys(&[("mk1", &METADATA)]));
+
+    let error = create_with_pinned_metadata_key(&fake, &SERVER.fingerprint())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(&error, PassboltError::Crypto(passbolt_sdk::CryptoError::UntrustedMetadataKey { active, .. })
+            if *active == METADATA.fingerprint()),
+        "{error:?}"
+    );
+    assert!(fake.requests_to("POST", "/resources.json").is_empty());
+}

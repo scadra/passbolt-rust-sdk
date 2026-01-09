@@ -67,7 +67,133 @@ pub fn decrypt_message(
         .map_err(|error| CryptoError::Decrypt(format!("{error}")))?;
 
     // GnuPG (the Passbolt server) compresses by default.
-    decrypted
+    content(&decrypted)
+}
+
+/// The symmetric key of one message, as Passbolt stores it: `<algorithm id>:<hex key>`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SessionKey {
+    algorithm: pgp::crypto::sym::SymmetricKeyAlgorithm,
+    key: zeroize::Zeroizing<Vec<u8>>,
+}
+
+impl SessionKey {
+    /// Read `9:HEX`; a key without algorithm is AES-256, as Passbolt clients write it.
+    pub fn parse(text: &str) -> Result<Self, CryptoError> {
+        let (algorithm, key) = text.split_once(':').unwrap_or(("9", text));
+        let invalid = || CryptoError::Decrypt("invalid session key".into());
+        let algorithm = algorithm.parse::<u8>().map_err(|_| invalid())?;
+        let key = hex::decode(key).map_err(|_| invalid())?;
+        Ok(Self {
+            algorithm: algorithm.into(),
+            key: zeroize::Zeroizing::new(key),
+        })
+    }
+
+    /// `<algorithm id>:<HEX>`, the format of Passbolt session key bundles.
+    #[must_use]
+    pub fn to_passbolt_string(&self) -> String {
+        format!(
+            "{}:{}",
+            u8::from(self.algorithm),
+            hex::encode_upper(self.key.as_slice())
+        )
+    }
+}
+
+/// Never print the key itself.
+impl std::fmt::Debug for SessionKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionKey")
+            .field("algorithm", &self.algorithm)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Decrypt with `private_key`, and give the session key of the message, to decrypt it again
+/// without the costly public key operation.
+pub fn decrypt_message_keeping_session_key(
+    armored_message: &str,
+    private_key: &SignedSecretKey,
+    passphrase: &str,
+) -> Result<(Vec<u8>, SessionKey), CryptoError> {
+    use pgp::composed::{decrypt_session_key, PlainSessionKey};
+    use pgp::types::{EskType, PkeskVersion};
+
+    let failure = |reason: String| CryptoError::Decrypt(reason);
+    let (message, _) = Message::from_armor_single(Cursor::new(armored_message.as_bytes()))
+        .map_err(|error| failure(format!("parse message: {error}")))?;
+    let Message::Encrypted { esk, edata } = message else {
+        return Err(failure("not an encrypted message".into()));
+    };
+    let passphrase = || passphrase.to_string();
+    let plain_key = esk
+        .iter()
+        .filter_map(|esk| match esk {
+            pgp::Esk::PublicKeyEncryptedSessionKey(pkesk)
+                if pkesk.version() == PkeskVersion::V3 =>
+            {
+                Some(pkesk)
+            }
+            _ => None,
+        })
+        .find_map(|pkesk| {
+            let values = pkesk.values().ok()?;
+            if pkesk.match_identity(&private_key.primary_key) {
+                return decrypt_session_key(
+                    &private_key.primary_key,
+                    passphrase,
+                    values,
+                    EskType::V3_4,
+                )
+                .ok();
+            }
+            let subkey = private_key
+                .secret_subkeys
+                .iter()
+                .find(|subkey| pkesk.match_identity(&subkey.key))?;
+            decrypt_session_key(&subkey.key, passphrase, values, EskType::V3_4).ok()
+        })
+        .ok_or_else(|| failure("no session key for this key".into()))?;
+    let PlainSessionKey::V3_4 { sym_alg, key } = &plain_key else {
+        return Err(failure("unsupported session key version".into()));
+    };
+    let session_key = SessionKey {
+        algorithm: *sym_alg,
+        key: zeroize::Zeroizing::new(key.clone()),
+    };
+    let decrypted = edata
+        .decrypt(plain_key)
+        .map_err(|error| failure(error.to_string()))?;
+    Ok((content(&decrypted)?, session_key))
+}
+
+/// Decrypt with the session key of the message.
+pub fn decrypt_with_session_key(
+    armored_message: &str,
+    session_key: &SessionKey,
+) -> Result<Vec<u8>, CryptoError> {
+    use pgp::composed::PlainSessionKey;
+
+    let failure = |reason: String| CryptoError::Decrypt(reason);
+    let (message, _) = Message::from_armor_single(Cursor::new(armored_message.as_bytes()))
+        .map_err(|error| failure(format!("parse message: {error}")))?;
+    let Message::Encrypted { edata, .. } = message else {
+        return Err(failure("not an encrypted message".into()));
+    };
+    let decrypted = edata
+        .decrypt(PlainSessionKey::V3_4 {
+            sym_alg: session_key.algorithm,
+            key: session_key.key.to_vec(),
+        })
+        .map_err(|error| failure(error.to_string()))?;
+    content(&decrypted)
+}
+
+/// The literal content of a decrypted message, decompressed.
+fn content(message: &Message) -> Result<Vec<u8>, CryptoError> {
+    message
         .get_content()
         .map_err(|error| CryptoError::Decrypt(format!("decompress: {error}")))?
         .ok_or_else(|| CryptoError::Decrypt("no literal content".into()))
@@ -323,5 +449,46 @@ mod tests {
             ),
             "signed é"
         );
+    }
+
+    #[test]
+    fn test_a_kept_session_key_decrypts_the_message_again() {
+        let (secret, public) = keypair(SERVER_PRIVATE, SERVER_PUBLIC);
+        let armored = encrypt_message(b"metadata", &[&public]).unwrap();
+
+        let (plaintext, session_key) =
+            decrypt_message_keeping_session_key(&armored, &secret, "").unwrap();
+        let stored = SessionKey::parse(&session_key.to_passbolt_string()).unwrap();
+
+        assert_eq!(plaintext, b"metadata");
+        assert_eq!(
+            decrypt_with_session_key(&armored, &stored).unwrap(),
+            b"metadata"
+        );
+        assert!(session_key.to_passbolt_string().starts_with("9:"));
+    }
+
+    #[test]
+    fn test_a_session_key_of_another_message_fails() {
+        let (secret, public) = keypair(SERVER_PRIVATE, SERVER_PUBLIC);
+        let first = encrypt_message(b"first", &[&public]).unwrap();
+        let second = encrypt_message(b"second", &[&public]).unwrap();
+        let (_, session_key) = decrypt_message_keeping_session_key(&first, &secret, "").unwrap();
+
+        assert!(decrypt_with_session_key(&second, &session_key).is_err());
+    }
+
+    #[rstest::rstest]
+    #[case::not_hex("9:zz")]
+    #[case::bad_algorithm("x:00")]
+    fn test_an_invalid_session_key_is_refused(#[case] text: &str) {
+        assert!(SessionKey::parse(text).is_err());
+    }
+
+    #[test]
+    fn test_a_session_key_without_algorithm_is_aes_256() {
+        let session_key = SessionKey::parse("00FF").unwrap();
+
+        assert_eq!(session_key.to_passbolt_string(), "9:00FF");
     }
 }

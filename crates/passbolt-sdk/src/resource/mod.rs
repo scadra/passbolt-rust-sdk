@@ -19,4 +19,5 @@ pub mod list;
 pub mod schema;
 pub mod share;
 pub mod update;
+pub mod upgrade;
 pub mod view;

@@ -783,6 +783,17 @@ async fn dispatch(
             cli::export::run(args, client, workers).await?;
         }
 
+        // ── Migrate metadata ────────────────────────────────────────────────
+        Commands::MigrateMetadata { shared_only } => {
+            let upgraded =
+                passbolt_sdk::resource::upgrade::upgrade_resources(client, *shared_only).await?;
+            if json_output {
+                output::print_json(&serde_json::json!({ "upgraded": upgraded }))?;
+            } else {
+                println!("{upgraded} resources upgraded to v5.");
+            }
+        }
+
         Commands::Configure(_)
         | Commands::Verify(_)
         | Commands::Completion { .. }
@@ -850,5 +861,15 @@ mod tests {
         assert_eq!(config.mfa_retrys, 2);
         assert_eq!(config.workers, 0);
         assert_eq!(config.timeout, "5s");
+    }
+
+    #[test]
+    fn test_migrate_metadata_takes_shared_only() {
+        let cli = Cli::try_parse_from(["passbolt", "migrate-metadata", "--shared-only"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Commands::MigrateMetadata { shared_only: true }
+        ));
     }
 }
