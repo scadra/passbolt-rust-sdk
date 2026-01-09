@@ -144,6 +144,14 @@ pub enum Commands {
     /// Export to external formats
     Export(crate::cli::export::ExportArgs),
 
+    /// Upgrade v4 resources to v5: their name, username, URI and description get encrypted
+    /// (administrators)
+    MigrateMetadata {
+        /// Upgrade only the resources shared with other users or groups
+        #[arg(long)]
+        shared_only: bool,
+    },
+
     /// Generate shell completions
     Completion {
         /// Shell type: bash | zsh | fish | powershell
