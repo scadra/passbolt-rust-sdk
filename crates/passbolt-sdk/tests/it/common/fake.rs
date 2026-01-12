@@ -80,12 +80,19 @@ struct PagedList {
     failing_pages: Vec<(usize, u16)>,
 }
 
+/// `(method, path, answers)`: answers (status, body) given once each, in order.
+type QueuedAnswers = (
+    &'static str,
+    String,
+    std::collections::VecDeque<(u16, Value)>,
+);
+
 #[derive(Default)]
 #[allow(clippy::struct_excessive_bools)] // independent switches of the fake server
 struct State {
     routes: Vec<Route>,
-    /// Bodies answered once each, in order, before the route of the same request.
-    queued_bodies: Vec<(&'static str, String, std::collections::VecDeque<Value>)>,
+    /// Answers (status, body) given once each, in order, before the route of the same request.
+    queued_answers: Vec<QueuedAnswers>,
     paged_lists: Vec<PagedList>,
     requests: Vec<RecordedRequest>,
     login_token: Option<String>,
@@ -189,13 +196,14 @@ impl FakePassbolt {
         });
     }
 
-    /// Answer the next requests to `method path` with `bodies`, one each, then with its route.
-    pub fn on_in_turn(&self, method: &'static str, path: &str, bodies: Vec<Value>) {
+    /// Answer the next requests to `method path` with `answers` (status, body), one each, then
+    /// with its route.
+    pub fn on_in_turn(&self, method: &'static str, path: &str, answers: Vec<(u16, Value)>) {
         self.state
             .lock()
             .unwrap()
-            .queued_bodies
-            .push((method, path.to_string(), bodies.into()));
+            .queued_answers
+            .push((method, path.to_string(), answers.into()));
     }
 
     /// Answer `GET path?page=N` with `pages[N - 1]` (an empty list past the end) and
@@ -527,13 +535,13 @@ impl FakePassbolt {
 
     fn canned_response(&self, method: &str, path: &str) -> HttpResponse {
         let mut state = self.state.lock().unwrap();
-        let queued_body = state
-            .queued_bodies
+        let queued_answer = state
+            .queued_answers
             .iter_mut()
             .find(|(queued_method, queued_path, _)| *queued_method == method && queued_path == path)
-            .and_then(|(_, _, bodies)| bodies.pop_front());
-        if let Some(body) = queued_body {
-            return json_response(200, "", path, &body);
+            .and_then(|(_, _, answers)| answers.pop_front());
+        if let Some((status, body)) = queued_answer {
+            return json_response(status, "", path, &body);
         }
         state
             .routes

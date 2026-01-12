@@ -12,6 +12,8 @@
 
 //! Upgrade v4 resources to v5 (administrators): their cleartext fields become encrypted metadata.
 
+use std::collections::HashMap;
+
 use serde_json::{json, Map, Value};
 
 use crate::client::PassboltSdk;
@@ -28,13 +30,14 @@ const V4_TO_V5: [(&str, &str); 4] = [
     ("totp", "v5-totp-standalone"),
 ];
 
-/// A batch rejected because it changed meanwhile (404, 409) is fetched and upgraded again.
+/// Batches rejected because they changed meanwhile (404, 409) are fetched and upgraded again,
+/// this many times over the whole run.
 const MAX_REPLAYS: u32 = 3;
 
 /// Upgrade the v4 resources the administrator can read to v5; returns how many were upgraded.
 ///
 /// All of them or the shared ones only, batch by batch. A resource with a single user
-/// permission gets personal metadata when the settings allow it.
+/// permission gets metadata personal to that user when the settings allow it.
 pub async fn upgrade_resources<H: HttpClient>(
     client: &PassboltSdk<H>,
     shared_only: bool,
@@ -44,13 +47,15 @@ pub async fn upgrade_resources<H: HttpClient>(
     } else {
         "/metadata/upgrade/resources.json?contain[permissions]=1"
     };
+    let settings = client.metadata_settings().await?;
+    if !settings.types.allows_resource_creation(true) {
+        return Err(PassboltError::InvalidArgument(
+            "The server does not allow v5 resources: enable their creation first".into(),
+        ));
+    }
+    let personal_keys_allowed = settings.keys.allows_personal_keys();
     let resource_types = client.resource_types().await?;
-    let personal_keys_allowed = client
-        .metadata_settings()
-        .await?
-        .keys
-        .allows_personal_keys();
-    let me = client.get_me().await?;
+    let mut owners: HashMap<String, User> = HashMap::new();
 
     let mut batch: Vec<Resource> = client.get(path).await?;
     let mut upgraded = 0;
@@ -61,8 +66,16 @@ pub async fn upgrade_resources<H: HttpClient>(
             let Some(v5_type) = v5_type_of(resource, &resource_types) else {
                 continue;
             };
-            let personal = personal_keys_allowed && is_personal(resource);
-            changes.push(upgraded_resource(client, resource, v5_type, personal, &me).await?);
+            let owner = match sole_owner(resource).filter(|_| personal_keys_allowed) {
+                Some(owner_id) => {
+                    if !owners.contains_key(owner_id) {
+                        owners.insert(owner_id.to_string(), client.get_user(owner_id).await?);
+                    }
+                    owners.get(owner_id)
+                }
+                None => None,
+            };
+            changes.push(upgraded_resource(client, resource, v5_type, owner).await?);
         }
         if changes.is_empty() {
             return Err(PassboltError::Other(
@@ -76,7 +89,6 @@ pub async fn upgrade_resources<H: HttpClient>(
         {
             Ok(next) => {
                 upgraded += count;
-                replays = 0;
                 batch = next;
             }
             Err(PassboltError::Api(ApiError {
@@ -108,18 +120,23 @@ fn v5_type_of<'a>(
         .find(|resource_type| resource_type.slug == v5_slug)
 }
 
-/// Only the user has a permission on it.
-fn is_personal(resource: &Resource) -> bool {
-    matches!(resource.permissions.as_slice(), [permission] if permission.aro.as_deref() == Some("User"))
+/// The user who alone has a permission on it.
+fn sole_owner(resource: &Resource) -> Option<&str> {
+    match resource.permissions.as_slice() {
+        [permission] if permission.aro.as_deref() == Some("User") => {
+            permission.aro_foreign_key.as_deref()
+        }
+        _ => None,
+    }
 }
 
-/// The upgrade of one resource: its fields encrypted as v5 metadata.
+/// The upgrade of one resource: its fields encrypted as v5 metadata, for its sole `owner`
+/// when given, for the shared metadata key otherwise.
 async fn upgraded_resource<H: HttpClient>(
     client: &PassboltSdk<H>,
     resource: &Resource,
     v5_type: &ResourceType,
-    personal: bool,
-    me: &User,
+    owner: Option<&User>,
 ) -> Result<Value, PassboltError> {
     let mut fields = Map::new();
     fields.insert("name".into(), resource.name.clone().into());
@@ -133,7 +150,10 @@ async fn upgraded_resource<H: HttpClient>(
         fields.insert("description".into(), description.clone().into());
     }
     let metadata = document::metadata(v5_type, &fields)?;
-    let encrypted = document::encrypt_metadata(client, &metadata, personal, me).await?;
+    let encrypted = match owner {
+        Some(owner) => document::encrypt_metadata(client, &metadata, true, owner).await?,
+        None => client.encrypt_shared_metadata(&metadata).await?,
+    };
     Ok(json!({
         "id": resource.id,
         "metadata": encrypted.metadata,

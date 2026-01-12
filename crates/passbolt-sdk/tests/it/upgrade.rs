@@ -110,20 +110,68 @@ async fn shared_resources_use_the_shared_metadata_key() {
 }
 
 #[tokio::test]
-async fn resources_only_the_user_can_read_use_the_user_key() {
+async fn resources_only_one_user_can_read_are_encrypted_for_that_user() {
     let fake = server_upgrading(json!([v4_resource(
         "password-string",
-        ada_owner_permissions()
+        json!([data::permission("p-betty", "User", BETTY_ID, 15)])
     )]));
 
     upgrade_all(&fake).await.unwrap();
 
     let sent = sent_resource(&fake);
+    let betty = data::user("betty");
     assert_eq!(sent["metadata_key_type"], "user_key");
-    assert_eq!(
-        ADA.decrypt_json(sent["metadata"].as_str().unwrap())["name"],
-        "GitHub"
+    assert_eq!(sent["metadata_key_id"], betty["gpgkey"]["id"]);
+    let metadata = sent["metadata"].as_str().unwrap();
+    assert_eq!(BETTY.decrypt_json(metadata)["name"], "GitHub");
+    assert!(ADA.try_decrypt(metadata).is_none());
+}
+
+#[tokio::test]
+async fn resources_of_a_single_group_use_the_shared_key() {
+    let fake = server_upgrading(json!([v4_resource(
+        "password-string",
+        json!([data::permission("p-group", "Group", GROUP_ID, 15)])
+    )]));
+
+    upgrade_all(&fake).await.unwrap();
+
+    assert_eq!(sent_resource(&fake)["metadata_key_type"], "shared_key");
+}
+
+#[tokio::test]
+async fn personal_resources_use_the_shared_key_when_personal_keys_are_disallowed() {
+    let fake = server_upgrading(json!([v4_resource(
+        "password-string",
+        ada_owner_permissions()
+    )]));
+    fake.with_metadata_settings(
+        data::metadata_types_settings(),
+        json!({ "allow_usage_of_personal_keys": false, "zero_knowledge_key_share": false }),
     );
+
+    upgrade_all(&fake).await.unwrap();
+
+    assert_eq!(sent_resource(&fake)["metadata_key_type"], "shared_key");
+}
+
+#[tokio::test]
+async fn refuses_when_the_server_does_not_allow_v5_resources() {
+    let fake = server_upgrading(json!([v4_resource(
+        "password-string",
+        shared_permissions()
+    )]));
+    let mut types = data::metadata_types_settings();
+    types["allow_creation_of_v5_resources"] = false.into();
+    fake.with_metadata_settings(types, data::metadata_keys_settings());
+
+    let error = upgrade_all(&fake).await.unwrap_err();
+
+    assert!(
+        matches!(error, PassboltError::InvalidArgument(_)),
+        "{error:?}"
+    );
+    assert!(fake.requests_to("GET", UPGRADE_PATH).is_empty());
 }
 
 #[tokio::test]
@@ -135,7 +183,7 @@ async fn upgrades_the_batches_the_server_returns_until_none_is_left() {
     fake.on_in_turn(
         "POST",
         UPGRADE_PATH,
-        vec![json!([v4_resource("totp", shared_permissions())])],
+        vec![(200, json!([v4_resource("totp", shared_permissions())]))],
     );
 
     let upgraded = upgrade_all(&fake).await;
@@ -172,6 +220,22 @@ async fn a_conflict_is_replayed_then_reported() {
 
     assert!(matches!(error, PassboltError::Api(_)), "{error:?}");
     assert_eq!(fake.requests_to("POST", UPGRADE_PATH).len(), 4);
+}
+
+#[tokio::test]
+async fn replays_are_counted_over_the_whole_run() {
+    let fake = server_upgrading(json!([v4_resource(
+        "password-string",
+        shared_permissions()
+    )]));
+    fake.on_error("POST", UPGRADE_PATH, 409);
+    let batch = json!([v4_resource("totp", shared_permissions())]);
+    fake.on_in_turn("POST", UPGRADE_PATH, vec![(409, Value::Null), (200, batch)]);
+
+    upgrade_all(&fake).await.unwrap_err();
+
+    // One replay, one batch upgraded, then two replays left before giving up.
+    assert_eq!(fake.requests_to("POST", UPGRADE_PATH).len(), 5);
 }
 
 #[tokio::test]
