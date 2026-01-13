@@ -43,3 +43,7 @@ Thumbs.db
 
 # Test-only PGP fixtures (generated, no real secret)
 !crates/*/tests/fixtures/keys/*.asc
+
+# Interop checks (npm ci in tests/interop) #
+######################
+node_modules/

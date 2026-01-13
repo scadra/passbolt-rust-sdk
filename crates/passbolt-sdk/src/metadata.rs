@@ -131,6 +131,12 @@ impl MetadataKeys {
         })
     }
 
+    /// The active key, the one new shared metadata is encrypted for.
+    #[must_use]
+    pub fn active_public_key(&self) -> Option<&SignedPublicKey> {
+        self.active.as_ref().map(|active| &active.public_key)
+    }
+
     /// Fingerprint of the active key, the one new shared metadata is encrypted for.
     #[must_use]
     pub fn active_fingerprint(&self) -> Option<String> {

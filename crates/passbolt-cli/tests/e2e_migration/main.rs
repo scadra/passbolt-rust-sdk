@@ -21,8 +21,8 @@ mod common;
 use serde_json::Value;
 
 use common::{
-    admin_id, create_group, current_user_id, run, run_json, run_json_as, unique_name, Account,
-    Cleanup, ADMIN,
+    admin_id, assert_signed_by, block_on, create_group, current_user_id, openpgp_js, private_key,
+    run, run_json, run_json_as, sdk_login, unique_name, Account, Cleanup, ADMIN,
 };
 
 const TOTP_KEY: &str = "JBSWY3DPEHPK3PXP";
@@ -241,4 +241,66 @@ fn only_administrators_can_migrate() {
         .args(["migrate-metadata"])
         .assert()
         .failure();
+}
+
+#[test]
+fn migrated_metadata_reads_in_openpgp_js_with_the_expected_signatures() {
+    let (personal, personal_name) = create_v4(
+        Account::User,
+        "password-and-description",
+        &["--password", "p"],
+    );
+    let (shared, shared_name) = create_v4(
+        Account::User,
+        "password-and-description",
+        &["--password", "p"],
+    );
+    run(&[
+        "share",
+        "resource",
+        "--id",
+        &shared.id,
+        "-u",
+        &admin_id(),
+        "-t",
+        "1",
+    ]);
+
+    migrate(&[]);
+
+    let admin = sdk_login(ADMIN);
+    let admin_key = block_on(admin.get_me())
+        .unwrap()
+        .gpg_key
+        .unwrap()
+        .armored_key
+        .unwrap();
+    let metadata_keys = block_on(admin.metadata_keys()).unwrap();
+    let metadata_key = metadata_keys
+        .active_public_key()
+        .unwrap()
+        .to_armored_string(pgp::ArmorOptions::default())
+        .unwrap();
+    let user = sdk_login(Account::User);
+    let (user_private_key, passphrase) = private_key(Account::User);
+    let personal_metadata = block_on(user.get_resource(&personal.id)).unwrap();
+    let read = openpgp_js(&serde_json::json!({
+        "message": personal_metadata.armored_metadata().unwrap(),
+        "decryption_key": user_private_key,
+        "passphrase": passphrase,
+        "verification_keys": [admin_key],
+    }));
+    // The administrator signs the metadata they encrypt for the owner.
+    assert!(assert_signed_by(&read, 1).contains(&personal_name));
+    run(&["list", "resource"]);
+    let session_keys = block_on(sdk_login(Account::User).session_keys());
+    let shared_metadata = block_on(user.get_resource(&shared.id)).unwrap();
+    let read = openpgp_js(&serde_json::json!({
+        "message": shared_metadata.armored_metadata().unwrap(),
+        "session_key": session_keys.get(&shared.id).unwrap().to_passbolt_string(),
+        "verification_keys": [admin_key, metadata_key],
+    }));
+    assert!(assert_signed_by(&read, 2).contains(&shared_name));
+    block_on(user.logout());
+    block_on(admin.logout());
 }

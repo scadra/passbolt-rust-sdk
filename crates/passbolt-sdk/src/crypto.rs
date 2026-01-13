@@ -216,6 +216,8 @@ pub struct Signer<'a> {
 /// Sign `plaintext` with every signer, then encrypt it for `recipients`, as a UTF-8 text literal.
 ///
 /// Passbolt clients sign secrets with the user key, shared metadata with the metadata key too.
+/// Every signature covers the literal data, as `OpenPGP.js` and gopenpgp write and check them:
+/// one-pass signatures in a row, then the literal, then the signatures in reverse order.
 pub fn sign_and_encrypt(
     plaintext: &str,
     signers: &[Signer<'_>],
@@ -223,9 +225,11 @@ pub fn sign_and_encrypt(
 ) -> Result<String, CryptoError> {
     use pgp::crypto::hash::HashAlgorithm;
 
-    let mut message = Message::new_literal("", plaintext);
-    for signer in signers {
-        message = message
+    let literal = Message::new_literal("", plaintext);
+    let mut message = literal.clone();
+    for (index, signer) in signers.iter().enumerate() {
+        let signed = literal
+            .clone()
             .sign(
                 rand::thread_rng(),
                 signer.key,
@@ -233,6 +237,25 @@ pub fn sign_and_encrypt(
                 HashAlgorithm::SHA2_256,
             )
             .map_err(|error| CryptoError::Encrypt(format!("sign: {error}")))?;
+        let Message::Signed {
+            mut one_pass_signature,
+            signature,
+            ..
+        } = signed
+        else {
+            return Err(CryptoError::Encrypt("sign: no signature".into()));
+        };
+        // Only the one-pass signature right before the literal is the last one.
+        if index > 0 {
+            if let Some(one_pass_signature) = one_pass_signature.as_mut() {
+                one_pass_signature.last = 0;
+            }
+        }
+        message = Message::Signed {
+            message: Some(Box::new(message)),
+            one_pass_signature,
+            signature,
+        };
     }
     encrypt(&message, recipients)
 }
@@ -399,7 +422,8 @@ mod tests {
         assert!(decrypt_message(&armored, &metadata_secret, "").is_err());
     }
 
-    /// Verify every signature layer of `armored` against `signers`, outermost first.
+    /// Verify that every signature of `armored`, outermost first, is `signers`' over the literal
+    /// data, as other `OpenPGP` implementations check them.
     fn verified_text(
         armored: &str,
         secret: &SignedSecretKey,
@@ -407,20 +431,31 @@ mod tests {
     ) -> String {
         let (message, _) = Message::from_armor_single(Cursor::new(armored.as_bytes())).unwrap();
         let (mut message, _) = message.decrypt(String::new, &[secret]).unwrap();
-        for signer in signers {
-            message.verify(*signer).unwrap();
-            let Message::Signed { message: inner, .. } = message else {
-                panic!(
-                    "not signed by {}",
-                    hex::encode_upper(signer.fingerprint().as_bytes())
-                )
-            };
+        let mut signatures = Vec::new();
+        while let Message::Signed {
+            message: inner,
+            signature,
+            ..
+        } = message
+        {
+            signatures.push(signature);
             message = *inner.unwrap();
         }
         let Message::Literal(literal) = message else {
-            panic!("more signatures than expected")
+            panic!("no literal data")
         };
         assert!(!literal.is_binary(), "not a text literal");
+        assert_eq!(signatures.len(), signers.len(), "signature count");
+        for (signature, signer) in signatures.iter().zip(signers) {
+            signature
+                .verify(*signer, literal.data())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "not signed by {}: {error}",
+                        hex::encode_upper(signer.fingerprint().as_bytes())
+                    )
+                });
+        }
         literal.to_string().unwrap()
     }
 

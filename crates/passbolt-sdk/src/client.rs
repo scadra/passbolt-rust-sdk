@@ -615,6 +615,11 @@ impl<H: HttpClient> PassboltSdk<H> {
         metadata_keys.encrypt(metadata, &self.user_signer())
     }
 
+    /// The user's session keys bundles, still encrypted.
+    pub async fn session_keys_bundles(&self) -> Result<Vec<SessionKeysBundle>, PassboltError> {
+        self.get("/metadata/session-keys.json").await
+    }
+
     /// The user's session keys of resource metadata, read once per session. Empty when they
     /// cannot be read: they only make decryption faster.
     pub async fn session_keys(&self) -> Arc<SessionKeys> {

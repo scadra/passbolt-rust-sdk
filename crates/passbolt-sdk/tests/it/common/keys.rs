@@ -80,7 +80,8 @@ impl TestKey {
         serde_json::from_str(&self.decrypt(armored_message)).unwrap()
     }
 
-    /// Decrypt a UTF-8 text message signed by `signers`, outermost signature first.
+    /// Decrypt a UTF-8 text message signed by `signers`, outermost signature first, every
+    /// signature over the literal data as other `OpenPGP` implementations check them.
     pub fn decrypt_signed(&self, armored_message: &str, signers: &[&Self]) -> String {
         use pgp::{Deserializable, Message};
 
@@ -90,19 +91,29 @@ impl TestKey {
         let (mut message, _) = message
             .decrypt(|| self.passphrase.to_string(), &[&private_key.key])
             .unwrap();
-        for signer in signers {
-            message
-                .verify(&crypto::parse_public_key(signer.public).unwrap())
-                .unwrap_or_else(|error| panic!("not signed by {}: {error}", signer.name));
-            let Message::Signed { message: inner, .. } = message else {
-                panic!("not signed by {}", signer.name)
-            };
+        let mut signatures = Vec::new();
+        while let Message::Signed {
+            message: inner,
+            signature,
+            ..
+        } = message
+        {
+            signatures.push(signature);
             message = *inner.unwrap();
         }
         let Message::Literal(literal) = message else {
-            panic!("signed by more keys than expected")
+            panic!("no literal data")
         };
         assert!(!literal.is_binary(), "not a text message");
+        assert_eq!(signatures.len(), signers.len(), "signature count");
+        for (signature, signer) in signatures.iter().zip(signers) {
+            signature
+                .verify(
+                    &crypto::parse_public_key(signer.public).unwrap(),
+                    literal.data(),
+                )
+                .unwrap_or_else(|error| panic!("not signed by {}: {error}", signer.name));
+        }
         literal.to_string().unwrap()
     }
 }

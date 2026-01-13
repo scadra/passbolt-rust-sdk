@@ -228,3 +228,115 @@ pub fn create_group(name: &str, manager_id: &str, member_ids: &[&str]) -> Cleanu
     }
     Cleanup::by(ADMIN, "group", &run_json_as(ADMIN, &args))
 }
+
+/// `PASSBOLT_E2E_<name>`, or `PASSBOLT_E2E_ADMIN_<name>` for the admin's key and passphrase.
+fn setting(account: Account, name: &str) -> String {
+    let admin_setting = matches!(account, Account::Admin)
+        && matches!(name, "USER_PRIVATE_KEY_FILE" | "USER_PASSWORD");
+    let variable = if admin_setting {
+        format!("PASSBOLT_E2E_ADMIN_{name}")
+    } else {
+        format!("PASSBOLT_E2E_{name}")
+    };
+    std::env::var(&variable).unwrap_or_default()
+}
+
+pub type Sdk = passbolt_sdk::PassboltSdk<passbolt_sdk::NativeHttpClient>;
+
+/// The SDK logged in as `account`, to look at what the CLI stored on the server.
+pub fn sdk_login(account: Account) -> Sdk {
+    let resolve = setting(account, "RESOLVE");
+    let resolve = resolve
+        .splitn(3, ':')
+        .collect::<Vec<_>>()
+        .try_into()
+        .ok()
+        .map(|[host, port, address]: [&str; 3]| {
+            (
+                host.to_string(),
+                format!("{address}:{port}").parse().unwrap(),
+            )
+        });
+    let http = passbolt_sdk::NativeHttpClient::new(&passbolt_sdk::NativeHttpConfig {
+        tls_skip_verify: setting(account, "TLS_SKIP_VERIFY") == "true",
+        client_cert_pem: None,
+        client_key_pem: None,
+        proxy_url: None,
+        resolve: resolve.into_iter().collect(),
+        timeout: Some(std::time::Duration::from_secs(60)),
+    })
+    .unwrap();
+    let config = passbolt_sdk::SdkConfig {
+        server_url: setting(account, "SERVER_ADDRESS"),
+        private_key_armored: std::fs::read_to_string(setting(account, "USER_PRIVATE_KEY_FILE"))
+            .unwrap(),
+        passphrase: setting(account, "USER_PASSWORD").into(),
+        mfa_mode: "none".into(),
+        mfa_totp_token: String::new(),
+        mfa_totp_offset: 0,
+        mfa_retrys: 1,
+        tls_skip_verify: false,
+        tls_client_cert: String::new(),
+        tls_client_private_key: String::new(),
+        proxy: String::new(),
+        server_public_key: String::new(),
+        metadata_key_fingerprint: String::new(),
+        server_verify_enc_token: String::new(),
+        server_verify_token: String::new(),
+    };
+    block_on(passbolt_sdk::PassboltSdk::login(http, &config, None, 1)).unwrap()
+}
+
+pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Runtime::new().unwrap().block_on(future)
+}
+
+/// The armored private key and passphrase of `account`.
+pub fn private_key(account: Account) -> (String, String) {
+    (
+        std::fs::read_to_string(setting(account, "USER_PRIVATE_KEY_FILE")).unwrap(),
+        setting(account, "USER_PASSWORD"),
+    )
+}
+
+/// `tests/interop/verify.mjs`: decrypt and check signatures with OpenPGP.js, the library of the
+/// browser extension (`npm ci --prefix tests/interop`, done by `scripts/e2e.sh`).
+pub fn openpgp_js(input: &Value) -> Value {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/interop/verify.mjs"
+    );
+    let mut node = std::process::Command::new("node")
+        .arg(script)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("node is needed for the interop checks");
+    node.stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let output = node.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "OpenPGP.js: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+/// Check that `read` (from [`openpgp_js`]) carries `signer_count` signatures, all valid against
+/// the verification keys given; returns the text.
+pub fn assert_signed_by(read: &Value, signer_count: usize) -> String {
+    let signatures = read["signatures"].as_array().unwrap();
+    assert_eq!(signatures.len(), signer_count, "{read}");
+    for signature in signatures {
+        assert_eq!(signature["valid"], true, "{read}");
+    }
+    read["text"].as_str().unwrap().to_string()
+}
