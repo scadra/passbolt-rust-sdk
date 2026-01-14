@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use secrecy::{ExposeSecret, SecretString};
 use serde::de::DeserializeOwned;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use serde_json::Value;
 
@@ -24,10 +24,13 @@ use crate::config::SdkConfig;
 use crate::crypto::{self, PrivateKey};
 use crate::error::{ApiError, AuthError, CryptoError, PassboltError};
 use crate::http::{HttpClient, HttpResponse};
-use crate::metadata::{self, MetadataKeys, SessionKeys, SessionKeysBundle};
+use crate::metadata::{self, MetadataKeys, ResourceSessionKey, SessionKeys, SessionKeysBundle};
 use crate::mfa::MfaProvider;
 #[allow(clippy::wildcard_imports)] // too many types to enumerate explicitly
 use crate::types::*;
+
+/// Saves of the session keys bundle that conflict with another session's (409).
+const SESSION_KEYS_SAVE_ATTEMPTS: u32 = 3;
 
 /// Main Passbolt SDK client, generic over the HTTP backend.
 pub struct PassboltSdk<H: HttpClient> {
@@ -41,8 +44,9 @@ pub struct PassboltSdk<H: HttpClient> {
     metadata_keys: OnceLock<Arc<MetadataKeys>>,
     /// Fingerprint of the trusted shared metadata key; `None` trusts the active one.
     trusted_metadata_key: Option<String>,
-    /// The user's session keys of resource metadata, read at most once per session.
-    session_keys: OnceLock<Arc<SessionKeys>>,
+    /// The user's session keys of resource metadata, read once per session, then kept in step
+    /// with what this session saves.
+    session_keys: Mutex<Option<Arc<SessionKeys>>>,
     resource_types: OnceLock<Arc<Vec<ResourceType>>>,
     metadata_settings: OnceLock<Arc<MetadataSettings>>,
     /// Answers the MFA challenge the server sends on any request after login.
@@ -194,7 +198,7 @@ impl<H: HttpClient> PassboltSdk<H> {
             metadata_keys: OnceLock::new(),
             trusted_metadata_key: Some(sdk_config.metadata_key_fingerprint.clone())
                 .filter(|fingerprint| !fingerprint.is_empty()),
-            session_keys: OnceLock::new(),
+            session_keys: Mutex::default(),
             resource_types: OnceLock::new(),
             metadata_settings: OnceLock::new(),
             mfa_provider,
@@ -623,36 +627,75 @@ impl<H: HttpClient> PassboltSdk<H> {
     /// The user's session keys of resource metadata, read once per session. Empty when they
     /// cannot be read: they only make decryption faster.
     pub async fn session_keys(&self) -> Arc<SessionKeys> {
-        if let Some(session_keys) = self.session_keys.get() {
-            return Arc::clone(session_keys);
+        if let Some(session_keys) = self.cached_session_keys() {
+            return session_keys;
         }
-        let bundles: Vec<SessionKeysBundle> = self
-            .get("/metadata/session-keys.json")
-            .await
-            .unwrap_or_default();
-        let session_keys = Arc::new(SessionKeys::decrypt(
+        let session_keys = Arc::new(self.read_session_keys().await);
+        Arc::clone(
+            self.session_keys
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_or_insert(session_keys),
+        )
+    }
+
+    fn cached_session_keys(&self) -> Option<Arc<SessionKeys>> {
+        self.session_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    async fn read_session_keys(&self) -> SessionKeys {
+        let bundles = self.session_keys_bundles().await.unwrap_or_default();
+        SessionKeys::decrypt(
             &bundles,
             &self.private_key.key,
             self.passphrase.expose_secret(),
-        ));
-        Arc::clone(self.session_keys.get_or_init(|| session_keys))
+        )
     }
 
-    /// Add `new` session keys to the user's bundle, created if there is none.
-    pub async fn save_session_keys(
-        &self,
-        new: &[(String, crypto::SessionKey)],
-    ) -> Result<(), PassboltError> {
+    /// Add `new` session keys to the user's latest bundle, created if there is none, then
+    /// delete the older bundles, as the browser extension does. A bundle changed meanwhile
+    /// by another session (409) is read again, up to [`SESSION_KEYS_SAVE_ATTEMPTS`] times.
+    pub async fn save_session_keys(&self, new: &[ResourceSessionKey]) -> Result<(), PassboltError> {
         if new.is_empty() {
             return Ok(());
         }
-        let session_keys = self.session_keys().await;
-        let now = chrono::Utc::now().to_rfc3339();
-        let plaintext = session_keys.merged_bundle_data(new, &now)?;
+        let mut current = self.session_keys().await;
+        let mut attempt = 1;
+        let saved = loop {
+            match self.write_session_keys(&current.with(new)).await {
+                Err(PassboltError::Api(ApiError { status: 409, .. }))
+                    if attempt < SESSION_KEYS_SAVE_ATTEMPTS =>
+                {
+                    attempt += 1;
+                    current = Arc::new(self.read_session_keys().await);
+                }
+                result => break result?,
+            }
+        };
+        *self
+            .session_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(saved));
+        Ok(())
+    }
+
+    /// Store `session_keys` in their latest bundle and delete the older ones; returns them as
+    /// saved.
+    async fn write_session_keys(
+        &self,
+        session_keys: &SessionKeys,
+    ) -> Result<SessionKeys, PassboltError> {
         let me = self.get_me().await?;
         let (public_key, _) = crate::resource::document::public_key_of(&me)?;
-        let data = crypto::sign_and_encrypt(&plaintext, &[self.user_signer()], &[&public_key])?;
-        let _: Value = match session_keys.bundle() {
+        let data = crypto::sign_and_encrypt(
+            &session_keys.bundle_data()?,
+            &[self.user_signer()],
+            &[&public_key],
+        )?;
+        let saved: SessionKeysBundle = match session_keys.bundle() {
             Some((id, modified)) => {
                 let body = serde_json::json!({ "data": data, "modified": modified });
                 self.put_request(
@@ -669,7 +712,18 @@ impl<H: HttpClient> PassboltSdk<H> {
                 .await?
             }
         };
-        Ok(())
+        for older_id in session_keys.older_bundle_ids() {
+            // A bundle left behind is only read again and replaced next time.
+            let _ = self
+                .delete_request(&format!(
+                    "/metadata/session-keys/{}.json",
+                    uuid_segment(older_id)?
+                ))
+                .await;
+        }
+        Ok(session_keys
+            .clone()
+            .saved_in(saved.id, saved.modified.unwrap_or_default()))
     }
 
     /// Decrypt the `metadata` of a v5 resource, with its session key when known; also gives

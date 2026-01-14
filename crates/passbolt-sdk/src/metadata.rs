@@ -300,7 +300,7 @@ pub fn decrypt_resource_metadata_with_session_keys(
 const SESSION_KEYS_OBJECT_TYPE: &str = "PASSBOLT_SESSION_KEYS";
 
 /// One session key of a bundle, as the browser extension writes it.
-#[derive(serde::Serialize, Deserialize)]
+#[derive(Clone, serde::Serialize, Deserialize)]
 struct SessionKeyEntry {
     foreign_model: String,
     foreign_id: String,
@@ -324,13 +324,24 @@ pub struct SessionKeysBundle {
     pub modified: Option<String>,
 }
 
-/// The user's session keys of resource metadata, by resource id, and the bundle they came
-/// from, to update it.
-#[derive(Default)]
+/// The session key of a resource's metadata, with the resource's `modified` it is valid for.
+pub struct ResourceSessionKey {
+    pub resource_id: String,
+    pub session_key: SessionKey,
+    pub modified: Option<String>,
+}
+
+/// The user's session keys of resource metadata, by resource id, and the bundles they came
+/// from, to update the latest and delete the others.
+#[derive(Default, Clone)]
 pub struct SessionKeys {
     keys: HashMap<String, (SessionKey, Option<String>)>,
+    /// Entries of other models (folders…), kept as they are when the bundle is rewritten.
+    other_entries: Vec<SessionKeyEntry>,
     /// `(id, modified)` of the latest bundle, the one to update.
     bundle: Option<(String, String)>,
+    /// Ids of the older bundles, replaced by the latest one.
+    older_bundle_ids: Vec<String>,
 }
 
 /// Lists the resource ids only: the keys are secret.
@@ -341,7 +352,8 @@ impl std::fmt::Debug for SessionKeys {
 }
 
 impl SessionKeys {
-    /// Read the bundles; one that cannot be read is skipped: session keys are a cache.
+    /// Read the bundles, the latest last; one that cannot be read is skipped: session keys are
+    /// a cache.
     #[must_use]
     pub fn decrypt(
         bundles: &[SessionKeysBundle],
@@ -349,9 +361,16 @@ impl SessionKeys {
         user_passphrase: &str,
     ) -> Self {
         let mut session_keys = Self::default();
-        let mut latest = bundles.iter().collect::<Vec<_>>();
-        latest.sort_by(|first, second| first.modified.cmp(&second.modified));
-        for bundle in latest {
+        let mut by_date = bundles.iter().collect::<Vec<_>>();
+        by_date.sort_by(|first, second| first.modified.cmp(&second.modified));
+        for bundle in by_date {
+            if let Some((older_id, _)) = session_keys.bundle.take() {
+                session_keys.older_bundle_ids.push(older_id);
+            }
+            session_keys.bundle = Some((
+                bundle.id.clone(),
+                bundle.modified.clone().unwrap_or_default(),
+            ));
             let Ok(plaintext) = crypto::decrypt_message(&bundle.data, user_key, user_passphrase)
             else {
                 continue;
@@ -362,19 +381,18 @@ impl SessionKeys {
             if data.object_type != SESSION_KEYS_OBJECT_TYPE {
                 continue;
             }
-            for entry in data
-                .session_keys
-                .into_iter()
-                .filter(|entry| entry.foreign_model == "Resource")
-            {
-                if let Ok(session_key) = SessionKey::parse(&entry.session_key) {
+            for entry in data.session_keys {
+                if entry.foreign_model != "Resource" {
+                    session_keys.other_entries.retain(|other| {
+                        (&other.foreign_model, &other.foreign_id)
+                            != (&entry.foreign_model, &entry.foreign_id)
+                    });
+                    session_keys.other_entries.push(entry);
+                } else if let Ok(session_key) = SessionKey::parse(&entry.session_key) {
                     session_keys
                         .keys
                         .insert(entry.foreign_id, (session_key, entry.modified));
                 }
-            }
-            if let Some(modified) = &bundle.modified {
-                session_keys.bundle = Some((bundle.id.clone(), modified.clone()));
             }
         }
         session_keys
@@ -403,41 +421,52 @@ impl SessionKeys {
         self.bundle.as_ref()
     }
 
-    /// The bundle content with `new` session keys added, by resource id, at `modified`.
-    pub fn merged_bundle_data(
-        &self,
-        new: &[(String, SessionKey)],
-        modified: &str,
-    ) -> Result<String, PassboltError> {
-        let mut entries: HashMap<&str, SessionKeyEntry> = self
-            .keys
-            .iter()
-            .map(|(resource_id, (session_key, entry_modified))| {
+    /// Ids of the bundles older than [`Self::bundle`], to delete once it is saved.
+    #[must_use]
+    pub fn older_bundle_ids(&self) -> &[String] {
+        &self.older_bundle_ids
+    }
+
+    /// These session keys with `new` ones added or replaced.
+    #[must_use]
+    pub fn with(&self, new: &[ResourceSessionKey]) -> Self {
+        let mut merged = self.clone();
+        for resource_session_key in new {
+            merged.keys.insert(
+                resource_session_key.resource_id.clone(),
                 (
-                    resource_id.as_str(),
-                    SessionKeyEntry {
-                        foreign_model: "Resource".into(),
-                        foreign_id: resource_id.clone(),
-                        session_key: session_key.to_passbolt_string(),
-                        modified: entry_modified.clone(),
-                    },
-                )
-            })
-            .collect();
-        for (resource_id, session_key) in new {
-            entries.insert(
-                resource_id,
-                SessionKeyEntry {
-                    foreign_model: "Resource".into(),
-                    foreign_id: resource_id.clone(),
-                    session_key: session_key.to_passbolt_string(),
-                    modified: Some(modified.to_string()),
-                },
+                    resource_session_key.session_key.clone(),
+                    resource_session_key.modified.clone(),
+                ),
             );
         }
+        merged
+    }
+
+    /// The same session keys, now stored in the bundle `id` at `modified` alone.
+    #[must_use]
+    pub fn saved_in(mut self, id: String, modified: String) -> Self {
+        self.bundle = Some((id, modified));
+        self.older_bundle_ids.clear();
+        self
+    }
+
+    /// The bundle content: every session key, of resources and of other models.
+    pub fn bundle_data(&self) -> Result<String, PassboltError> {
+        let mut entries: Vec<SessionKeyEntry> = self
+            .keys
+            .iter()
+            .map(|(resource_id, (session_key, modified))| SessionKeyEntry {
+                foreign_model: "Resource".into(),
+                foreign_id: resource_id.clone(),
+                session_key: session_key.to_passbolt_string(),
+                modified: modified.clone(),
+            })
+            .collect();
+        entries.extend(self.other_entries.iter().cloned());
         let data = SessionKeysBundleData {
             object_type: SESSION_KEYS_OBJECT_TYPE.into(),
-            session_keys: entries.into_values().collect(),
+            session_keys: entries,
         };
         Ok(serde_json::to_string(&data)?)
     }

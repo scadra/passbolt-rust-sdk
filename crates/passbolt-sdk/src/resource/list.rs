@@ -14,6 +14,7 @@ use crate::client::{PassboltSdk, ResourceQuery};
 use crate::error::PassboltError;
 use crate::filter::Filter;
 use crate::http::HttpClient;
+use crate::metadata::ResourceSessionKey;
 use crate::resource::filter::filter_resources;
 use crate::resource::view::ResourceView;
 
@@ -50,7 +51,11 @@ pub async fn list_resources<H: HttpClient>(
         let view = match metadata {
             Ok(Some((metadata, session_key))) => {
                 if let Some(session_key) = session_key {
-                    new_session_keys.push((id.clone(), session_key));
+                    new_session_keys.push(ResourceSessionKey {
+                        resource_id: id.clone(),
+                        session_key,
+                        modified: resource.modified.map(|modified| modified.to_rfc3339()),
+                    });
                 }
                 ResourceView::new(resource, Some(metadata), &resource_types)?
             }

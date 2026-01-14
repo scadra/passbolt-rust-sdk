@@ -23,6 +23,7 @@ mod outputs;
 mod resource_types;
 mod resources;
 mod session;
+mod session_keys;
 mod sharing;
 mod tools;
 mod totp;
