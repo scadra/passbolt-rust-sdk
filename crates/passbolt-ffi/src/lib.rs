@@ -77,15 +77,44 @@ fn build_http_config(tls_skip_verify: bool, proxy: Option<String>) -> NativeHttp
     }
 }
 
+/// How to log in, beyond the credentials.
+#[derive(uniffi::Record, Default)]
+pub struct FfiLoginOptions {
+    pub tls_skip_verify: bool,
+    pub proxy: Option<String>,
+    /// The base32 TOTP secret answering the MFA challenge without prompting.
+    pub mfa_totp_token: Option<String>,
+    /// The armored server public key pinned with [`fetch_server_key`]: each login then checks
+    /// the server holds its private key.
+    pub server_public_key: Option<String>,
+    /// The shared metadata key fingerprint pinned with
+    /// [`PassboltClient::metadata_key_fingerprint`]: shared metadata is then only encrypted
+    /// for that key.
+    pub metadata_key_fingerprint: Option<String>,
+}
+
+/// The server public key, to pin.
+#[derive(uniffi::Record)]
+pub struct FfiServerKey {
+    /// Computed from the key, checked against the one the server announces.
+    pub fingerprint: String,
+    pub armored_key: String,
+}
+
 /// An empty or blank `mfa_totp_token` means no non-interactive MFA.
 fn build_sdk_config(
     server_url: String,
     private_key_armored: String,
     passphrase: String,
-    tls_skip_verify: bool,
-    proxy: Option<String>,
-    mfa_totp_token: Option<String>,
+    options: FfiLoginOptions,
 ) -> SdkConfig {
+    let FfiLoginOptions {
+        tls_skip_verify,
+        proxy,
+        mfa_totp_token,
+        server_public_key,
+        metadata_key_fingerprint,
+    } = options;
     let mfa_totp_token = non_empty(mfa_totp_token);
     SdkConfig {
         server_url,
@@ -103,8 +132,8 @@ fn build_sdk_config(
         tls_client_cert: String::new(),
         tls_client_private_key: String::new(),
         proxy: non_empty(proxy).unwrap_or_default(),
-        server_public_key: String::new(),
-        metadata_key_fingerprint: String::new(),
+        server_public_key: non_empty(server_public_key).unwrap_or_default(),
+        metadata_key_fingerprint: non_empty(metadata_key_fingerprint).unwrap_or_default(),
         server_verify_enc_token: String::new(),
         server_verify_token: String::new(),
     }
@@ -155,15 +184,29 @@ impl PassboltClient {
         proxy: Option<String>,
         mfa_totp_token: Option<String>,
     ) -> Result<Arc<Self>, PassboltFfiError> {
-        let http_config = build_http_config(tls_skip_verify, proxy.clone());
-        let config = build_sdk_config(
+        Self::login_with_config(
             server_url,
             private_key_armored,
             passphrase,
-            tls_skip_verify,
-            proxy,
-            mfa_totp_token,
-        );
+            FfiLoginOptions {
+                tls_skip_verify,
+                proxy,
+                mfa_totp_token,
+                ..FfiLoginOptions::default()
+            },
+        )
+    }
+
+    /// Authenticate with `options`, the pinned server and metadata keys among them.
+    #[uniffi::constructor]
+    pub fn login_with_config(
+        server_url: String,
+        private_key_armored: String,
+        passphrase: String,
+        options: FfiLoginOptions,
+    ) -> Result<Arc<Self>, PassboltFfiError> {
+        let http_config = build_http_config(options.tls_skip_verify, options.proxy.clone());
+        let config = build_sdk_config(server_url, private_key_armored, passphrase, options);
         let mfa_provider = TotpSecretProvider::from_config(&config);
         RUNTIME.block_on(async {
             let http =
@@ -657,6 +700,39 @@ impl PassboltClient {
     pub fn base_url(&self) -> String {
         self.inner.base_url.clone()
     }
+
+    /// The fingerprint of the active shared metadata key, to pin in
+    /// [`FfiLoginOptions::metadata_key_fingerprint`]; `None` without one.
+    pub fn metadata_key_fingerprint(&self) -> Result<Option<String>, PassboltFfiError> {
+        let metadata_keys = RUNTIME
+            .block_on(self.inner.metadata_keys())
+            .map_err(PassboltFfiError::from)?;
+        Ok(metadata_keys.active_fingerprint())
+    }
+}
+
+/// The server public key, to pin in [`FfiLoginOptions::server_public_key`] once the user
+/// confirmed its fingerprint.
+#[uniffi::export]
+pub fn fetch_server_key(
+    server_url: String,
+    tls_skip_verify: bool,
+) -> Result<FfiServerKey, PassboltFfiError> {
+    let http_config = build_http_config(tls_skip_verify, None);
+    RUNTIME.block_on(async {
+        let http =
+            NativeHttpClient::new(&http_config).map_err(|error| PassboltFfiError::Config {
+                message: error.to_string(),
+            })?;
+        let (fingerprint, armored_key) =
+            passbolt_sdk::auth::fetch_server_key(&http, server_url.trim_end_matches('/'))
+                .await
+                .map_err(PassboltFfiError::from)?;
+        Ok(FfiServerKey {
+            fingerprint,
+            armored_key,
+        })
+    })
 }
 
 // ── Stateless crypto functions ──────────────────────────────────────────────
@@ -747,9 +823,12 @@ mod tests {
             "https://passbolt.test".into(),
             "armored key".into(),
             "secret passphrase".into(),
-            true,
-            proxy.map(String::from),
-            mfa_totp_token.map(String::from),
+            FfiLoginOptions {
+                tls_skip_verify: true,
+                proxy: proxy.map(String::from),
+                mfa_totp_token: mfa_totp_token.map(String::from),
+                ..FfiLoginOptions::default()
+            },
         )
     }
 
@@ -783,6 +862,23 @@ mod tests {
         assert_eq!(config.passphrase.expose_secret(), "secret passphrase");
         assert!(config.tls_skip_verify);
         assert_eq!(config.mfa_retrys, MFA_RETRY_COUNT);
+    }
+
+    #[test]
+    fn test_build_sdk_config_carries_the_pinned_keys() {
+        let config = build_sdk_config(
+            "https://passbolt.test".into(),
+            "armored key".into(),
+            "secret passphrase".into(),
+            FfiLoginOptions {
+                server_public_key: Some(SERVER_PUBLIC.into()),
+                metadata_key_fingerprint: Some("ABCD".into()),
+                ..FfiLoginOptions::default()
+            },
+        );
+
+        assert_eq!(config.server_public_key, SERVER_PUBLIC);
+        assert_eq!(config.metadata_key_fingerprint, "ABCD");
     }
 
     #[rstest]

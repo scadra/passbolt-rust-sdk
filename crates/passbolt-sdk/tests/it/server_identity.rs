@@ -137,3 +137,21 @@ async fn the_server_key_is_fetched_with_its_fingerprint() {
     assert_eq!(fingerprint, SERVER.fingerprint());
     assert_eq!(armored_key, SERVER.public);
 }
+
+#[tokio::test]
+async fn a_server_key_announced_with_another_fingerprint_is_refused() {
+    let fake = FakePassbolt::new();
+    let mut verify = data::auth_verify(&SERVER);
+    verify["fingerprint"] = ADA.fingerprint().into();
+    fake.on("GET", "/auth/verify.json", verify);
+
+    let error = auth::fetch_server_key(&fake, BASE_URL).await.unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            PassboltError::Auth(AuthError::ServerIdentityMismatch(_))
+        ),
+        "{error:?}"
+    );
+}

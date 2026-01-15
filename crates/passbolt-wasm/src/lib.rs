@@ -83,10 +83,13 @@ impl From<SecretData> for JsSecretData {
     }
 }
 
+/// The pins are the armored server key and the metadata key fingerprint; empty for none.
 fn build_sdk_config(
     server_url: String,
     private_key_armored: String,
     passphrase: String,
+    server_public_key: String,
+    metadata_key_fingerprint: String,
 ) -> SdkConfig {
     SdkConfig {
         server_url,
@@ -100,8 +103,8 @@ fn build_sdk_config(
         tls_client_cert: String::new(),
         tls_client_private_key: String::new(),
         proxy: String::new(),
-        server_public_key: String::new(),
-        metadata_key_fingerprint: String::new(),
+        server_public_key,
+        metadata_key_fingerprint,
         server_verify_enc_token: String::new(),
         server_verify_token: String::new(),
     }
@@ -134,6 +137,10 @@ impl PassboltSession {
     ///   e.g. with `browser.cookies.get` in an extension. Default: `document.cookie`, readable
     ///   by pages served by Passbolt only.
     /// - `totpCode`: the TOTP code to answer the MFA challenge with.
+    /// - `serverPublicKey`: the armored server key pinned with `fetchServerKey`; each login
+    ///   then checks the server holds its private key.
+    /// - `metadataKeyFingerprint`: the shared metadata key pinned with
+    ///   `metadataKeyFingerprint()`; shared metadata is then only encrypted for that key.
     #[wasm_bindgen]
     pub async fn login(
         server_url: String,
@@ -148,13 +155,44 @@ impl PassboltSession {
             .and_then(|code| code.as_string())
             .map(|code| Box::new(GivenTotpCode(code)) as Box<dyn passbolt_sdk::MfaProvider>);
         let http = WasmHttpClient::new();
-        let config = build_sdk_config(server_url, private_key_armored, passphrase);
+        let pin = |name: &str| {
+            option(&options, name)
+                .and_then(|value| value.as_string())
+                .unwrap_or_default()
+        };
+        let config = build_sdk_config(
+            server_url,
+            private_key_armored,
+            passphrase,
+            pin("serverPublicKey"),
+            pin("metadataKeyFingerprint"),
+        );
 
         let client = Client::login(http, &config, mfa_provider, 1)
             .await
             .map_err(to_js_error)?;
 
         Ok(Self { client })
+    }
+
+    /// The server public key to pin, `{ fingerprint, armoredKey }`, the fingerprint computed
+    /// from the key: show it to the user, then pass `armoredKey` as `serverPublicKey`.
+    #[wasm_bindgen(js_name = "fetchServerKey")]
+    pub async fn fetch_server_key(server_url: String) -> Result<JsValue, JsError> {
+        let http = WasmHttpClient::new();
+        let (fingerprint, armored_key) =
+            passbolt_sdk::auth::fetch_server_key(&http, server_url.trim_end_matches('/'))
+                .await
+                .map_err(to_js_error)?;
+        to_js_value(&serde_json::json!({ "fingerprint": fingerprint, "armoredKey": armored_key }))
+    }
+
+    /// The fingerprint of the active shared metadata key, to pin as `metadataKeyFingerprint`;
+    /// `undefined` without one.
+    #[wasm_bindgen(js_name = "metadataKeyFingerprint")]
+    pub async fn metadata_key_fingerprint(&self) -> Result<Option<String>, JsError> {
+        let metadata_keys = self.client.metadata_keys().await.map_err(to_js_error)?;
+        Ok(metadata_keys.active_fingerprint())
     }
 
     /// Terminate the server-side session.
@@ -565,6 +603,8 @@ mod tests {
             "https://passbolt.test".into(),
             "armored key".into(),
             "secret passphrase".into(),
+            String::new(),
+            String::new(),
         );
 
         assert_eq!(config.server_url, "https://passbolt.test");
@@ -573,6 +613,20 @@ mod tests {
         assert_eq!(config.mfa_mode, "");
         assert!(!config.tls_skip_verify);
         assert_eq!(config.proxy, "");
+    }
+
+    #[test]
+    fn test_build_sdk_config_carries_the_pinned_keys() {
+        let config = build_sdk_config(
+            "https://passbolt.test".into(),
+            "armored key".into(),
+            "secret passphrase".into(),
+            SERVER_PUBLIC.into(),
+            "ABCD".into(),
+        );
+
+        assert_eq!(config.server_public_key, SERVER_PUBLIC);
+        assert_eq!(config.metadata_key_fingerprint, "ABCD");
     }
 
     #[test]
@@ -603,6 +657,8 @@ mod wasm_tests {
 
     const SERVER_PRIVATE: &str =
         include_str!("../../passbolt-sdk/tests/fixtures/keys/server_private.asc");
+    const SERVER_PUBLIC: &str =
+        include_str!("../../passbolt-sdk/tests/fixtures/keys/server_public.asc");
     const BETTY_PUBLIC: &str =
         include_str!("../../passbolt-sdk/tests/fixtures/keys/betty_public.asc");
 
@@ -614,7 +670,7 @@ mod wasm_tests {
     /// A `fetch` answering the `GPGAuth` login with `challenge`, and `/users/me.json`.
     fn passbolt_fetch(challenge: &str) -> JsValue {
         let factory = js_sys::Function::new_with_args(
-            "challenge, userId, armoredKey, fingerprint",
+            "challenge, userId, armoredKey, fingerprint, serverKey, serverFingerprint",
             r#"
             const json = (body, headers = {}) =>
                 new Response(JSON.stringify({ header: { status: "success" }, body }), { headers });
@@ -624,6 +680,12 @@ mod wasm_tests {
                     return body.includes("user_token_result")
                         ? json({ user: { id: userId } }, { "X-GPGAuth-Authenticated": "true" })
                         : json(null, { "X-GPGAuth-User-Auth-Token": encodeURIComponent(challenge) });
+                }
+                if (request.url.endsWith("/auth/verify.json")) {
+                    // Holds no private key: it cannot answer the pinned key's challenge.
+                    return request.method === "GET"
+                        ? json({ fingerprint: serverFingerprint, keydata: serverKey })
+                        : new Response("{}", { status: 400 });
                 }
                 if (request.url.includes("/users/me.json")) {
                     return json({
@@ -636,12 +698,19 @@ mod wasm_tests {
             };
             "#,
         );
-        let arguments = js_sys::Array::of4(
-            &challenge.into(),
-            &ADA_ID.into(),
-            &ADA_PUBLIC.into(),
-            &get_key_fingerprint(ADA_PRIVATE).unwrap().into(),
-        );
+        let server_fingerprint =
+            passbolt_sdk::crypto::public_key_fingerprint(SERVER_PUBLIC).unwrap();
+        let arguments: js_sys::Array = [
+            challenge,
+            ADA_ID,
+            ADA_PUBLIC,
+            &get_key_fingerprint(ADA_PRIVATE).unwrap(),
+            SERVER_PUBLIC,
+            &server_fingerprint,
+        ]
+        .into_iter()
+        .map(JsValue::from_str)
+        .collect();
         factory.apply(&JsValue::NULL, &arguments).unwrap()
     }
 
@@ -670,6 +739,59 @@ mod wasm_tests {
             let error = JsValue::from(error);
             panic!("{:?}", js_sys::Reflect::get(&error, &"message".into()));
         }
+    }
+
+    /// Run `test` with `fetch` answering as [`passbolt_fetch`] does.
+    async fn with_passbolt_fetch<T>(test: impl std::future::Future<Output = T>) -> T {
+        let token = format!("gpgauthv1.3.0|36|{}|gpgauthv1.3.0", uuid::Uuid::new_v4());
+        let challenge = encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()]).unwrap();
+        let global = js_sys::global();
+        let real_fetch = js_sys::Reflect::get(&global, &"fetch".into()).unwrap();
+        js_sys::Reflect::set(&global, &"fetch".into(), &passbolt_fetch(&challenge)).unwrap();
+        let result = test.await;
+        js_sys::Reflect::set(&global, &"fetch".into(), &real_fetch).unwrap();
+        result
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_fetch_server_key_gives_the_key_and_its_fingerprint() {
+        let server_key = with_passbolt_fetch(PassboltSession::fetch_server_key(
+            "http://127.0.0.1:1".into(),
+        ))
+        .await
+        .ok()
+        .unwrap();
+
+        let armored_key = js_sys::Reflect::get(&server_key, &"armoredKey".into()).unwrap();
+        let fingerprint = js_sys::Reflect::get(&server_key, &"fingerprint".into()).unwrap();
+        assert_eq!(armored_key.as_string().as_deref(), Some(SERVER_PUBLIC));
+        assert_eq!(
+            fingerprint.as_string(),
+            passbolt_sdk::crypto::public_key_fingerprint(SERVER_PUBLIC).ok()
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_login_refuses_a_server_without_the_pinned_key() {
+        let options = js_sys::Object::new();
+        js_sys::Reflect::set(&options, &"serverPublicKey".into(), &SERVER_PUBLIC.into()).unwrap();
+
+        let session = with_passbolt_fetch(PassboltSession::login(
+            "http://127.0.0.1:1".into(),
+            ADA_PRIVATE.into(),
+            "ada-passphrase".into(),
+            options.into(),
+        ))
+        .await;
+
+        let Err(error) = session else {
+            panic!("logged in to a server without the pinned key")
+        };
+        let message = js_sys::Reflect::get(&JsValue::from(error), &"message".into()).unwrap();
+        assert!(
+            message.as_string().unwrap_or_default().contains("identity"),
+            "{message:?}"
+        );
     }
 
     #[wasm_bindgen_test]

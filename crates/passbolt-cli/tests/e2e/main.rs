@@ -20,6 +20,7 @@ mod errors;
 mod folders;
 mod interop;
 mod outputs;
+mod pinning;
 mod resource_types;
 mod resources;
 mod session;

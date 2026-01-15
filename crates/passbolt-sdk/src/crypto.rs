@@ -53,6 +53,12 @@ pub fn parse_public_key(armored: &str) -> Result<SignedPublicKey, CryptoError> {
     Ok(key)
 }
 
+/// The fingerprint of an armored public key, in upper-case hexadecimal as Passbolt shows it.
+pub fn public_key_fingerprint(armored: &str) -> Result<String, CryptoError> {
+    let key = parse_public_key(armored)?;
+    Ok(hex::encode_upper(key.fingerprint().as_bytes()))
+}
+
 pub fn decrypt_message(
     armored_message: &str,
     private_key: &SignedSecretKey,
