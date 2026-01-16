@@ -14,7 +14,9 @@ use percent_encoding::percent_decode_str;
 use serde_json::Value;
 use zeroize::Zeroize;
 
-use crate::crypto::{decrypt_message, encrypt_message, parse_public_key, PrivateKey};
+use crate::crypto::{
+    decrypt_message, encrypt_message, parse_public_key, public_key_fingerprint, PrivateKey,
+};
 use crate::error::{AuthError, PassboltError};
 use crate::http::HttpClient;
 
@@ -211,7 +213,18 @@ pub async fn fetch_server_key<H: HttpClient>(
             .map(String::from)
             .ok_or_else(|| AuthError::LoginFailed(format!("the server sent no {name}")))
     };
-    Ok((field("fingerprint")?, field("keydata")?))
+    let (claimed_fingerprint, armored_key) = (field("fingerprint")?, field("keydata")?);
+    let fingerprint = public_key_fingerprint(&armored_key).map_err(|error| {
+        AuthError::LoginFailed(format!("the server key is unreadable: {error}"))
+    })?;
+    if !claimed_fingerprint.eq_ignore_ascii_case(&fingerprint) {
+        return Err(AuthError::ServerIdentityMismatch(format!(
+            "the server announces the fingerprint {claimed_fingerprint} for a key of fingerprint \
+             {fingerprint}"
+        ))
+        .into());
+    }
+    Ok((fingerprint, armored_key))
 }
 
 /// A fresh `GPGAuth` nonce, in the format the server agrees to decrypt.

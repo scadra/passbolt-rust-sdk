@@ -53,6 +53,12 @@ pub fn parse_public_key(armored: &str) -> Result<SignedPublicKey, CryptoError> {
     Ok(key)
 }
 
+/// The fingerprint of an armored public key, in upper-case hexadecimal as Passbolt shows it.
+pub fn public_key_fingerprint(armored: &str) -> Result<String, CryptoError> {
+    let key = parse_public_key(armored)?;
+    Ok(hex::encode_upper(key.fingerprint().as_bytes()))
+}
+
 pub fn decrypt_message(
     armored_message: &str,
     private_key: &SignedSecretKey,
@@ -216,6 +222,8 @@ pub struct Signer<'a> {
 /// Sign `plaintext` with every signer, then encrypt it for `recipients`, as a UTF-8 text literal.
 ///
 /// Passbolt clients sign secrets with the user key, shared metadata with the metadata key too.
+/// Every signature covers the literal data, as `OpenPGP.js` and gopenpgp write and check them:
+/// one-pass signatures in a row, then the literal, then the signatures in reverse order.
 pub fn sign_and_encrypt(
     plaintext: &str,
     signers: &[Signer<'_>],
@@ -223,9 +231,11 @@ pub fn sign_and_encrypt(
 ) -> Result<String, CryptoError> {
     use pgp::crypto::hash::HashAlgorithm;
 
-    let mut message = Message::new_literal("", plaintext);
-    for signer in signers {
-        message = message
+    let literal = Message::new_literal("", plaintext);
+    let mut message = literal.clone();
+    for (index, signer) in signers.iter().enumerate() {
+        let signed = literal
+            .clone()
             .sign(
                 rand::thread_rng(),
                 signer.key,
@@ -233,6 +243,25 @@ pub fn sign_and_encrypt(
                 HashAlgorithm::SHA2_256,
             )
             .map_err(|error| CryptoError::Encrypt(format!("sign: {error}")))?;
+        let Message::Signed {
+            mut one_pass_signature,
+            signature,
+            ..
+        } = signed
+        else {
+            return Err(CryptoError::Encrypt("sign: no signature".into()));
+        };
+        // Only the one-pass signature right before the literal is the last one.
+        if index > 0 {
+            if let Some(one_pass_signature) = one_pass_signature.as_mut() {
+                one_pass_signature.last = 0;
+            }
+        }
+        message = Message::Signed {
+            message: Some(Box::new(message)),
+            one_pass_signature,
+            signature,
+        };
     }
     encrypt(&message, recipients)
 }
@@ -251,26 +280,20 @@ fn encrypt(message: &Message, recipients: &[&SignedPublicKey]) -> Result<String,
     let esk = recipients
         .iter()
         .map(|recipient| {
-            let packet = match encryption_subkey(recipient) {
-                Some(subkey) => PublicKeyEncryptedSessionKey::from_session_key_v3(
+            let packet = match encryption_key(recipient, &chrono::Utc::now())? {
+                EncryptionKey::Subkey(subkey) => PublicKeyEncryptedSessionKey::from_session_key_v3(
                     &mut rng,
                     &session_key,
                     ALGORITHM,
-                    &subkey.key,
+                    subkey,
                 ),
-                None if recipient.primary_key.is_encryption_key() => {
+                EncryptionKey::Primary(primary_key) => {
                     PublicKeyEncryptedSessionKey::from_session_key_v3(
                         &mut rng,
                         &session_key,
                         ALGORITHM,
-                        &recipient.primary_key,
+                        primary_key,
                     )
-                }
-                None => {
-                    return Err(CryptoError::Encrypt(format!(
-                        "key {} has no encryption key",
-                        hex::encode_upper(recipient.fingerprint().as_bytes())
-                    )))
                 }
             };
             packet
@@ -289,19 +312,92 @@ fn encrypt(message: &Message, recipients: &[&SignedPublicKey]) -> Result<String,
         .map_err(|error| CryptoError::Encrypt(format!("armor: {error}")))
 }
 
-/// The subkey flagged for encryption, as `OpenPGP` requires over the primary key.
-fn encryption_subkey(key: &SignedPublicKey) -> Option<&pgp::SignedPublicSubKey> {
-    key.public_subkeys.iter().find(|subkey| {
-        subkey.key.is_encryption_key()
-            && subkey.signatures.iter().any(|signature| {
-                let flags = signature.key_flags();
-                flags.encrypt_comms() || flags.encrypt_storage()
-            })
-    })
+/// The key a message for `key` is encrypted with.
+enum EncryptionKey<'a> {
+    Subkey(&'a pgp::packet::PublicSubkey),
+    Primary(&'a pgp::packet::PublicKey),
+}
+
+/// What a message for `key` is encrypted with at `now`, as `OpenPGP.js` chooses it: the newest
+/// valid subkey flagged for encryption, else the primary key when it may encrypt. A revoked or
+/// expired key is refused, like the browser extension refuses it.
+fn encryption_key<'a>(
+    key: &'a SignedPublicKey,
+    now: &chrono::DateTime<chrono::Utc>,
+) -> Result<EncryptionKey<'a>, CryptoError> {
+    use pgp::packet::SignatureType;
+
+    let fingerprint = hex::encode_upper(key.fingerprint().as_bytes());
+    if !key.details.revocation_signatures.is_empty() {
+        return Err(CryptoError::Encrypt(format!(
+            "key {fingerprint} is revoked"
+        )));
+    }
+    if let Some(expires_at) = key.expires_at().filter(|expires_at| expires_at <= now) {
+        return Err(CryptoError::Encrypt(format!(
+            "key {fingerprint} expired on {expires_at}"
+        )));
+    }
+    let flags_encryption = |signature: &pgp::packet::Signature| {
+        let flags = signature.key_flags();
+        flags.encrypt_comms() || flags.encrypt_storage()
+    };
+    let valid_subkey = key
+        .public_subkeys
+        .iter()
+        .filter(|subkey| {
+            let revoked = subkey
+                .signatures
+                .iter()
+                .any(|signature| signature.typ() == SignatureType::SubkeyRevocation);
+            let binding = subkey
+                .signatures
+                .iter()
+                .filter(|signature| signature.typ() == SignatureType::SubkeyBinding)
+                .max_by_key(|signature| signature.created().copied());
+            let valid_binding = binding.is_some_and(|binding| {
+                flags_encryption(binding)
+                    && binding
+                        .key_expiration_time()
+                        .is_none_or(|validity| *subkey.key.created_at() + *validity > *now)
+            });
+            subkey.key.is_encryption_key() && !revoked && valid_binding
+        })
+        .max_by_key(|subkey| *subkey.key.created_at());
+    if let Some(subkey) = valid_subkey {
+        return Ok(EncryptionKey::Subkey(&subkey.key));
+    }
+    // A key without key flags (older keys) may encrypt with whatever its algorithm allows.
+    let self_signatures: Vec<_> = key
+        .details
+        .users
+        .iter()
+        .flat_map(|user| &user.signatures)
+        .collect();
+    let without_flags = self_signatures.iter().all(|signature| {
+        !signature
+            .config
+            .hashed_subpackets
+            .iter()
+            .any(|subpacket| matches!(subpacket.data, pgp::packet::SubpacketData::KeyFlags(_)))
+    });
+    if key.primary_key.is_encryption_key()
+        && (without_flags
+            || self_signatures
+                .iter()
+                .any(|signature| flags_encryption(signature)))
+    {
+        return Ok(EncryptionKey::Primary(&key.primary_key));
+    }
+    Err(CryptoError::Encrypt(format!(
+        "key {fingerprint} has no valid encryption key"
+    )))
 }
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     const SERVER_PRIVATE: &str = include_str!("../tests/fixtures/keys/server_private.asc");
@@ -310,6 +406,67 @@ mod tests {
     const METADATA_PUBLIC: &str = include_str!("../tests/fixtures/keys/metadata_public.asc");
 
     /// Fixture keypair without passphrase.
+    const ERIN_PUBLIC: &str = include_str!("../tests/fixtures/keys/erin_public.asc");
+    /// Passbolt server test keys: see `tests/fixtures/keys/README.md`.
+    const EXPIRED_PUBLIC: &str = include_str!("../tests/fixtures/keys/expired_public.asc");
+    const EXPIRED_PRIMARY_PUBLIC: &str =
+        include_str!("../tests/fixtures/keys/expired_primary_public.asc");
+    const REVOKED_PUBLIC: &str = include_str!("../tests/fixtures/keys/revoked_public.asc");
+    const REVOKED_SUBKEY_PUBLIC: &str =
+        include_str!("../tests/fixtures/keys/revoked_subkey_public.asc");
+
+    fn at(date: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(date).unwrap().to_utc()
+    }
+
+    fn refusal(public: &str, now: &chrono::DateTime<chrono::Utc>) -> String {
+        let key = parse_public_key(public).unwrap();
+        match encryption_key(&key, now) {
+            Ok(_) => panic!("the key is accepted"),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    #[rstest]
+    #[case::revoked(REVOKED_PUBLIC, "is revoked")]
+    #[case::expired(EXPIRED_PUBLIC, "expired on 2018-05-02")]
+    #[case::expired_primary_with_a_valid_subkey(EXPIRED_PRIMARY_PUBLIC, "expired on 2024-08-22")]
+    #[case::only_subkey_revoked(REVOKED_SUBKEY_PUBLIC, "no valid encryption key")]
+    fn test_unusable_recipient_keys_are_refused(#[case] public: &str, #[case] reason: &str) {
+        let refusal = refusal(public, &chrono::Utc::now());
+
+        assert!(refusal.contains(reason), "{refusal}");
+    }
+
+    #[test]
+    fn test_a_key_is_refused_from_its_expiry_on() {
+        let key = parse_public_key(EXPIRED_PUBLIC).unwrap();
+
+        assert!(encryption_key(&key, &at("2018-05-02T04:59:34Z")).is_ok());
+        assert!(encryption_key(&key, &at("2018-05-02T04:59:35Z")).is_err());
+    }
+
+    #[test]
+    fn test_a_message_for_a_revoked_key_is_not_written() {
+        let revoked = parse_public_key(REVOKED_PUBLIC).unwrap();
+        let (_, server_public) = keypair(SERVER_PRIVATE, SERVER_PUBLIC);
+
+        let error = encrypt_message(b"secret", &[&server_public, &revoked]).unwrap_err();
+
+        assert!(error.to_string().contains("is revoked"), "{error}");
+    }
+
+    #[rstest]
+    #[case::subkey_of_an_ecc_key(ERIN_PUBLIC, true)]
+    #[case::primary_flagged_for_encryption(SERVER_PUBLIC, false)]
+    fn test_the_encryption_key_is_the_flagged_one(#[case] public: &str, #[case] subkey: bool) {
+        let key = parse_public_key(public).unwrap();
+
+        let chosen = encryption_key(&key, &chrono::Utc::now()).ok().unwrap();
+
+        assert_eq!(matches!(chosen, EncryptionKey::Subkey(_)), subkey);
+    }
+
     fn keypair(private: &str, public: &str) -> (SignedSecretKey, SignedPublicKey) {
         (
             parse_private_key(private).unwrap().key.clone(),
@@ -399,7 +556,8 @@ mod tests {
         assert!(decrypt_message(&armored, &metadata_secret, "").is_err());
     }
 
-    /// Verify every signature layer of `armored` against `signers`, outermost first.
+    /// Verify that every signature of `armored`, outermost first, is `signers`' over the literal
+    /// data, as other `OpenPGP` implementations check them.
     fn verified_text(
         armored: &str,
         secret: &SignedSecretKey,
@@ -407,20 +565,31 @@ mod tests {
     ) -> String {
         let (message, _) = Message::from_armor_single(Cursor::new(armored.as_bytes())).unwrap();
         let (mut message, _) = message.decrypt(String::new, &[secret]).unwrap();
-        for signer in signers {
-            message.verify(*signer).unwrap();
-            let Message::Signed { message: inner, .. } = message else {
-                panic!(
-                    "not signed by {}",
-                    hex::encode_upper(signer.fingerprint().as_bytes())
-                )
-            };
+        let mut signatures = Vec::new();
+        while let Message::Signed {
+            message: inner,
+            signature,
+            ..
+        } = message
+        {
+            signatures.push(signature);
             message = *inner.unwrap();
         }
         let Message::Literal(literal) = message else {
-            panic!("more signatures than expected")
+            panic!("no literal data")
         };
         assert!(!literal.is_binary(), "not a text literal");
+        assert_eq!(signatures.len(), signers.len(), "signature count");
+        for (signature, signer) in signatures.iter().zip(signers) {
+            signature
+                .verify(*signer, literal.data())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "not signed by {}: {error}",
+                        hex::encode_upper(signer.fingerprint().as_bytes())
+                    )
+                });
+        }
         literal.to_string().unwrap()
     }
 
@@ -478,7 +647,7 @@ mod tests {
         assert!(decrypt_with_session_key(&second, &session_key).is_err());
     }
 
-    #[rstest::rstest]
+    #[rstest]
     #[case::not_hex("9:zz")]
     #[case::bad_algorithm("x:00")]
     fn test_an_invalid_session_key_is_refused(#[case] text: &str) {

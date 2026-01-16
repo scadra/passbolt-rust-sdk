@@ -35,6 +35,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # What the SDK writes, read by OpenPGP.js as the browser extension does.
+      - run: npm ci --prefix tests/interop --no-audit --no-fund
+      - run: cargo test -p passbolt-sdk --features interop --test it interop
 
   wasm:
     name: WASM tests (Node)

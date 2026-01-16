@@ -1,0 +1,9 @@
+{
+  "name": "passbolt-rust-interop",
+  "private": true,
+  "description": "Checks what the Rust client writes with OpenPGP.js, the library of the browser extension",
+  "type": "module",
+  "dependencies": {
+    "openpgp": "6.1.1"
+  }
+}

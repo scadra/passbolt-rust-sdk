@@ -37,28 +37,102 @@ fn session_key_of(resource: &Resource) -> String {
     session_key.to_passbolt_string()
 }
 
-/// A bundle of ada with `session_key` for `resource_id`.
-fn bundle(resource_id: &str, session_key: &str) -> Value {
-    let data = json!({
-        "object_type": "PASSBOLT_SESSION_KEYS",
-        "session_keys": [{
-            "foreign_model": "Resource",
-            "foreign_id": resource_id,
-            "session_key": session_key,
-            "modified": "2025-12-01T10:00:00+00:00"
-        }]
-    });
-    json!([{
-        "id": BUNDLE_ID,
+const BUNDLE_MODIFIED: &str = "2025-12-01T10:00:00+00:00";
+
+fn entry(foreign_model: &str, foreign_id: &str, session_key: &str) -> Value {
+    json!({
+        "foreign_model": foreign_model,
+        "foreign_id": foreign_id,
+        "session_key": session_key,
+        "modified": "2025-11-01T10:00:00+00:00"
+    })
+}
+
+/// A bundle of ada holding `entries`.
+fn bundle_with(id: &str, modified: &str, entries: &Value) -> Value {
+    let data = json!({ "object_type": "PASSBOLT_SESSION_KEYS", "session_keys": entries });
+    json!({
+        "id": id,
         "user_id": ADA_ID,
         "data": ADA.encrypt(&data.to_string()),
-        "created": "2025-12-01T10:00:00+00:00",
-        "modified": "2025-12-01T10:00:00+00:00"
-    }])
+        "created": modified,
+        "modified": modified
+    })
+}
+
+/// Ada's only bundle, with `session_key` for `resource_id`.
+fn bundle(resource_id: &str, session_key: &str) -> Value {
+    json!([bundle_with(
+        BUNDLE_ID,
+        BUNDLE_MODIFIED,
+        &json!([entry("Resource", resource_id, session_key)])
+    )])
 }
 
 fn saved_bundle(body: &Value) -> Value {
     ADA.decrypt_json(body["data"].as_str().unwrap())
+}
+
+/// The bundles stored on the fake server, decrypted.
+fn stored_bundles(fake: &FakePassbolt) -> Vec<Value> {
+    fake.stored("GET", SESSION_KEYS_PATH)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(saved_bundle)
+        .collect()
+}
+
+fn entries_of(bundle: &Value) -> Vec<(String, String)> {
+    let mut entries: Vec<(String, String)> = bundle["session_keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["foreign_model"].as_str().unwrap().to_string(),
+                entry["foreign_id"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    entries.sort();
+    entries
+}
+
+/// Server with the metadata key, serving `resources`.
+fn server_listing(resources: &[&Resource]) -> FakePassbolt {
+    let fake = FakePassbolt::new();
+    fake.with_directory();
+    fake.on(
+        "GET",
+        "/metadata/keys.json",
+        data::metadata_keys(&[("mk1", &METADATA)]),
+    );
+    serve(&fake, resources);
+    fake
+}
+
+fn serve(fake: &FakePassbolt, resources: &[&Resource]) {
+    fake.on(
+        "GET",
+        "/resources.json",
+        resources
+            .iter()
+            .map(|resource| serde_json::to_value(resource).unwrap())
+            .collect(),
+    );
+}
+
+fn resource_with_id(id: &str) -> Resource {
+    let mut resource = shared_resource();
+    resource.id = id.into();
+    resource
+}
+
+async fn list(client: &Client) {
+    list_resources(client, ResourceQuery::default(), &[], None)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -110,24 +184,10 @@ async fn a_stale_session_key_falls_back_to_the_metadata_key() {
 #[tokio::test]
 async fn listing_saves_the_new_session_keys_in_a_new_bundle() {
     let resource = shared_resource();
-    let fake = FakePassbolt::new();
-    fake.with_directory();
-    fake.on(
-        "GET",
-        "/metadata/keys.json",
-        data::metadata_keys(&[("mk1", &METADATA)]),
-    );
-    fake.on(
-        "GET",
-        "/resources.json",
-        json!([serde_json::to_value(&resource).unwrap()]),
-    );
-    fake.on("POST", SESSION_KEYS_PATH, Value::Null);
+    let fake = server_listing(&[&resource]);
     let client = login_ada(&fake).await;
 
-    list_resources(&client, ResourceQuery::default(), &[], None)
-        .await
-        .unwrap();
+    list(&client).await;
 
     let saved = saved_bundle(&fake.body_of("POST", SESSION_KEYS_PATH));
     assert_eq!(saved["object_type"], "PASSBOLT_SESSION_KEYS");
@@ -141,72 +201,205 @@ async fn listing_saves_the_new_session_keys_in_a_new_bundle() {
 #[tokio::test]
 async fn new_session_keys_update_the_existing_bundle() {
     let known = shared_resource();
-    let mut new = shared_resource();
-    new.id = "7a5b2c30-0000-4000-8000-0000000000e2".into();
-    let fake = FakePassbolt::new();
-    fake.with_directory();
+    let new = resource_with_id("7a5b2c30-0000-4000-8000-0000000000e2");
+    let fake = server_listing(&[&known, &new]);
     fake.on(
         "GET",
         SESSION_KEYS_PATH,
         bundle(&known.id, &session_key_of(&known)),
     );
-    fake.on(
-        "GET",
-        "/metadata/keys.json",
-        data::metadata_keys(&[("mk1", &METADATA)]),
-    );
-    fake.on(
-        "GET",
-        "/resources.json",
-        json!([
-            serde_json::to_value(&known).unwrap(),
-            serde_json::to_value(&new).unwrap()
-        ]),
-    );
-    let bundle_path = format!("/metadata/session-keys/{BUNDLE_ID}.json");
-    fake.on("PUT", &bundle_path, Value::Null);
     let client = login_ada(&fake).await;
 
-    list_resources(&client, ResourceQuery::default(), &[], None)
+    list(&client).await;
+
+    let body = fake.body_of("PUT", &format!("/metadata/session-keys/{BUNDLE_ID}.json"));
+    assert_eq!(body["modified"], BUNDLE_MODIFIED, "the server checks it");
+    assert_eq!(
+        entries_of(&saved_bundle(&body)),
+        [
+            ("Resource".into(), known.id.clone()),
+            ("Resource".into(), new.id.clone())
+        ]
+    );
+}
+
+#[tokio::test]
+async fn each_entry_keeps_the_modified_of_its_resource() {
+    let resource = shared_resource();
+    let fake = server_listing(&[&resource]);
+    let client = login_ada(&fake).await;
+
+    list(&client).await;
+
+    let saved = saved_bundle(&fake.body_of("POST", SESSION_KEYS_PATH));
+    assert_eq!(
+        saved["session_keys"][0]["modified"],
+        resource.modified.unwrap().to_rfc3339().as_str()
+    );
+}
+
+#[tokio::test]
+async fn a_second_listing_in_the_same_session_saves_on_the_updated_bundle() {
+    let first = shared_resource();
+    let second = resource_with_id("7a5b2c30-0000-4000-8000-0000000000e2");
+    let fake = server_listing(&[&first]);
+    let client = login_ada(&fake).await;
+    list(&client).await;
+    serve(&fake, &[&first, &second]);
+
+    list(&client).await;
+
+    let bundles = stored_bundles(&fake);
+    assert_eq!(bundles.len(), 1);
+    assert_eq!(
+        entries_of(&bundles[0]),
+        [
+            ("Resource".into(), first.id.clone()),
+            ("Resource".into(), second.id.clone())
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_bundle_changed_by_another_client_is_read_again_then_saved() {
+    let resource = shared_resource();
+    let fake = server_listing(&[&resource]);
+    fake.on(
+        "GET",
+        SESSION_KEYS_PATH,
+        json!([bundle_with(BUNDLE_ID, BUNDLE_MODIFIED, &json!([]))]),
+    );
+    let client = login_ada(&fake).await;
+    client.session_keys().await;
+    // Another client adds a session key meanwhile.
+    fake.on(
+        "GET",
+        SESSION_KEYS_PATH,
+        json!([bundle_with(
+            BUNDLE_ID,
+            "2025-12-02T10:00:00+00:00",
+            &json!([entry(
+                "Resource",
+                "7a5b2c30-0000-4000-8000-0000000000e9",
+                &format!("9:{}", "22".repeat(32))
+            )])
+        )]),
+    );
+
+    list(&client).await;
+
+    assert_eq!(
+        fake.requests_to("PUT", &format!("/metadata/session-keys/{BUNDLE_ID}.json"))
+            .len(),
+        2,
+        "the first one conflicts"
+    );
+    assert_eq!(
+        entries_of(&stored_bundles(&fake)[0]),
+        [
+            ("Resource".into(), resource.id.clone()),
+            (
+                "Resource".into(),
+                "7a5b2c30-0000-4000-8000-0000000000e9".into()
+            )
+        ]
+    );
+}
+
+#[tokio::test]
+async fn session_keys_of_other_models_are_kept() {
+    let resource = shared_resource();
+    let fake = server_listing(&[&resource]);
+    fake.on(
+        "GET",
+        SESSION_KEYS_PATH,
+        json!([bundle_with(
+            BUNDLE_ID,
+            BUNDLE_MODIFIED,
+            &json!([entry(
+                "Folder",
+                FOLDER_ID,
+                &format!("9:{}", "11".repeat(32))
+            )])
+        )]),
+    );
+    let client = login_ada(&fake).await;
+
+    list(&client).await;
+
+    assert_eq!(
+        entries_of(&stored_bundles(&fake)[0]),
+        [
+            ("Folder".into(), FOLDER_ID.into()),
+            ("Resource".into(), resource.id.clone())
+        ]
+    );
+}
+
+#[tokio::test]
+async fn older_bundles_are_merged_into_the_latest_then_deleted() {
+    const OLDER_ID: &str = "4a5b6c7d-0000-4000-8000-0000000005e0";
+    let known = shared_resource();
+    let new = resource_with_id("7a5b2c30-0000-4000-8000-0000000000e2");
+    let fake = server_listing(&[&known, &new]);
+    fake.on(
+        "GET",
+        SESSION_KEYS_PATH,
+        json!([
+            bundle_with(BUNDLE_ID, BUNDLE_MODIFIED, &json!([])),
+            bundle_with(
+                OLDER_ID,
+                "2025-11-01T10:00:00+00:00",
+                &json!([entry("Resource", &known.id, &session_key_of(&known))])
+            ),
+        ]),
+    );
+    let client = login_ada(&fake).await;
+
+    list(&client).await;
+
+    assert_eq!(
+        fake.requests_to("DELETE", &format!("/metadata/session-keys/{OLDER_ID}.json"))
+            .len(),
+        1
+    );
+    let bundles = stored_bundles(&fake);
+    assert_eq!(bundles.len(), 1);
+    assert_eq!(
+        entries_of(&bundles[0]),
+        [
+            ("Resource".into(), known.id.clone()),
+            ("Resource".into(), new.id.clone())
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_failed_save_does_not_fail_the_listing() {
+    let resource = shared_resource();
+    let fake = server_listing(&[&resource]);
+    fake.on_error("POST", SESSION_KEYS_PATH, 500);
+    let client = login_ada(&fake).await;
+
+    let views = list_resources(&client, ResourceQuery::default(), &[], None)
         .await
         .unwrap();
 
-    let body = fake.body_of("PUT", &bundle_path);
-    assert_eq!(
-        body["modified"], "2025-12-01T10:00:00+00:00",
-        "the server checks it"
-    );
-    let saved = saved_bundle(&body);
-    let mut ids: Vec<&str> = saved["session_keys"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| entry["foreign_id"].as_str().unwrap())
-        .collect();
-    ids.sort_unstable();
-    assert_eq!(ids, [known.id.as_str(), new.id.as_str()]);
+    assert_eq!(views[0].name, "GitHub");
 }
 
 #[tokio::test]
 async fn nothing_is_saved_when_every_session_key_is_known() {
     let resource = shared_resource();
-    let fake = FakePassbolt::new();
-    fake.with_directory();
+    let fake = server_listing(&[&resource]);
     fake.on(
         "GET",
         SESSION_KEYS_PATH,
         bundle(&resource.id, &session_key_of(&resource)),
     );
-    fake.on(
-        "GET",
-        "/resources.json",
-        json!([serde_json::to_value(&resource).unwrap()]),
-    );
     let client = login_ada(&fake).await;
 
-    list_resources(&client, ResourceQuery::default(), &[], None)
-        .await
-        .unwrap();
+    list(&client).await;
 
     assert!(fake.requests_to("POST", SESSION_KEYS_PATH).is_empty());
     assert!(fake

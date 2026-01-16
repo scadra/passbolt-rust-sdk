@@ -22,7 +22,7 @@ const ADA_GPGKEY_ID: &str = "8b6c3a10-0000-4000-8000-000000008888";
 const CUSTOM_FIELD_ID: &str = "0f7b6a51-0000-4000-8000-0000000000c1";
 
 /// Server creating v5 resources by default, with `keys` settings and the metadata key mk1.
-fn v5_server(keys_settings: Value) -> FakePassbolt {
+pub fn v5_server(keys_settings: Value) -> FakePassbolt {
     let fake = FakePassbolt::new();
     fake.with_directory();
     fake.with_metadata_settings(data::metadata_types_settings(), keys_settings);
@@ -45,7 +45,7 @@ fn v5_server(keys_settings: Value) -> FakePassbolt {
     fake
 }
 
-fn github() -> NewResource {
+pub fn github() -> NewResource {
     NewResource {
         name: "GitHub".into(),
         username: Some("ada".into()),
@@ -66,7 +66,10 @@ fn totp() -> TotpData {
     }
 }
 
-async fn create(fake: &FakePassbolt, new_resource: &NewResource) -> Result<Value, PassboltError> {
+pub async fn create(
+    fake: &FakePassbolt,
+    new_resource: &NewResource,
+) -> Result<Value, PassboltError> {
     let client = login_ada(fake).await;
     create::create_resource(&client, new_resource).await?;
     Ok(fake.body_of("POST", "/resources.json"))

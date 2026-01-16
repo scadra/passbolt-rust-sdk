@@ -11,6 +11,8 @@ default = ["native"]
 native = ["dep:reqwest", "dep:tokio"]
 totp = ["dep:totp-rs"]
 full = ["native", "totp"]
+# Interop tests with OpenPGP.js: needs node and `npm ci --prefix tests/interop`.
+interop = []
 
 [dependencies]
 # Errors

@@ -14,15 +14,22 @@
 
 use std::sync::Arc;
 
-use passbolt_ffi::{PassboltClient, PassboltFfiError};
+use passbolt_ffi::{fetch_server_key, FfiLoginOptions, PassboltClient, PassboltFfiError};
 use passbolt_sdk::crypto;
 use serde_json::{json, Value};
 use wiremock::matchers::{body_string_contains, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 const ADA_PRIVATE: &str = include_str!("../../passbolt-sdk/tests/fixtures/keys/ada_private.asc");
 const ADA_PUBLIC: &str = include_str!("../../passbolt-sdk/tests/fixtures/keys/ada_public.asc");
 const ADA_PASSPHRASE: &str = "ada-passphrase";
+const SERVER_PRIVATE: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/keys/server_private.asc");
+const SERVER_PUBLIC: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/keys/server_public.asc");
+const BETTY_PUBLIC: &str = include_str!("../../passbolt-sdk/tests/fixtures/keys/betty_public.asc");
+const METADATA_PUBLIC: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/keys/metadata_public.asc");
 const ADA_ID: &str = "8b6c3a10-0000-4000-8000-00000000a0da";
 const RESOURCE_ID: &str = "7a5b2c30-0000-4000-8000-0000000000e1";
 const PASSWORD_AND_DESCRIPTION_ID: &str = "a28a04cd-6f53-518a-967c-9963bf9cec51";
@@ -90,6 +97,34 @@ impl Passbolt {
         }
     }
 
+    /// `GPGAuth` stage 0 as the server answers it: the key and the decrypted token.
+    fn answer_server_verification(&self) {
+        let key = Mock::given(method("GET"))
+            .and(path("/auth/verify.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(envelope(&json!({
+                "fingerprint": crypto::public_key_fingerprint(SERVER_PUBLIC).unwrap(),
+                "keydata": SERVER_PUBLIC,
+            }))));
+        let token = Mock::given(method("POST"))
+            .and(path("/auth/verify.json"))
+            .respond_with(DecryptingServer);
+        for mock in [key, token] {
+            self.runtime.block_on(mock.mount(&self.server));
+        }
+    }
+
+    fn login_with(
+        &self,
+        options: FfiLoginOptions,
+    ) -> Result<Arc<PassboltClient>, PassboltFfiError> {
+        PassboltClient::login_with_config(
+            self.server.uri(),
+            ADA_PRIVATE.into(),
+            ADA_PASSPHRASE.into(),
+            options,
+        )
+    }
+
     fn login(&self) -> Arc<PassboltClient> {
         PassboltClient::login(self.server.uri(), ADA_PRIVATE.into(), ADA_PASSPHRASE.into()).unwrap()
     }
@@ -104,6 +139,31 @@ impl Passbolt {
             })
             .map(|request| serde_json::from_slice(&request.body).unwrap_or(Value::Null))
             .collect()
+    }
+}
+
+/// The server's stage 0: decrypts the token with its private key and sends it back.
+struct DecryptingServer;
+
+impl Respond for DecryptingServer {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        let server_key = crypto::parse_private_key(SERVER_PRIVATE).unwrap();
+        let token = body
+            .pointer("/gpg_auth/server_verify_token")
+            .and_then(Value::as_str)
+            .and_then(|token| crypto::decrypt_message(token, &server_key.key, "").ok());
+        token.map_or_else(
+            || ResponseTemplate::new(400).set_body_json(envelope(&Value::Null)),
+            |token| {
+                ResponseTemplate::new(200)
+                    .insert_header(
+                        "X-GPGAuth-Verify-Response",
+                        String::from_utf8(token).unwrap(),
+                    )
+                    .set_body_json(envelope(&Value::Null))
+            },
+        )
     }
 }
 
@@ -259,5 +319,80 @@ fn an_api_error_keeps_its_status() {
     assert!(
         matches!(error, PassboltFfiError::Api { status: 404, .. }),
         "{error}"
+    );
+}
+
+#[test]
+fn the_server_key_is_fetched_with_its_computed_fingerprint() {
+    let passbolt = Passbolt::new();
+    passbolt.answer_server_verification();
+
+    let server_key = fetch_server_key(passbolt.server.uri(), false).unwrap();
+
+    assert_eq!(server_key.armored_key, SERVER_PUBLIC);
+    assert_eq!(
+        server_key.fingerprint,
+        crypto::public_key_fingerprint(SERVER_PUBLIC).unwrap()
+    );
+}
+
+#[test]
+fn a_pinned_server_key_is_proven_at_login() {
+    let passbolt = Passbolt::new();
+    passbolt.answer_server_verification();
+
+    let client = passbolt
+        .login_with(FfiLoginOptions {
+            server_public_key: Some(SERVER_PUBLIC.into()),
+            ..FfiLoginOptions::default()
+        })
+        .unwrap();
+
+    assert_eq!(client.user_id(), ADA_ID);
+    assert_eq!(passbolt.requests("POST", "/auth/verify.json").len(), 1);
+}
+
+#[test]
+fn a_server_without_the_pinned_key_is_refused_before_login() {
+    let passbolt = Passbolt::new();
+    passbolt.answer_server_verification();
+
+    let Err(error) = passbolt.login_with(FfiLoginOptions {
+        server_public_key: Some(BETTY_PUBLIC.into()),
+        ..FfiLoginOptions::default()
+    }) else {
+        panic!("logged in to a server without the pinned key")
+    };
+
+    assert!(error.to_string().contains("identity"), "{error}");
+    assert_eq!(
+        passbolt.requests("POST", "/auth/login.json"),
+        Vec::<Value>::new()
+    );
+}
+
+#[test]
+fn the_active_metadata_key_fingerprint_is_given_to_pin() {
+    let passbolt = Passbolt::new();
+    passbolt.on(
+        "GET",
+        "/metadata/keys.json",
+        &json!([{
+            "id": "4f1d2e3c-0000-4000-8000-0000000000a1",
+            "fingerprint": crypto::public_key_fingerprint(METADATA_PUBLIC).unwrap(),
+            "armored_key": METADATA_PUBLIC,
+            "created": "2025-09-01T10:00:00+00:00",
+            "modified": "2025-09-01T10:00:00+00:00",
+            "deleted": null,
+            "expired": null,
+            "metadata_private_keys": []
+        }]),
+    );
+
+    let fingerprint = passbolt.login().metadata_key_fingerprint().unwrap();
+
+    assert_eq!(
+        fingerprint,
+        Some(crypto::public_key_fingerprint(METADATA_PUBLIC).unwrap())
     );
 }

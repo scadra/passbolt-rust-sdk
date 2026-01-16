@@ -80,12 +80,19 @@ struct PagedList {
     failing_pages: Vec<(usize, u16)>,
 }
 
+/// `(method, path, answers)`: answers (status, body) given once each, in order.
+type QueuedAnswers = (
+    &'static str,
+    String,
+    std::collections::VecDeque<(u16, Value)>,
+);
+
 #[derive(Default)]
 #[allow(clippy::struct_excessive_bools)] // independent switches of the fake server
 struct State {
     routes: Vec<Route>,
-    /// Bodies answered once each, in order, before the route of the same request.
-    queued_bodies: Vec<(&'static str, String, std::collections::VecDeque<Value>)>,
+    /// Answers (status, body) given once each, in order, before the route of the same request.
+    queued_answers: Vec<QueuedAnswers>,
     paged_lists: Vec<PagedList>,
     requests: Vec<RecordedRequest>,
     login_token: Option<String>,
@@ -189,13 +196,14 @@ impl FakePassbolt {
         });
     }
 
-    /// Answer the next requests to `method path` with `bodies`, one each, then with its route.
-    pub fn on_in_turn(&self, method: &'static str, path: &str, bodies: Vec<Value>) {
+    /// Answer the next requests to `method path` with `answers` (status, body), one each, then
+    /// with its route.
+    pub fn on_in_turn(&self, method: &'static str, path: &str, answers: Vec<(u16, Value)>) {
         self.state
             .lock()
             .unwrap()
-            .queued_bodies
-            .push((method, path.to_string(), bodies.into()));
+            .queued_answers
+            .push((method, path.to_string(), answers.into()));
     }
 
     /// Answer `GET path?page=N` with `pages[N - 1]` (an empty list past the end) and
@@ -281,6 +289,11 @@ impl FakePassbolt {
         self.state.lock().unwrap().requests.len()
     }
 
+    /// What the fake now answers to `method path`, as it stored it.
+    pub fn stored(&self, method: &str, path: &str) -> Value {
+        self.route_body(method, path).unwrap_or(Value::Null)
+    }
+
     /// Body of the single `method path` request.
     pub fn body_of(&self, method: &str, path: &str) -> Value {
         let requests = self.requests_to(method, path);
@@ -327,6 +340,16 @@ impl FakePassbolt {
             ("PUT", _) if path.starts_with("/share/resource/") => self
                 .refuse_share(path)
                 .unwrap_or_else(|| self.canned_response(method, path)),
+            // Unless the test set a route, an error for instance.
+            ("POST", SESSION_KEYS_PATH) if self.route_body(method, path).is_none() => {
+                self.create_session_keys_bundle(&body)
+            }
+            ("PUT" | "DELETE", _)
+                if path.starts_with(SESSION_KEYS_PREFIX)
+                    && self.route_body(method, path).is_none() =>
+            {
+                self.write_session_keys_bundle(method, path, &body)
+            }
             ("PUT", _) if path.starts_with("/resources/") => {
                 self.refuse_resource(&body, path, false).unwrap_or_else(|| {
                     self.store_metadata(path, &body);
@@ -492,6 +515,58 @@ impl FakePassbolt {
         )
     }
 
+    /// `MetadataSessionKeyCreateController`: the bundle joins the user's list.
+    fn create_session_keys_bundle(&self, body: &Value) -> HttpResponse {
+        let mut bundles = self.session_keys_bundles();
+        let bundle = json!({
+            "id": format!("4a5b6c7d-0000-4000-8000-{:012}", bundles.len() + 1000),
+            "user_id": ADA_ID,
+            "data": body["data"],
+            "created": next_modified(&bundles),
+            "modified": next_modified(&bundles),
+        });
+        bundles.push(bundle.clone());
+        self.on("GET", SESSION_KEYS_PATH, Value::Array(bundles));
+        json_response(200, "", SESSION_KEYS_PATH, &bundle)
+    }
+
+    /// `MetadataSessionKeyUpdateService` (409 unless `modified` is the stored one) and
+    /// `MetadataSessionKeyDeleteService`.
+    fn write_session_keys_bundle(&self, method: &str, path: &str, body: &Value) -> HttpResponse {
+        let id = path
+            .trim_start_matches(SESSION_KEYS_PREFIX)
+            .trim_end_matches(".json");
+        let mut bundles = self.session_keys_bundles();
+        let Some(index) = bundles.iter().position(|bundle| bundle["id"] == id) else {
+            return json_response(404, "The session key does not exist.", path, &Value::Null);
+        };
+        if method == "DELETE" {
+            bundles.remove(index);
+            self.on("GET", SESSION_KEYS_PATH, Value::Array(bundles));
+            return json_response(200, "", path, &Value::Null);
+        }
+        if bundles[index]["modified"] != body["modified"] {
+            return json_response(
+                409,
+                "The metadata session key data has changed.",
+                path,
+                &Value::Null,
+            );
+        }
+        let modified = next_modified(&bundles);
+        bundles[index]["data"] = body["data"].clone();
+        bundles[index]["modified"] = modified.into();
+        let bundle = bundles[index].clone();
+        self.on("GET", SESSION_KEYS_PATH, Value::Array(bundles));
+        json_response(200, "", path, &bundle)
+    }
+
+    fn session_keys_bundles(&self) -> Vec<Value> {
+        self.route_body("GET", SESSION_KEYS_PATH)
+            .and_then(|bundles| bundles.as_array().cloned())
+            .unwrap_or_default()
+    }
+
     /// Later GETs of the resource return the v5 metadata it was updated with.
     fn store_metadata(&self, path: &str, body: &Value) {
         let Some(mut resource) = self.route_body("GET", path) else {
@@ -527,13 +602,13 @@ impl FakePassbolt {
 
     fn canned_response(&self, method: &str, path: &str) -> HttpResponse {
         let mut state = self.state.lock().unwrap();
-        let queued_body = state
-            .queued_bodies
+        let queued_answer = state
+            .queued_answers
             .iter_mut()
             .find(|(queued_method, queued_path, _)| *queued_method == method && queued_path == path)
-            .and_then(|(_, _, bodies)| bodies.pop_front());
-        if let Some(body) = queued_body {
-            return json_response(200, "", path, &body);
+            .and_then(|(_, _, answers)| answers.pop_front());
+        if let Some((status, body)) = queued_answer {
+            return json_response(status, "", path, &body);
         }
         state
             .routes
@@ -717,6 +792,20 @@ impl FakePassbolt {
 }
 
 /// PHP `quotemeta(urlencode($s))`, as `GpgAuthenticator` sends the challenge.
+const SESSION_KEYS_PATH: &str = "/metadata/session-keys.json";
+const SESSION_KEYS_PREFIX: &str = "/metadata/session-keys/";
+
+/// A `modified` later than every bundle's.
+fn next_modified(bundles: &[Value]) -> String {
+    let latest = bundles
+        .iter()
+        .filter_map(|bundle| bundle["modified"].as_str())
+        .filter_map(|modified| chrono::DateTime::parse_from_rfc3339(modified).ok())
+        .max()
+        .map_or_else(chrono::Utc::now, |latest| latest.to_utc());
+    (latest + chrono::Duration::seconds(1)).to_rfc3339()
+}
+
 fn php_quotemeta_urlencode(input: &str) -> String {
     url::form_urlencoded::byte_serialize(input.as_bytes())
         .collect::<String>()

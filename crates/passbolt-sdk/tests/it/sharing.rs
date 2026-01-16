@@ -549,3 +549,26 @@ async fn adding_a_member_with_the_role_they_have_changes_nothing() {
 
     assert!(fake.requests_to("PUT", &group_path()).is_empty());
 }
+
+#[rstest::rstest]
+#[case::revoked(include_str!("../fixtures/keys/revoked_public.asc"), "revoked")]
+#[case::expired(include_str!("../fixtures/keys/expired_public.asc"), "expired")]
+#[tokio::test]
+async fn sharing_with_a_user_whose_key_is_unusable_sends_nothing(
+    #[case] betty_key: &str,
+    #[case] reason: &str,
+) {
+    let fake = fake_serving_shareable_resource(
+        r#"{"password":"p","description":"d"}"#,
+        ada_owner_permissions(),
+    );
+    let mut betty = data::user("betty");
+    betty["gpgkey"]["armored_key"] = betty_key.into();
+    fake.on("GET", &format!("/users/{BETTY_ID}.json"), betty);
+    let client = login_ada(&fake).await;
+
+    let error = share_with(&client, &[BETTY_ID], &[], 7).await.unwrap_err();
+
+    assert!(error.to_string().contains(reason), "{error}");
+    assert!(fake.requests_to("PUT", &share_path()).is_empty());
+}
