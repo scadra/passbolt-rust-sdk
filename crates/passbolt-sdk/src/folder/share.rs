@@ -15,16 +15,16 @@ use std::collections::BTreeSet;
 use crate::client::{FolderQuery, PassboltSdk, ResourceQuery};
 use crate::error::PassboltError;
 use crate::http::HttpClient;
-use crate::resource::share::{aros, change_permissions, merge_changes};
-use crate::types::{build_revoke_changes, Folder, Permission, SharePayload};
-
-const OWNER: i32 = 15;
+use crate::permission::cascaded;
+use crate::resource::share::{apply_changes, aros, is_owner, merge_changes};
+use crate::types::{build_revoke_changes, Folder, ShareChange, SharePayload};
 
 /// Share a folder with users and groups, or revoke their access (`permission_type == -1`).
 ///
-/// Existing permissions are updated, not duplicated, as go-passbolt does. With `with_content`,
-/// the change also goes to the sub-folders and resources the user owns, as the browser
-/// extension does; a branch stops at a folder the user does not own.
+/// Existing permissions are updated, not duplicated. With `with_content`, the change made on
+/// the folder is copied onto the sub-folders and resources the user owns, as the browser
+/// extension does: see [`cascaded`]. A branch stops at a folder the user does not own; nothing
+/// is copied when the folder already had these permissions.
 pub async fn share_folder<H: HttpClient>(
     client: &PassboltSdk<H>,
     id: &str,
@@ -34,32 +34,53 @@ pub async fn share_folder<H: HttpClient>(
     with_content: bool,
 ) -> Result<(), PassboltError> {
     let existing = client.get_folder_permissions(id).await?;
-    let changed =
-        change_folder(client, id, &existing, user_ids, group_ids, permission_type).await?;
-    if !changed && permission_type == -1 {
-        return Err(PassboltError::InvalidArgument(
-            "No matching permissions found to revoke for the given users/groups".into(),
-        ));
-    }
-    if !with_content {
+    let folder_changes = if permission_type == -1 {
+        build_revoke_changes(&existing, user_ids, group_ids)
+    } else {
+        merge_changes(&existing, aros(user_ids, group_ids), permission_type)
+    };
+    if folder_changes.is_empty() {
+        if permission_type == -1 {
+            return Err(PassboltError::InvalidArgument(
+                "No matching permissions found to revoke for the given users/groups".into(),
+            ));
+        }
         return Ok(());
     }
-
-    let folders = client.get_folders(FolderQuery::default()).await?;
-    let owned_folders = owned_descendants(id, &folders);
-    for folder in folders
-        .iter()
-        .filter(|folder| owned_folders.contains(&folder.id))
-    {
-        change_folder(
-            client,
-            &folder.id,
-            &folder.permissions,
-            user_ids,
-            group_ids,
-            permission_type,
+    client
+        .share_folder(
+            id,
+            &SharePayload {
+                permissions: folder_changes.clone(),
+                secrets: None,
+            },
         )
         .await?;
+    if with_content {
+        cascade(client, id, &folder_changes).await?;
+    }
+    Ok(())
+}
+
+/// Copy `folder_changes`, made on the folder `id`, onto the sub-folders and resources below it
+/// the user owns.
+pub(crate) async fn cascade<H: HttpClient>(
+    client: &PassboltSdk<H>,
+    id: &str,
+    folder_changes: &[ShareChange],
+) -> Result<(), PassboltError> {
+    let folders = client.get_folders(FolderQuery::default()).await?;
+    let owned_folders = owned_descendants(id, &folders);
+    for folder_id in &owned_folders {
+        let permissions = client.get_folder_permissions(folder_id).await?;
+        let changes = cascaded(&permissions, folder_changes);
+        if !changes.is_empty() {
+            let payload = SharePayload {
+                permissions: changes,
+                secrets: None,
+            };
+            client.share_folder(folder_id, &payload).await?;
+        }
     }
 
     let mut parent_ids: Vec<String> = owned_folders.into_iter().collect();
@@ -74,34 +95,13 @@ pub async fn share_folder<H: HttpClient>(
         .iter()
         .filter(|resource| is_owner(resource.permission.as_ref()))
     {
-        change_permissions(client, &resource.id, user_ids, group_ids, permission_type).await?;
+        let permissions = client.get_resource_permissions(&resource.id).await?;
+        let changes = cascaded(&permissions, folder_changes);
+        if !changes.is_empty() {
+            apply_changes(client, &resource.id, changes).await?;
+        }
     }
     Ok(())
-}
-
-/// Share one folder; `false` when its permissions are already as asked.
-async fn change_folder<H: HttpClient>(
-    client: &PassboltSdk<H>,
-    id: &str,
-    existing: &[Permission],
-    user_ids: &[String],
-    group_ids: &[String],
-    permission_type: i32,
-) -> Result<bool, PassboltError> {
-    let permissions = if permission_type == -1 {
-        build_revoke_changes(existing, user_ids, group_ids)
-    } else {
-        merge_changes(existing, aros(user_ids, group_ids), permission_type)
-    };
-    if permissions.is_empty() {
-        return Ok(false);
-    }
-    let payload = SharePayload {
-        permissions,
-        secrets: None,
-    };
-    client.share_folder(id, &payload).await?;
-    Ok(true)
 }
 
 /// The folders below `root` the user owns, a branch stopping at the first one they do not own.
@@ -125,15 +125,12 @@ fn owned_descendants(root: &str, folders: &[Folder]) -> BTreeSet<String> {
     owned
 }
 
-fn is_owner(permission: Option<&Permission>) -> bool {
-    permission.and_then(|permission| permission.permission_type) == Some(OWNER)
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::permission::OWNER;
 
     fn folder(id: &str, parent: Option<&str>, permission_type: i32) -> Folder {
         serde_json::from_value(json!({

@@ -14,6 +14,7 @@ use crate::client::PassboltSdk;
 use crate::crypto;
 use crate::error::PassboltError;
 use crate::http::HttpClient;
+use crate::permission::OWNER;
 use crate::resource::document;
 use crate::types::{
     build_revoke_changes, Permission, Resource, ResourceType, SecretPayload, ShareChange,
@@ -42,7 +43,7 @@ pub async fn share_resource<H: HttpClient>(
 }
 
 /// The work of [`share_resource`]; `false` when the permissions are already as asked.
-pub(crate) async fn change_permissions<H: HttpClient>(
+async fn change_permissions<H: HttpClient>(
     client: &PassboltSdk<H>,
     id: &str,
     user_ids: &[String],
@@ -116,8 +117,12 @@ pub async fn share_like_folder<H: HttpClient>(
     apply_changes(client, id, permissions).await
 }
 
+pub(crate) fn is_owner(permission: Option<&Permission>) -> bool {
+    permission.and_then(|permission| permission.permission_type) == Some(OWNER)
+}
+
 /// Simulate `permissions`, give the users who gain access the secret, then share.
-async fn apply_changes<H: HttpClient>(
+pub(crate) async fn apply_changes<H: HttpClient>(
     client: &PassboltSdk<H>,
     id: &str,
     permissions: Vec<ShareChange>,

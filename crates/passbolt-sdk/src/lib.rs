@@ -48,6 +48,7 @@ pub mod group;
 pub mod http;
 pub mod metadata;
 pub mod mfa;
+pub mod permission;
 pub mod platform;
 pub mod pwned;
 pub mod resource;

@@ -17,6 +17,7 @@ mod common;
 
 mod directory;
 mod errors;
+mod folder_permissions;
 mod folders;
 mod interop;
 mod outputs;

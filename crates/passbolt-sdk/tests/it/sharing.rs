@@ -387,10 +387,25 @@ fn fake_serving_a_folder_tree() -> FakePassbolt {
     resource["folder_parent_id"] = CHILD_FOLDER_ID.into();
     resource["permission"] = data::permission("p-ada", "User", ADA_ID, 15);
     fake.on("GET", "/resources.json", json!([resource]));
+    fake.on(
+        "GET",
+        &format!("/folders/{CHILD_FOLDER_ID}.json"),
+        folder_in(CHILD_FOLDER_ID, Some(FOLDER_ID), 15),
+    );
     for id in [FOLDER_ID, CHILD_FOLDER_ID, FOREIGN_FOLDER_ID] {
         fake.on("PUT", &folder_share_path(id), Value::Null);
     }
     fake
+}
+
+/// `folder_in`, betty reading it with the permission `permission_id`.
+fn folder_betty_reads(id: &str, parent: Option<&str>, permission_id: &str) -> Value {
+    let mut folder = folder_in(id, parent, 15);
+    folder["permissions"]
+        .as_array_mut()
+        .unwrap()
+        .push(data::permission(permission_id, "User", BETTY_ID, 1));
+    folder
 }
 
 async fn share_folder_with_betty(fake: &FakePassbolt, with_content: bool) {
@@ -570,5 +585,47 @@ async fn sharing_with_a_user_whose_key_is_unusable_sends_nothing(
     let error = share_with(&client, &[BETTY_ID], &[], 7).await.unwrap_err();
 
     assert!(error.to_string().contains(reason), "{error}");
+    assert!(fake.requests_to("PUT", &share_path()).is_empty());
+}
+
+#[tokio::test]
+async fn raising_an_access_on_a_folder_only_reaches_the_content_the_user_has() {
+    let fake = fake_serving_a_folder_tree();
+    fake.on(
+        "GET",
+        &format!("/folders/{FOLDER_ID}.json"),
+        folder_betty_reads(FOLDER_ID, None, "p-betty-root"),
+    );
+    fake.on(
+        "GET",
+        &format!("/folders/{CHILD_FOLDER_ID}.json"),
+        folder_betty_reads(CHILD_FOLDER_ID, Some(FOLDER_ID), "p-betty-child"),
+    );
+
+    share_folder_with_betty(&fake, true).await;
+
+    assert_eq!(
+        fake.body_of("PUT", &folder_share_path(CHILD_FOLDER_ID))["permissions"],
+        json!([{ "id": "p-betty-child", "aro": "User", "aro_foreign_key": BETTY_ID, "type": 7 }]),
+        "the child's own permission"
+    );
+    assert!(
+        fake.requests_to("PUT", &share_path()).is_empty(),
+        "betty has no access to the resource"
+    );
+}
+
+#[tokio::test]
+async fn a_folder_already_shared_so_copies_nothing_to_its_content() {
+    let fake = fake_serving_a_folder_tree();
+    let mut folder = folder_betty_reads(FOLDER_ID, None, "p-betty-root");
+    folder["permissions"][1]["type"] = 7.into();
+    fake.on("GET", &format!("/folders/{FOLDER_ID}.json"), folder);
+
+    share_folder_with_betty(&fake, true).await;
+
+    for id in [FOLDER_ID, CHILD_FOLDER_ID] {
+        assert!(fake.requests_to("PUT", &folder_share_path(id)).is_empty());
+    }
     assert!(fake.requests_to("PUT", &share_path()).is_empty());
 }
