@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use crate::client::{FolderQuery, PassboltSdk, ResourceQuery};
 use crate::error::PassboltError;
 use crate::http::HttpClient;
-use crate::permission::cascaded;
+use crate::permission::{cascaded, changes, moved};
 use crate::resource::share::{apply_changes, aros, is_owner, merge_changes};
 use crate::types::{build_revoke_changes, Folder, ShareChange, SharePayload};
 
@@ -60,6 +60,54 @@ pub async fn share_folder<H: HttpClient>(
         cascade(client, id, &folder_changes).await?;
     }
     Ok(())
+}
+
+/// Move a folder into `destination` (`None`: the root) with the permissions a move gives.
+///
+/// As the browser extension does (see [`moved`]), the change is then copied onto the content
+/// the user owns. Only an owner can; the permissions are checked before the move, applied
+/// after it.
+pub async fn move_with_folder_permissions<H: HttpClient>(
+    client: &PassboltSdk<H>,
+    id: &str,
+    destination: Option<&str>,
+) -> Result<(), PassboltError> {
+    let folder = client.get_folder(id).await?;
+    if !is_owner(folder.permission.as_ref()) {
+        return Err(PassboltError::InvalidArgument(format!(
+            "Only an owner of folder {id} can give it the folder permissions"
+        )));
+    }
+    let current = client.get_folder_permissions(id).await?;
+    let parent = match folder.folder_parent_id.as_deref() {
+        Some(parent_id) => Some(client.get_folder_permissions(parent_id).await?),
+        None => None,
+    };
+    let destination_permissions = match destination {
+        Some(folder_id) => Some(client.get_folder_permissions(folder_id).await?),
+        None => None,
+    };
+    let target = moved(
+        &current,
+        parent.as_deref(),
+        destination_permissions.as_deref(),
+        folder.permission.as_ref(),
+    )?;
+    client.move_folder(id, destination).await?;
+    let folder_changes = changes(&current, &target);
+    if folder_changes.is_empty() {
+        return Ok(());
+    }
+    client
+        .share_folder(
+            id,
+            &SharePayload {
+                permissions: folder_changes.clone(),
+                secrets: None,
+            },
+        )
+        .await?;
+    cascade(client, id, &folder_changes).await
 }
 
 /// Copy `folder_changes`, made on the folder `id`, onto the sub-folders and resources below it

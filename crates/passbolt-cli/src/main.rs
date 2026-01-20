@@ -754,21 +754,34 @@ async fn dispatch(
             } => {
                 // An empty folder id is the root, as the help says.
                 let folder_parent_id = folder_parent_id.as_deref().filter(|id| !id.is_empty());
-                if *with_folder_permissions && folder_parent_id.is_none() {
-                    anyhow::bail!("--with-folder-permissions needs a folder: the root has none");
-                }
-                client.move_resource(id, folder_parent_id).await?;
-                if let (true, Some(folder_id)) = (*with_folder_permissions, folder_parent_id) {
-                    passbolt_sdk::resource::share::share_like_folder(client, id, folder_id).await?;
+                if *with_folder_permissions {
+                    passbolt_sdk::resource::share::move_with_folder_permissions(
+                        client,
+                        id,
+                        folder_parent_id,
+                    )
+                    .await?;
+                } else {
+                    client.move_resource(id, folder_parent_id).await?;
                 }
                 output::print_done(json_output, "moved", "resource", id)?;
             }
             MoveEntity::Folder {
                 id,
                 folder_parent_id,
+                with_folder_permissions,
             } => {
                 let folder_parent_id = folder_parent_id.as_deref().filter(|id| !id.is_empty());
-                client.move_folder(id, folder_parent_id).await?;
+                if *with_folder_permissions {
+                    passbolt_sdk::folder::share::move_with_folder_permissions(
+                        client,
+                        id,
+                        folder_parent_id,
+                    )
+                    .await?;
+                } else {
+                    client.move_folder(id, folder_parent_id).await?;
+                }
                 output::print_done(json_output, "moved", "folder", id)?;
             }
         },

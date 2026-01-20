@@ -16,7 +16,8 @@
 use serde_json::Value;
 
 use crate::common::{
-    create_folder, create_resource, run, run_json, share_with_user_id, unique_name, Cleanup,
+    admin_id, create_folder, create_resource, current_user_id, passbolt_as, run, run_json,
+    share_with_user_id, unique_name, Account, Cleanup, ADMIN,
 };
 
 const READ: i64 = 1;
@@ -128,4 +129,121 @@ fn sharing_a_folder_again_as_it_is_leaves_the_content_alone() {
     share_folder(&folder, &recipient, "1");
 
     assert_eq!(on_resource(&resource, &recipient), Some(UPDATE));
+}
+
+const OWNER: i64 = 15;
+
+fn move_with_permissions(entity: &str, item: &Cleanup, destination: &str) {
+    run(&[
+        "move",
+        entity,
+        "--id",
+        &item.id,
+        "--folder-parent-id",
+        destination,
+        "--with-folder-permissions",
+    ]);
+}
+
+fn parent_of(entity: &str, item: &Cleanup) -> Value {
+    run_json(&["get", entity, "--id", &item.id])["folder_parent_id"].clone()
+}
+
+#[test]
+fn moving_out_of_a_shared_folder_drops_what_it_gave() {
+    let recipient = share_with_user_id();
+    let me = current_user_id(Account::User);
+    let folder = create_folder(&unique_name("shared"), &[]);
+    let resource = resource_in(&folder);
+    share_folder(&folder, &recipient, "1");
+
+    move_with_permissions("resource", &resource, "");
+
+    assert_eq!(parent_of("resource", &resource), Value::Null);
+    assert_eq!(on_resource(&resource, &recipient), None);
+    assert_eq!(on_resource(&resource, &me), Some(OWNER));
+}
+
+#[test]
+fn moving_between_folders_trades_the_old_permissions_for_the_new() {
+    let recipient = share_with_user_id();
+    let admin = admin_id();
+    let from = create_folder(&unique_name("from"), &[]);
+    let to = create_folder(&unique_name("to"), &[]);
+    let resource = resource_in(&from);
+    share_folder(&from, &recipient, "1");
+    share_folder(&to, &admin, "7");
+
+    move_with_permissions("resource", &resource, &to.id);
+
+    assert_eq!(on_resource(&resource, &recipient), None);
+    assert_eq!(on_resource(&resource, &admin), Some(UPDATE));
+}
+
+#[test]
+fn an_access_not_given_by_the_old_folder_stays() {
+    let recipient = share_with_user_id();
+    let admin = admin_id();
+    let folder = create_folder(&unique_name("shared"), &[]);
+    let resource = resource_in(&folder);
+    share_folder(&folder, &recipient, "1");
+    share_resource(&resource, &admin, "7");
+
+    move_with_permissions("resource", &resource, "");
+
+    assert_eq!(on_resource(&resource, &admin), Some(UPDATE));
+    assert_eq!(on_resource(&resource, &recipient), None);
+}
+
+#[test]
+fn moving_never_lowers_an_access() {
+    let recipient = share_with_user_id();
+    let folder = create_folder(&unique_name("read-only"), &[]);
+    share_folder(&folder, &recipient, "1");
+    let resource = create_resource(&unique_name("outside"), "p", &["--type", "v5-default"]);
+    share_resource(&resource, &recipient, "7");
+
+    move_with_permissions("resource", &resource, &folder.id);
+
+    assert_eq!(on_resource(&resource, &recipient), Some(UPDATE));
+}
+
+#[test]
+fn only_an_owner_moves_with_the_permissions_and_nothing_moves_otherwise() {
+    let admin = admin_id();
+    let folder = create_folder(&unique_name("shared"), &[]);
+    share_folder(&folder, &admin, "7");
+    let resource = create_resource(&unique_name("updatable"), "p", &["--type", "v5-default"]);
+    share_resource(&resource, &admin, "7");
+
+    passbolt_as(ADMIN)
+        .args([
+            "move",
+            "resource",
+            "--id",
+            &resource.id,
+            "--folder-parent-id",
+            &folder.id,
+        ])
+        .arg("--with-folder-permissions")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("Only an owner"));
+
+    assert_eq!(parent_of("resource", &resource), Value::Null);
+}
+
+#[test]
+fn moving_a_folder_with_its_permissions_reaches_its_content() {
+    let recipient = share_with_user_id();
+    let shared = create_folder(&unique_name("shared"), &[]);
+    share_folder(&shared, &recipient, "1");
+    let moved = create_folder(&unique_name("moved"), &[]);
+    let resource = resource_in(&moved);
+
+    move_with_permissions("folder", &moved, &shared.id);
+
+    assert_eq!(parent_of("folder", &moved), shared.id.as_str());
+    assert_eq!(on_folder(&moved, &recipient), Some(READ));
+    assert_eq!(on_resource(&resource, &recipient), Some(READ));
 }

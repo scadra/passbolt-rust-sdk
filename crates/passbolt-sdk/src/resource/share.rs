@@ -14,7 +14,7 @@ use crate::client::PassboltSdk;
 use crate::crypto;
 use crate::error::PassboltError;
 use crate::http::HttpClient;
-use crate::permission::OWNER;
+use crate::permission::{changes, moved, OWNER};
 use crate::resource::document;
 use crate::types::{
     build_revoke_changes, Permission, Resource, ResourceType, SecretPayload, ShareChange,
@@ -87,34 +87,43 @@ pub(crate) fn aros<'a>(
         )
 }
 
-/// Give the resource the permissions of `folder_id`, as the browser extension does when
-/// moving a resource into a shared folder: missing ones are added, others updated.
-pub async fn share_like_folder<H: HttpClient>(
+/// Move a resource into `destination` (`None`: the root) with the permissions a move gives.
+///
+/// As the browser extension does: those it did not get from the folder it leaves, plus the
+/// destination's, the higher level winning (see [`moved`]). Only an owner can; the permissions
+/// are checked before the move, applied after it.
+pub async fn move_with_folder_permissions<H: HttpClient>(
     client: &PassboltSdk<H>,
     id: &str,
-    folder_id: &str,
+    destination: Option<&str>,
 ) -> Result<(), PassboltError> {
-    let folder = client.get_folder(folder_id).await?;
-    let existing = client.get_resource_permissions(id).await?;
-    let mut permissions = Vec::new();
-    for folder_permission in &folder.permissions {
-        let (Some(aro), Some(aro_foreign_key), Some(permission_type)) = (
-            folder_permission.aro.as_deref(),
-            folder_permission.aro_foreign_key.as_deref(),
-            folder_permission.permission_type,
-        ) else {
-            continue;
-        };
-        permissions.extend(merge_changes(
-            &existing,
-            std::iter::once((aro, aro_foreign_key)),
-            permission_type,
-        ));
+    let resource = client.get_resource(id).await?;
+    if !is_owner(resource.permission.as_ref()) {
+        return Err(PassboltError::InvalidArgument(format!(
+            "Only an owner of resource {id} can give it the folder permissions"
+        )));
     }
-    if permissions.is_empty() {
+    let current = client.get_resource_permissions(id).await?;
+    let parent = match resource.folder_parent_id.as_deref() {
+        Some(parent_id) => Some(client.get_folder_permissions(parent_id).await?),
+        None => None,
+    };
+    let destination_permissions = match destination {
+        Some(folder_id) => Some(client.get_folder_permissions(folder_id).await?),
+        None => None,
+    };
+    let target = moved(
+        &current,
+        parent.as_deref(),
+        destination_permissions.as_deref(),
+        resource.permission.as_ref(),
+    )?;
+    client.move_resource(id, destination).await?;
+    let changes = changes(&current, &target);
+    if changes.is_empty() {
         return Ok(());
     }
-    apply_changes(client, id, permissions).await
+    apply_changes(client, id, changes).await
 }
 
 pub(crate) fn is_owner(permission: Option<&Permission>) -> bool {

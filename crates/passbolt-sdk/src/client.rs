@@ -1113,10 +1113,13 @@ impl<H: HttpClient> PassboltSdk<H> {
         Ok(folders)
     }
 
+    /// The folder with its permissions and the user's own one.
     pub async fn get_folder(&self, id: &str) -> Result<Folder, PassboltError> {
         let id = uuid_segment(id)?;
-        self.get(&format!("/folders/{id}.json?contain[permissions]=1"))
-            .await
+        self.get(&format!(
+            "/folders/{id}.json?contain[permission]=1&contain[permissions]=1"
+        ))
+        .await
     }
 
     pub async fn create_folder(

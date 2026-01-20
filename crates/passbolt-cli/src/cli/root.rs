@@ -549,14 +549,20 @@ pub enum MoveEntity {
         /// Target folder ID (empty = root)
         #[arg(short = 'f', long)]
         folder_parent_id: Option<String>,
-        /// Also give the resource the target folder's permissions, as the browser extension offers
+        /// Also change its permissions as the browser extension does: drop those it got from the
+        /// folder it leaves, add the target folder's, the higher level winning (owners only)
         #[arg(long, requires = "folder_parent_id")]
         with_folder_permissions: bool,
     },
     Folder {
         #[arg(long)]
         id: String,
+        /// Target folder ID (empty = root)
         #[arg(short = 'f', long)]
         folder_parent_id: Option<String>,
+        /// Also change its permissions as for a resource, then copy that change onto the content
+        /// the user owns (owners only)
+        #[arg(long, requires = "folder_parent_id")]
+        with_folder_permissions: bool,
     },
 }
