@@ -26,6 +26,7 @@ use crate::error::{ApiError, AuthError, CryptoError, PassboltError};
 use crate::http::{HttpClient, HttpResponse};
 use crate::metadata::{self, MetadataKeys, ResourceSessionKey, SessionKeys, SessionKeysBundle};
 use crate::mfa::MfaProvider;
+use crate::transfer::{DeleteBlockers, Transfer};
 #[allow(clippy::wildcard_imports)] // too many types to enumerate explicitly
 use crate::types::*;
 
@@ -1591,9 +1592,9 @@ impl<H: HttpClient> PassboltSdk<H> {
             .delete_dry_run(&format!("/users/{id}/dry-run.json"))
             .await?;
         Ok(UserDeleteDryRun {
-            resources_sole_owner_count: count(&blockers, "/resources/sole_owner"),
-            folders_sole_owner_count: count(&blockers, "/folders/sole_owner"),
-            groups_sole_manager_count: count(&blockers, "/groups/sole_manager"),
+            resources_sole_owner_count: count(&blockers, "/errors/resources/sole_owner"),
+            folders_sole_owner_count: count(&blockers, "/errors/folders/sole_owner"),
+            groups_sole_manager_count: count(&blockers, "/errors/groups/sole_manager"),
         })
     }
 
@@ -1606,12 +1607,68 @@ impl<H: HttpClient> PassboltSdk<H> {
             .delete_dry_run(&format!("/groups/{id}/dry-run.json"))
             .await?;
         Ok(GroupDeleteDryRun {
-            resources_sole_group_count: count(&blockers, "/resources/sole_owner"),
-            folders_sole_group_count: count(&blockers, "/folders/sole_owner"),
+            resources_sole_group_count: count(&blockers, "/errors/resources/sole_owner"),
+            folders_sole_group_count: count(&blockers, "/errors/folders/sole_owner"),
         })
     }
 
-    /// `DELETE …/dry-run.json`: what blocks the deletion, from the 400 `body.errors`; `null` if nothing.
+    /// What blocks deleting the user: what they alone own or manage.
+    pub async fn user_delete_blockers(&self, id: &str) -> Result<DeleteBlockers, PassboltError> {
+        let id = uuid_segment(id)?;
+        let body = self
+            .delete_dry_run(&format!("/users/{id}/dry-run.json"))
+            .await?;
+        DeleteBlockers::from_body(&body)
+    }
+
+    /// What blocks deleting the group: what it alone owns.
+    pub async fn group_delete_blockers(&self, id: &str) -> Result<DeleteBlockers, PassboltError> {
+        let id = uuid_segment(id)?;
+        let body = self
+            .delete_dry_run(&format!("/groups/{id}/dry-run.json"))
+            .await?;
+        DeleteBlockers::from_body(&body)
+    }
+
+    /// Delete the user, giving what they alone owned or managed to the `transfer` successors.
+    pub async fn delete_user_with_transfer(
+        &self,
+        id: &str,
+        transfer: &Transfer,
+    ) -> Result<(), PassboltError> {
+        let id = uuid_segment(id)?;
+        self.delete_with_body(&format!("/users/{id}.json"), transfer)
+            .await
+    }
+
+    /// Delete the group, giving what it alone owned to the `transfer` successors.
+    pub async fn delete_group_with_transfer(
+        &self,
+        id: &str,
+        transfer: &Transfer,
+    ) -> Result<(), PassboltError> {
+        let id = uuid_segment(id)?;
+        self.delete_with_body(&format!("/groups/{id}.json"), transfer)
+            .await
+    }
+
+    async fn delete_with_body(&self, path: &str, transfer: &Transfer) -> Result<(), PassboltError> {
+        let url = format!("{}{path}", self.base_url);
+        let body = serde_json::to_vec(&serde_json::json!({ "transfer": transfer }))?;
+        let response = self.send(Method::Delete, &url, Some(&body)).await?;
+        if response.status >= 400 {
+            return Err(ApiError {
+                status: response.status,
+                message: format!("DELETE {path} failed: {}", server_message(&response)),
+                validation_errors: None,
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `DELETE …/dry-run.json`: what blocks the deletion, the 400 `body` (`errors`,
+    /// `groups_to_delete`); `null` if nothing.
     async fn delete_dry_run(&self, path: &str) -> Result<Value, PassboltError> {
         let url = format!("{}{path}", self.base_url);
         let response = self.send(Method::Delete, &url, None).await?;
@@ -1619,7 +1676,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         match response.status {
             status if status < 400 => Ok(Value::Null),
             400 if body.pointer("/body/errors").is_some() => {
-                Ok(body.pointer("/body/errors").cloned().unwrap_or(Value::Null))
+                Ok(body.pointer("/body").cloned().unwrap_or(Value::Null))
             }
             status => Err(ApiError {
                 status,

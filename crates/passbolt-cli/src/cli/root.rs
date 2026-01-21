@@ -487,10 +487,25 @@ pub enum DeleteEntity {
     User {
         #[arg(long)]
         id: String,
+        /// Only list what blocks the deletion
+        #[arg(long, conflicts_with = "transfer_to")]
+        dry_run: bool,
+        /// User (or group) who becomes owner of what the user alone owns, and manager of the
+        /// groups they alone manage; they must already have access to it
+        #[arg(long)]
+        transfer_to: Option<String>,
     },
+    /// Delete a group; what it alone owns blocks it until given to someone with --transfer-to
     Group {
         #[arg(long)]
         id: String,
+        /// Only list what blocks the deletion
+        #[arg(long, conflicts_with = "transfer_to")]
+        dry_run: bool,
+        /// User (or group) who becomes owner of what the group alone owns; they must already
+        /// have access to it
+        #[arg(long)]
+        transfer_to: Option<String>,
     },
 }
 

@@ -703,12 +703,42 @@ async fn dispatch(
                 client.delete_folder(id).await?;
                 output::print_done(json_output, "deleted", "folder", id)?;
             }
-            DeleteEntity::User { id } => {
-                client.delete_user(id).await?;
+            DeleteEntity::User {
+                id,
+                dry_run,
+                transfer_to,
+            } => {
+                let blockers = client.user_delete_blockers(id).await?;
+                if *dry_run {
+                    return print_blockers(json_output, "user", &blockers);
+                }
+                match transfer_to {
+                    _ if blockers.is_empty() => client.delete_user(id).await?,
+                    Some(successor) => {
+                        let transfer = blockers.transfer_to(successor)?;
+                        client.delete_user_with_transfer(id, &transfer).await?;
+                    }
+                    None => refuse_blocked_delete("user", &blockers)?,
+                }
                 output::print_done(json_output, "deleted", "user", id)?;
             }
-            DeleteEntity::Group { id } => {
-                client.delete_group(id).await?;
+            DeleteEntity::Group {
+                id,
+                dry_run,
+                transfer_to,
+            } => {
+                let blockers = client.group_delete_blockers(id).await?;
+                if *dry_run {
+                    return print_blockers(json_output, "group", &blockers);
+                }
+                match transfer_to {
+                    _ if blockers.is_empty() => client.delete_group(id).await?,
+                    Some(successor) => {
+                        let transfer = blockers.transfer_to(successor)?;
+                        client.delete_group_with_transfer(id, &transfer).await?;
+                    }
+                    None => refuse_blocked_delete("group", &blockers)?,
+                }
                 output::print_done(json_output, "deleted", "group", id)?;
             }
         },
@@ -816,6 +846,51 @@ async fn dispatch(
     }
 
     Ok(())
+}
+
+/// What blocks deleting a user or group, as JSON or one line per item.
+fn print_blockers(
+    json_output: bool,
+    entity: &str,
+    blockers: &passbolt_sdk::transfer::DeleteBlockers,
+) -> Result<()> {
+    if json_output {
+        return output::print_json(blockers);
+    }
+    if blockers.is_empty() {
+        println!("Nothing blocks deleting the {entity}.");
+    }
+    for (kind, items) in [
+        ("resource", &blockers.resources),
+        ("folder", &blockers.folders),
+    ] {
+        for item in items {
+            println!("{kind} {} is only owned by the {entity}", item.id);
+        }
+    }
+    for group in &blockers.groups {
+        println!(
+            "group {} ({}) is only managed by the {entity}",
+            group.id, group.name
+        );
+    }
+    for group_id in &blockers.groups_to_delete {
+        println!("group {group_id} has no other member: deleted with the {entity}");
+    }
+    Ok(())
+}
+
+fn refuse_blocked_delete(
+    entity: &str,
+    blockers: &passbolt_sdk::transfer::DeleteBlockers,
+) -> Result<()> {
+    anyhow::bail!(
+        "The {entity} alone owns {} resources and {} folders and alone manages {} groups: give \
+         them to someone with --transfer-to <user or group id> (list them with --dry-run)",
+        blockers.resources.len(),
+        blockers.folders.len(),
+        blockers.groups.len()
+    )
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@
 
 mod common;
 
+mod deletions;
 mod directory;
 mod errors;
 mod folder_permissions;
