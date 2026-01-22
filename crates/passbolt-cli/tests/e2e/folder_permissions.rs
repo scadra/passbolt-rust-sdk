@@ -247,3 +247,50 @@ fn moving_a_folder_with_its_permissions_reaches_its_content() {
     assert_eq!(on_folder(&moved, &recipient), Some(READ));
     assert_eq!(on_resource(&resource, &recipient), Some(READ));
 }
+
+#[test]
+fn a_resource_created_in_a_shared_folder_gets_its_permissions() {
+    let recipient = share_with_user_id();
+    let admin = admin_id();
+    let folder = create_folder(&unique_name("shared"), &[]);
+    share_folder(&folder, &recipient, "1");
+    share_folder(&folder, &admin, "7");
+
+    let resource = create_resource(
+        &unique_name("inherits"),
+        "inherited-password",
+        &["--type", "v5-default", "--folder-parent-id", &folder.id],
+    );
+
+    assert_eq!(on_resource(&resource, &recipient), Some(READ));
+    assert_eq!(on_resource(&resource, &admin), Some(UPDATE));
+    let as_admin = crate::common::run_json_as(ADMIN, &["get", "resource", "--id", &resource.id]);
+    assert_eq!(as_admin["password"], "inherited-password");
+    assert_eq!(as_admin["metadata_key_type"], "shared_key");
+}
+
+#[test]
+fn a_folder_created_in_a_shared_folder_gets_its_permissions() {
+    let recipient = share_with_user_id();
+    let folder = create_folder(&unique_name("shared"), &[]);
+    share_folder(&folder, &recipient, "7");
+
+    let sub_folder = create_folder(
+        &unique_name("inherits"),
+        &["--folder-parent-id", &folder.id],
+    );
+
+    assert_eq!(on_folder(&sub_folder, &recipient), Some(UPDATE));
+}
+
+#[test]
+fn a_resource_created_in_a_personal_folder_stays_personal() {
+    let folder = create_folder(&unique_name("personal"), &[]);
+
+    let resource = resource_in(&folder);
+
+    let fetched = run_json(&["get", "resource", "--id", &resource.id]);
+    assert_eq!(fetched["metadata_key_type"], "user_key");
+    let permissions = run_json(&["get", "resource-permissions", "--id", &resource.id]);
+    assert_eq!(permissions.as_array().unwrap().len(), 1);
+}

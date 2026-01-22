@@ -17,6 +17,7 @@ use crate::crypto;
 use crate::error::PassboltError;
 use crate::http::HttpClient;
 use crate::resource::document::{self, invalid, SECRET_OBJECT_TYPE};
+use crate::resource::share;
 use crate::types::{
     CreateResourcePayload, CustomField, Resource, ResourceType, SecretPayload, TotpData,
 };
@@ -53,7 +54,9 @@ pub struct NewResource {
     pub secret_fields: Map<String, Value>,
 }
 
-/// Create a resource, encrypting its secret for the user, and v5 metadata as the server settings require.
+/// Create a resource, encrypting its secret for the user, and v5 metadata as the server settings
+/// require. Created in a folder, it then gets the folder's permissions, as the browser extension
+/// gives them.
 pub async fn create_resource<H: HttpClient>(
     client: &PassboltSdk<H>,
     new_resource: &NewResource,
@@ -129,7 +132,15 @@ pub async fn create_resource<H: HttpClient>(
         payload.description = field("description");
     }
 
-    client.create_resource(&payload).await
+    let created = client.create_resource(&payload).await?;
+    if let Some(folder_id) = new_resource
+        .folder_parent_id
+        .as_deref()
+        .filter(|folder_id| !folder_id.is_empty())
+    {
+        share::inherit_folder_permissions(client, &created.id, folder_id).await?;
+    }
+    Ok(created)
 }
 
 /// The slug matching the fields set, in the server's default version.

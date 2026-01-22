@@ -14,7 +14,7 @@ use crate::client::PassboltSdk;
 use crate::crypto;
 use crate::error::PassboltError;
 use crate::http::HttpClient;
-use crate::permission::{changes, moved, OWNER};
+use crate::permission::{changes, grants, moved, OWNER};
 use crate::resource::document;
 use crate::types::{
     build_revoke_changes, Permission, Resource, ResourceType, SecretPayload, ShareChange,
@@ -120,6 +120,22 @@ pub async fn move_with_folder_permissions<H: HttpClient>(
     )?;
     client.move_resource(id, destination).await?;
     let changes = changes(&current, &target);
+    if changes.is_empty() {
+        return Ok(());
+    }
+    apply_changes(client, id, changes).await
+}
+
+/// Give the resource just created in `folder_id` exactly the folder's permissions, as the
+/// browser extension does.
+pub(crate) async fn inherit_folder_permissions<H: HttpClient>(
+    client: &PassboltSdk<H>,
+    id: &str,
+    folder_id: &str,
+) -> Result<(), PassboltError> {
+    let folder_permissions = client.get_folder_permissions(folder_id).await?;
+    let current = client.get_resource_permissions(id).await?;
+    let changes = changes(&current, &grants(&folder_permissions));
     if changes.is_empty() {
         return Ok(());
     }
