@@ -701,3 +701,42 @@ async fn a_folder_already_shared_so_copies_nothing_to_its_content() {
     }
     assert!(fake.requests_to("PUT", &share_path()).is_empty());
 }
+
+#[tokio::test]
+async fn revoking_someone_without_access_changes_nothing_for_the_others() {
+    let fake = fake_serving_shareable_resource(
+        r#"{"password":"p"}"#,
+        ada_owner_betty_reader_permissions(),
+    );
+    let client = login_ada(&fake).await;
+
+    let error = share_with(&client, &[BETTY_ID, CAROL_ID], &[], -1)
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains(CAROL_ID), "{error}");
+    assert!(!error.to_string().contains(BETTY_ID), "{error}");
+    assert!(fake.requests_to("PUT", &share_path()).is_empty());
+}
+
+#[tokio::test]
+async fn adding_a_manager_as_member_keeps_them_manager() {
+    let fake = fake_serving_group();
+    let client = login_ada(&fake).await;
+
+    // Ada manages the group already.
+    group_update::update_group(
+        &client,
+        GROUP_ID,
+        Some("Ops renamed"),
+        &[ADA_ID.into()],
+        &[],
+        &[],
+    )
+    .await
+    .unwrap();
+
+    let body = fake.body_of("PUT", &group_path());
+    let membership_changes = body.get("groups_users").and_then(Value::as_array);
+    assert!(membership_changes.is_none_or(Vec::is_empty), "{body}");
+}

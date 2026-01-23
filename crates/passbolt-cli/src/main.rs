@@ -699,8 +699,12 @@ async fn dispatch(
                 client.delete_resource(id).await?;
                 output::print_done(json_output, "deleted", "resource", id)?;
             }
-            DeleteEntity::Folder { id } => {
-                client.delete_folder(id).await?;
+            DeleteEntity::Folder { id, cascade } => {
+                if *cascade {
+                    client.delete_folder_with_content(id).await?;
+                } else {
+                    client.delete_folder(id).await?;
+                }
                 output::print_done(json_output, "deleted", "folder", id)?;
             }
             DeleteEntity::User {
@@ -959,5 +963,35 @@ mod tests {
             cli.command,
             Commands::MigrateMetadata { shared_only: true }
         ));
+    }
+
+    #[rstest::rstest]
+    #[case::unknown_permission_type(&["share", "resource", "--id", "x", "-u", "u", "-t", "3"])]
+    #[case::no_recipient(&["share", "resource", "--id", "x", "-t", "1"])]
+    #[case::folder_without_recipient(&["share", "folder", "--id", "x"])]
+    fn test_share_refuses(#[case] arguments: &[&str]) {
+        let arguments = std::iter::once("passbolt").chain(arguments.iter().copied());
+
+        assert!(Cli::try_parse_from(arguments).is_err());
+    }
+
+    #[rstest::rstest]
+    #[case::revoke("-1")]
+    #[case::read("1")]
+    #[case::owner("15")]
+    fn test_share_takes_the_permission_types(#[case] permission_type: &str) {
+        let cli = Cli::try_parse_from([
+            "passbolt",
+            "share",
+            "resource",
+            "--id",
+            "x",
+            "-g",
+            "g",
+            "-t",
+            permission_type,
+        ]);
+
+        assert!(cli.is_ok());
     }
 }

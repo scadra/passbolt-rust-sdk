@@ -28,5 +28,6 @@ mod resources;
 mod session;
 mod session_keys;
 mod sharing;
+mod sharing_rules;
 mod tools;
 mod totp;

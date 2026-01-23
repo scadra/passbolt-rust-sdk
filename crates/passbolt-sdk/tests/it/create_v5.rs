@@ -349,15 +349,18 @@ async fn shared_metadata_needs_an_active_key() {
 }
 
 #[tokio::test]
-async fn without_a_share_of_the_key_metadata_is_signed_by_the_user_only() {
+async fn without_a_share_of_the_key_shared_metadata_is_refused() {
     let mut keys = data::metadata_keys(&[("mk1", &METADATA)]);
     keys[0]["metadata_private_keys"] = json!([]);
     let fake = shared_keys_server(keys);
 
-    let body = create(&fake, &github()).await.unwrap();
+    let error = create(&fake, &github()).await.unwrap_err();
 
-    let metadata = METADATA.decrypt_signed(body["metadata"].as_str().unwrap(), &[&ADA]);
-    assert!(metadata.contains(r#""name":"GitHub""#), "{metadata}");
+    assert!(
+        error.to_string().contains("not shared with you yet"),
+        "{error}"
+    );
+    assert!(fake.requests_to("POST", "/resources.json").is_empty());
 }
 
 #[tokio::test]
@@ -572,4 +575,16 @@ async fn a_folder_created_in_a_shared_folder_gets_its_permissions() {
         fake.body_of("PUT", &format!("/share/folder/{NEW_FOLDER_ID}.json"))["permissions"],
         json!([{ "aro": "User", "aro_foreign_key": BETTY_ID, "type": 1 }])
     );
+}
+
+#[tokio::test]
+async fn the_newest_key_the_user_holds_a_share_of_is_used() {
+    let mut keys = two_metadata_keys();
+    // mk-new is not shared with ada yet (zero-knowledge mode).
+    keys[1]["metadata_private_keys"] = json!([]);
+    let fake = shared_keys_server(keys);
+
+    let body = create(&fake, &github()).await.unwrap();
+
+    assert_eq!(body["metadata_key_id"], "mk-old");
 }

@@ -294,3 +294,27 @@ fn a_resource_created_in_a_personal_folder_stays_personal() {
     let permissions = run_json(&["get", "resource-permissions", "--id", &resource.id]);
     assert_eq!(permissions.as_array().unwrap().len(), 1);
 }
+
+#[test]
+fn a_resource_no_longer_shared_gets_personal_metadata_on_its_next_update() {
+    let recipient = share_with_user_id();
+    let resource = create_resource(&unique_name("unshared"), "p", &["--type", "v5-default"]);
+    share_resource(&resource, &recipient, "1");
+    let shared = run_json(&["get", "resource", "--id", &resource.id]);
+    assert_eq!(shared["metadata_key_type"], "shared_key");
+    share_resource(&resource, &recipient, "-1");
+    let renamed = unique_name("renamed");
+
+    run(&[
+        "update",
+        "resource",
+        "--id",
+        &resource.id,
+        "--name",
+        &renamed,
+    ]);
+
+    let updated = run_json(&["get", "resource", "--id", &resource.id]);
+    assert_eq!(updated["metadata_key_type"], "user_key");
+    assert_eq!(updated["name"], renamed.as_str());
+}

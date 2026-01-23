@@ -660,3 +660,14 @@ async fn nothing_blocks_a_dry_run_that_succeeds() {
         .unwrap()
         .is_empty());
 }
+
+#[tokio::test]
+async fn deleting_a_folder_with_its_content_asks_the_cascade() {
+    let path = format!("/folders/{FOLDER_ID}.json");
+    let (fake, client) = logged_in_with("DELETE", &path, Value::Null).await;
+
+    client.delete_folder_with_content(FOLDER_ID).await.unwrap();
+
+    let request = single_request(&fake, "DELETE", &path);
+    assert_eq!(request.query_value("cascade").as_deref(), Some("1"));
+}

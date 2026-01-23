@@ -127,6 +127,8 @@ fn resource_v5_value(metadata: &Value, key: &TestKey, key_type: &str, key_id: &s
     resource["metadata"] = key.encrypt(&metadata.to_string()).into();
     resource["metadata_key_type"] = key_type.into();
     resource["metadata_key_id"] = key_id.into();
+    // The server only accepts personal metadata on a resource only its owner can access.
+    resource["personal"] = (key_type == "user_key").into();
     if let Some(resource_type_id) = metadata["resource_type_id"].as_str() {
         resource["resource_type_id"] = resource_type_id.into();
     }

@@ -483,7 +483,13 @@ pub enum DeleteEntity {
     Folder {
         #[arg(long)]
         id: String,
+        /// Also delete its sub-folders and the resources in them; without it, they move to the
+        /// root
+        #[arg(long)]
+        cascade: bool,
     },
+    /// Delete a user (administrators); what they alone own or manage blocks it until given to
+    /// someone with --transfer-to
     User {
         #[arg(long)]
         id: String,
@@ -519,11 +525,18 @@ pub struct ShareArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ShareEntity {
+    #[command(group(clap::ArgGroup::new("recipients").args(["user", "group"]).multiple(true).required(true)))]
     Resource {
         #[arg(long)]
         id: String,
         /// Permission type: 1=Read, 7=Update, 15=Owner, -1=Revoke
-        #[arg(short = 't', long, default_value = "1", allow_negative_numbers = true)]
+        #[arg(
+            short = 't',
+            long,
+            default_value = "1",
+            allow_negative_numbers = true,
+            value_parser = parse_permission_type
+        )]
         r#type: i32,
         /// User IDs to share with
         #[arg(short = 'u', long)]
@@ -532,11 +545,18 @@ pub enum ShareEntity {
         #[arg(short = 'g', long)]
         group: Vec<String>,
     },
+    #[command(group(clap::ArgGroup::new("recipients").args(["user", "group"]).multiple(true).required(true)))]
     Folder {
         #[arg(long)]
         id: String,
         /// Permission type: 1=Read, 7=Update, 15=Owner, -1=Revoke
-        #[arg(short = 't', long, default_value = "1", allow_negative_numbers = true)]
+        #[arg(
+            short = 't',
+            long,
+            default_value = "1",
+            allow_negative_numbers = true,
+            value_parser = parse_permission_type
+        )]
         r#type: i32,
         #[arg(short = 'u', long)]
         user: Vec<String>,
@@ -580,4 +600,14 @@ pub enum MoveEntity {
         #[arg(long, requires = "folder_parent_id")]
         with_folder_permissions: bool,
     },
+}
+
+/// A permission type the server knows: 1 (read), 7 (update), 15 (owner), or -1 to revoke.
+fn parse_permission_type(value: &str) -> Result<i32, String> {
+    match value.parse::<i32>() {
+        Ok(permission_type @ (1 | 7 | 15 | -1)) => Ok(permission_type),
+        _ => Err(format!(
+            "{value} is not a permission type: 1 (read), 7 (update), 15 (owner) or -1 (revoke)"
+        )),
+    }
 }

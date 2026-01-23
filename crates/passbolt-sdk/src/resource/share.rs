@@ -33,12 +33,7 @@ pub async fn share_resource<H: HttpClient>(
     group_ids: &[String],
     permission_type: i32,
 ) -> Result<(), PassboltError> {
-    let changed = change_permissions(client, id, user_ids, group_ids, permission_type).await?;
-    if !changed && permission_type == -1 {
-        return Err(PassboltError::InvalidArgument(
-            "No matching permissions found to revoke for the given users/groups".into(),
-        ));
-    }
+    change_permissions(client, id, user_ids, group_ids, permission_type).await?;
     Ok(())
 }
 
@@ -52,10 +47,7 @@ async fn change_permissions<H: HttpClient>(
 ) -> Result<bool, PassboltError> {
     let existing = client.get_resource_permissions(id).await?;
     if permission_type == -1 {
-        let permissions = build_revoke_changes(&existing, user_ids, group_ids);
-        if permissions.is_empty() {
-            return Ok(false);
-        }
+        let permissions = revoke_changes(&existing, user_ids, group_ids)?;
         let payload = SharePayload {
             permissions,
             secrets: None,
@@ -70,6 +62,31 @@ async fn change_permissions<H: HttpClient>(
     }
     apply_changes(client, id, permissions).await?;
     Ok(true)
+}
+
+/// The removal of each permission of `user_ids` and `group_ids`; one without any access is
+/// refused before anything changes, so that a typo does not pass for a revocation.
+pub(crate) fn revoke_changes(
+    existing: &[Permission],
+    user_ids: &[String],
+    group_ids: &[String],
+) -> Result<Vec<ShareChange>, PassboltError> {
+    let without_access: Vec<String> = aros(user_ids, group_ids)
+        .filter(|(aro, aro_foreign_key)| {
+            !existing.iter().any(|permission| {
+                permission.aro.as_deref() == Some(*aro)
+                    && permission.aro_foreign_key.as_deref() == Some(*aro_foreign_key)
+            })
+        })
+        .map(|(aro, aro_foreign_key)| format!("{} {aro_foreign_key}", aro.to_lowercase()))
+        .collect();
+    if !without_access.is_empty() {
+        return Err(PassboltError::InvalidArgument(format!(
+            "No permission to revoke for {}",
+            without_access.join(", ")
+        )));
+    }
+    Ok(build_revoke_changes(existing, user_ids, group_ids))
 }
 
 /// `(aro, id)` of the users then the groups.

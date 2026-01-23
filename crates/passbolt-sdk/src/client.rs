@@ -1142,9 +1142,17 @@ impl<H: HttpClient> PassboltSdk<H> {
             .await
     }
 
+    /// Delete a folder; its content moves to the root.
     pub async fn delete_folder(&self, id: &str) -> Result<(), PassboltError> {
         let id = uuid_segment(id)?;
         self.delete_request(&format!("/folders/{id}.json")).await
+    }
+
+    /// Delete a folder with its sub-folders and the resources the user may delete in them.
+    pub async fn delete_folder_with_content(&self, id: &str) -> Result<(), PassboltError> {
+        let id = uuid_segment(id)?;
+        self.delete_request(&format!("/folders/{id}.json?cascade=1"))
+            .await
     }
 
     pub async fn get_folder_permissions(&self, id: &str) -> Result<Vec<Permission>, PassboltError> {
