@@ -79,7 +79,8 @@ fn membership_changes(
     );
     for (user_id, is_admin) in additions {
         match membership_of(user_id) {
-            Some(membership) if membership.is_admin == Some(is_admin) => {}
+            // Adding a member who is already one, manager included, changes nothing.
+            Some(membership) if membership.is_admin == Some(is_admin) || !is_admin => {}
             Some(membership) => changes.push(GroupMembershipChange {
                 id: membership.id.clone(),
                 is_admin: Some(is_admin),

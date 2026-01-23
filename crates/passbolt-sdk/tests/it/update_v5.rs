@@ -476,3 +476,52 @@ async fn a_secret_field_is_refused_on_a_password_string() {
         "{error}"
     );
 }
+
+#[tokio::test]
+async fn personal_metadata_goes_to_the_shared_key_once_personal_keys_are_disallowed() {
+    let fake = personal_resource("v5-default", &v5_secret());
+    fake.with_metadata_settings(
+        data::metadata_types_settings(),
+        json!({"allow_usage_of_personal_keys": false, "zero_knowledge_key_share": false}),
+    );
+
+    let body = update(
+        &fake,
+        ResourceChanges {
+            name: Some("GitLab".into()),
+            ..ResourceChanges::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(body["metadata_key_type"], "shared_key");
+    assert_eq!(metadata_for(&METADATA, &body)["name"], "GitLab");
+}
+
+#[tokio::test]
+async fn shared_metadata_of_a_resource_only_the_user_reads_becomes_personal() {
+    let mut resource = data::resource_v5_with_secret(
+        "v5-default",
+        &data::metadata("GitHub"),
+        (&METADATA, "shared_key", "mk1"),
+        &v5_secret().to_string(),
+    );
+    // Its other permissions were revoked: the server marks it personal again.
+    resource["personal"] = true.into();
+    let fake = serving(resource);
+
+    let body = update(
+        &fake,
+        ResourceChanges {
+            name: Some("GitLab".into()),
+            ..ResourceChanges::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(body["metadata_key_type"], "user_key");
+    assert_eq!(body["metadata_key_id"], ADA_GPGKEY_ID);
+    assert_eq!(metadata_for(&ADA, &body)["name"], "GitLab");
+}

@@ -51,6 +51,8 @@ struct ActiveMetadataKey {
 pub struct MetadataKeys {
     private_keys: HashMap<String, MetadataPrivateKey>,
     active: Option<ActiveMetadataKey>,
+    /// A usable key exists that the user holds no share of yet (zero-knowledge mode).
+    unshared_key: bool,
 }
 
 /// Encrypted `metadata` and the key it is encrypted for, as resources carry them.
@@ -98,9 +100,15 @@ impl MetadataKeys {
             let private_key = parse_private_key_data(metadata_key, &plaintext)?;
             decrypted_keys.insert(metadata_key.id.clone(), private_key);
         }
+        let active = active_key(keys, &decrypted_keys)?;
+        let unshared_key = active.is_none()
+            && keys
+                .iter()
+                .any(|key| key.deleted.is_none() && key.expired.is_none());
         Ok(Self {
             private_keys: decrypted_keys,
-            active: active_key(keys)?,
+            active,
+            unshared_key,
         })
     }
 
@@ -111,7 +119,13 @@ impl MetadataKeys {
         user: &Signer<'_>,
     ) -> Result<EncryptedMetadata, PassboltError> {
         let active = self.active.as_ref().ok_or_else(|| {
-            CryptoError::Encrypt("the server has no active shared metadata key".into())
+            CryptoError::Encrypt(if self.unshared_key {
+                "the shared metadata key is not shared with you yet: ask an administrator to \
+                 share it"
+                    .into()
+            } else {
+                "the server has no active shared metadata key".into()
+            })
         })?;
         let mut signers = vec![Signer {
             key: user.key,
@@ -160,10 +174,16 @@ impl MetadataKeys {
 }
 
 /// The latest created key neither expired nor deleted: the server accepts only that one.
-fn active_key(keys: &[MetadataKey]) -> Result<Option<ActiveMetadataKey>, PassboltError> {
+/// The newest key neither deleted nor expired the user holds a share of, as the browser
+/// extension picks it: metadata encrypted for a key the user cannot decrypt would be lost to
+/// them.
+fn active_key(
+    keys: &[MetadataKey],
+    held: &HashMap<String, MetadataPrivateKey>,
+) -> Result<Option<ActiveMetadataKey>, PassboltError> {
     let Some(metadata_key) = keys
         .iter()
-        .filter(|key| key.deleted.is_none() && key.expired.is_none())
+        .filter(|key| key.deleted.is_none() && key.expired.is_none() && held.contains_key(&key.id))
         .max_by_key(|key| key.created)
     else {
         return Ok(None);

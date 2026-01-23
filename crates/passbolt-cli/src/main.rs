@@ -699,16 +699,50 @@ async fn dispatch(
                 client.delete_resource(id).await?;
                 output::print_done(json_output, "deleted", "resource", id)?;
             }
-            DeleteEntity::Folder { id } => {
-                client.delete_folder(id).await?;
+            DeleteEntity::Folder { id, cascade } => {
+                if *cascade {
+                    client.delete_folder_with_content(id).await?;
+                } else {
+                    client.delete_folder(id).await?;
+                }
                 output::print_done(json_output, "deleted", "folder", id)?;
             }
-            DeleteEntity::User { id } => {
-                client.delete_user(id).await?;
+            DeleteEntity::User {
+                id,
+                dry_run,
+                transfer_to,
+            } => {
+                let blockers = client.user_delete_blockers(id).await?;
+                if *dry_run {
+                    return print_blockers(json_output, "user", &blockers);
+                }
+                match transfer_to {
+                    _ if blockers.is_empty() => client.delete_user(id).await?,
+                    Some(successor) => {
+                        let transfer = blockers.transfer_to(successor)?;
+                        client.delete_user_with_transfer(id, &transfer).await?;
+                    }
+                    None => refuse_blocked_delete("user", &blockers)?,
+                }
                 output::print_done(json_output, "deleted", "user", id)?;
             }
-            DeleteEntity::Group { id } => {
-                client.delete_group(id).await?;
+            DeleteEntity::Group {
+                id,
+                dry_run,
+                transfer_to,
+            } => {
+                let blockers = client.group_delete_blockers(id).await?;
+                if *dry_run {
+                    return print_blockers(json_output, "group", &blockers);
+                }
+                match transfer_to {
+                    _ if blockers.is_empty() => client.delete_group(id).await?,
+                    Some(successor) => {
+                        let transfer = blockers.transfer_to(successor)?;
+                        client.delete_group_with_transfer(id, &transfer).await?;
+                    }
+                    None => refuse_blocked_delete("group", &blockers)?,
+                }
                 output::print_done(json_output, "deleted", "group", id)?;
             }
         },
@@ -754,21 +788,34 @@ async fn dispatch(
             } => {
                 // An empty folder id is the root, as the help says.
                 let folder_parent_id = folder_parent_id.as_deref().filter(|id| !id.is_empty());
-                if *with_folder_permissions && folder_parent_id.is_none() {
-                    anyhow::bail!("--with-folder-permissions needs a folder: the root has none");
-                }
-                client.move_resource(id, folder_parent_id).await?;
-                if let (true, Some(folder_id)) = (*with_folder_permissions, folder_parent_id) {
-                    passbolt_sdk::resource::share::share_like_folder(client, id, folder_id).await?;
+                if *with_folder_permissions {
+                    passbolt_sdk::resource::share::move_with_folder_permissions(
+                        client,
+                        id,
+                        folder_parent_id,
+                    )
+                    .await?;
+                } else {
+                    client.move_resource(id, folder_parent_id).await?;
                 }
                 output::print_done(json_output, "moved", "resource", id)?;
             }
             MoveEntity::Folder {
                 id,
                 folder_parent_id,
+                with_folder_permissions,
             } => {
                 let folder_parent_id = folder_parent_id.as_deref().filter(|id| !id.is_empty());
-                client.move_folder(id, folder_parent_id).await?;
+                if *with_folder_permissions {
+                    passbolt_sdk::folder::share::move_with_folder_permissions(
+                        client,
+                        id,
+                        folder_parent_id,
+                    )
+                    .await?;
+                } else {
+                    client.move_folder(id, folder_parent_id).await?;
+                }
                 output::print_done(json_output, "moved", "folder", id)?;
             }
         },
@@ -803,6 +850,51 @@ async fn dispatch(
     }
 
     Ok(())
+}
+
+/// What blocks deleting a user or group, as JSON or one line per item.
+fn print_blockers(
+    json_output: bool,
+    entity: &str,
+    blockers: &passbolt_sdk::transfer::DeleteBlockers,
+) -> Result<()> {
+    if json_output {
+        return output::print_json(blockers);
+    }
+    if blockers.is_empty() {
+        println!("Nothing blocks deleting the {entity}.");
+    }
+    for (kind, items) in [
+        ("resource", &blockers.resources),
+        ("folder", &blockers.folders),
+    ] {
+        for item in items {
+            println!("{kind} {} is only owned by the {entity}", item.id);
+        }
+    }
+    for group in &blockers.groups {
+        println!(
+            "group {} ({}) is only managed by the {entity}",
+            group.id, group.name
+        );
+    }
+    for group_id in &blockers.groups_to_delete {
+        println!("group {group_id} has no other member: deleted with the {entity}");
+    }
+    Ok(())
+}
+
+fn refuse_blocked_delete(
+    entity: &str,
+    blockers: &passbolt_sdk::transfer::DeleteBlockers,
+) -> Result<()> {
+    anyhow::bail!(
+        "The {entity} alone owns {} resources and {} folders and alone manages {} groups: give \
+         them to someone with --transfer-to <user or group id> (list them with --dry-run)",
+        blockers.resources.len(),
+        blockers.folders.len(),
+        blockers.groups.len()
+    )
 }
 
 #[cfg(test)]
@@ -871,5 +963,35 @@ mod tests {
             cli.command,
             Commands::MigrateMetadata { shared_only: true }
         ));
+    }
+
+    #[rstest::rstest]
+    #[case::unknown_permission_type(&["share", "resource", "--id", "x", "-u", "u", "-t", "3"])]
+    #[case::no_recipient(&["share", "resource", "--id", "x", "-t", "1"])]
+    #[case::folder_without_recipient(&["share", "folder", "--id", "x"])]
+    fn test_share_refuses(#[case] arguments: &[&str]) {
+        let arguments = std::iter::once("passbolt").chain(arguments.iter().copied());
+
+        assert!(Cli::try_parse_from(arguments).is_err());
+    }
+
+    #[rstest::rstest]
+    #[case::revoke("-1")]
+    #[case::read("1")]
+    #[case::owner("15")]
+    fn test_share_takes_the_permission_types(#[case] permission_type: &str) {
+        let cli = Cli::try_parse_from([
+            "passbolt",
+            "share",
+            "resource",
+            "--id",
+            "x",
+            "-g",
+            "g",
+            "-t",
+            permission_type,
+        ]);
+
+        assert!(cli.is_ok());
     }
 }

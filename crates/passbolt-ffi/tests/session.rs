@@ -30,6 +30,8 @@ const SERVER_PUBLIC: &str =
 const BETTY_PUBLIC: &str = include_str!("../../passbolt-sdk/tests/fixtures/keys/betty_public.asc");
 const METADATA_PUBLIC: &str =
     include_str!("../../passbolt-sdk/tests/fixtures/keys/metadata_public.asc");
+const METADATA_PRIVATE: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/keys/metadata_private.asc");
 const ADA_ID: &str = "8b6c3a10-0000-4000-8000-00000000a0da";
 const RESOURCE_ID: &str = "7a5b2c30-0000-4000-8000-0000000000e1";
 const PASSWORD_AND_DESCRIPTION_ID: &str = "a28a04cd-6f53-518a-967c-9963bf9cec51";
@@ -371,6 +373,19 @@ fn a_server_without_the_pinned_key_is_refused_before_login() {
     );
 }
 
+/// Ada's share of the metadata key: its private key, encrypted for her.
+fn ada_share_of_the_metadata_key() -> String {
+    let private_key = json!({
+        "object_type": "PASSBOLT_METADATA_PRIVATE_KEY",
+        "domain": "https://passbolt.test",
+        "fingerprint": crypto::public_key_fingerprint(METADATA_PUBLIC).unwrap(),
+        "armored_key": METADATA_PRIVATE,
+        "passphrase": ""
+    });
+    let ada_key = crypto::parse_public_key(ADA_PUBLIC).unwrap();
+    crypto::encrypt_message(private_key.to_string().as_bytes(), &[&ada_key]).unwrap()
+}
+
 #[test]
 fn the_active_metadata_key_fingerprint_is_given_to_pin() {
     let passbolt = Passbolt::new();
@@ -385,7 +400,14 @@ fn the_active_metadata_key_fingerprint_is_given_to_pin() {
             "modified": "2025-09-01T10:00:00+00:00",
             "deleted": null,
             "expired": null,
-            "metadata_private_keys": []
+            "metadata_private_keys": [{
+                "id": "4f1d2e3c-0000-4000-8000-0000000000b1",
+                "metadata_key_id": "4f1d2e3c-0000-4000-8000-0000000000a1",
+                "user_id": ADA_ID,
+                "data": ada_share_of_the_metadata_key(),
+                "created": "2025-09-01T10:00:00+00:00",
+                "modified": "2025-09-01T10:00:00+00:00"
+            }]
         }]),
     );
 

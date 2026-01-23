@@ -15,8 +15,10 @@
 
 mod common;
 
+mod deletions;
 mod directory;
 mod errors;
+mod folder_permissions;
 mod folders;
 mod interop;
 mod outputs;
@@ -26,5 +28,6 @@ mod resources;
 mod session;
 mod session_keys;
 mod sharing;
+mod sharing_rules;
 mod tools;
 mod totp;

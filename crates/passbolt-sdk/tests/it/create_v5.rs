@@ -349,15 +349,18 @@ async fn shared_metadata_needs_an_active_key() {
 }
 
 #[tokio::test]
-async fn without_a_share_of_the_key_metadata_is_signed_by_the_user_only() {
+async fn without_a_share_of_the_key_shared_metadata_is_refused() {
     let mut keys = data::metadata_keys(&[("mk1", &METADATA)]);
     keys[0]["metadata_private_keys"] = json!([]);
     let fake = shared_keys_server(keys);
 
-    let body = create(&fake, &github()).await.unwrap();
+    let error = create(&fake, &github()).await.unwrap_err();
 
-    let metadata = METADATA.decrypt_signed(body["metadata"].as_str().unwrap(), &[&ADA]);
-    assert!(metadata.contains(r#""name":"GitHub""#), "{metadata}");
+    assert!(
+        error.to_string().contains("not shared with you yet"),
+        "{error}"
+    );
+    assert!(fake.requests_to("POST", "/resources.json").is_empty());
 }
 
 #[tokio::test]
@@ -478,4 +481,110 @@ async fn shared_metadata_is_not_encrypted_for_another_key_than_the_pinned_one() 
         "{error:?}"
     );
     assert!(fake.requests_to("POST", "/resources.json").is_empty());
+}
+
+/// `v5_server` creating shared metadata, `FOLDER_ID` shared with betty, the created resource
+/// served back with its secret.
+fn server_creating_in_a_shared_folder() -> FakePassbolt {
+    let fake = v5_server(
+        json!({"allow_usage_of_personal_keys": false, "zero_knowledge_key_share": false}),
+    );
+    fake.on(
+        "GET",
+        &format!("/folders/{FOLDER_ID}.json"),
+        data::folder(json!([
+            data::permission("f-ada", "User", ADA_ID, 15),
+            data::permission("f-betty", "User", BETTY_ID, 1)
+        ])),
+    );
+    fake.on(
+        "GET",
+        &resource_path(),
+        data::resource_v5_with_secret(
+            "v5-default",
+            &data::metadata("GitHub"),
+            (&METADATA, "shared_key", "mk1"),
+            r#"{"object_type":"PASSBOLT_SECRET_DATA","password":"s3cr3t"}"#,
+        ),
+    );
+    fake.on(
+        "GET",
+        &format!("/permissions/resource/{RESOURCE_ID}.json"),
+        ada_owner_permissions(),
+    );
+    fake.on(
+        "PUT",
+        &format!("/share/resource/{RESOURCE_ID}.json"),
+        Value::Null,
+    );
+    fake
+}
+
+#[tokio::test]
+async fn a_resource_created_in_a_shared_folder_gets_its_permissions() {
+    let fake = server_creating_in_a_shared_folder();
+    let new_resource = NewResource {
+        folder_parent_id: Some(FOLDER_ID.into()),
+        ..github()
+    };
+
+    create(&fake, &new_resource).await.unwrap();
+
+    let share = fake.body_of("PUT", &format!("/share/resource/{RESOURCE_ID}.json"));
+    assert_eq!(
+        share["permissions"],
+        json!([{ "aro": "User", "aro_foreign_key": BETTY_ID, "type": 1 }])
+    );
+    assert_eq!(
+        secret_user_ids(&share),
+        std::collections::BTreeSet::from([BETTY_ID])
+    );
+}
+
+#[tokio::test]
+async fn a_resource_created_outside_any_folder_is_not_shared() {
+    let fake = server_creating_in_a_shared_folder();
+
+    create(&fake, &github()).await.unwrap();
+
+    assert!(fake
+        .requests_to("PUT", &format!("/share/resource/{RESOURCE_ID}.json"))
+        .is_empty());
+}
+
+#[tokio::test]
+async fn a_folder_created_in_a_shared_folder_gets_its_permissions() {
+    const NEW_FOLDER_ID: &str = "5f6e7d8c-0000-4000-8000-0000000000f9";
+    let fake = server_creating_in_a_shared_folder();
+    let mut created = data::folder(json!([data::permission("n-ada", "User", ADA_ID, 15)]));
+    created["id"] = NEW_FOLDER_ID.into();
+    fake.on("POST", "/folders.json", created.clone());
+    fake.on("GET", &format!("/folders/{NEW_FOLDER_ID}.json"), created);
+    fake.on(
+        "PUT",
+        &format!("/share/folder/{NEW_FOLDER_ID}.json"),
+        Value::Null,
+    );
+    let client = login_ada(&fake).await;
+
+    passbolt_sdk::folder::create::create_folder(&client, "Ops", Some(FOLDER_ID))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        fake.body_of("PUT", &format!("/share/folder/{NEW_FOLDER_ID}.json"))["permissions"],
+        json!([{ "aro": "User", "aro_foreign_key": BETTY_ID, "type": 1 }])
+    );
+}
+
+#[tokio::test]
+async fn the_newest_key_the_user_holds_a_share_of_is_used() {
+    let mut keys = two_metadata_keys();
+    // mk-new is not shared with ada yet (zero-knowledge mode).
+    keys[1]["metadata_private_keys"] = json!([]);
+    let fake = shared_keys_server(keys);
+
+    let body = create(&fake, &github()).await.unwrap();
+
+    assert_eq!(body["metadata_key_id"], "mk-old");
 }

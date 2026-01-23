@@ -584,3 +584,90 @@ async fn get_resources_filters_on_one_group_only() {
     );
     assert!(fake.requests_to("GET", "/resources.json").is_empty());
 }
+
+async fn client_blocked_from_deleting_betty() -> (FakePassbolt, Client) {
+    let fake = FakePassbolt::new();
+    fake.on_error_with_body(
+        "DELETE",
+        &format!("/users/{BETTY_ID}/dry-run.json"),
+        400,
+        "The user cannot be deleted.",
+        data::user_delete_blockers(),
+    );
+    fake.on("DELETE", &format!("/users/{BETTY_ID}.json"), Value::Null);
+    let client = login_ada(&fake).await;
+    (fake, client)
+}
+
+#[tokio::test]
+async fn the_user_delete_blockers_list_the_items_groups_and_groups_deleted_too() {
+    let (_fake, client) = client_blocked_from_deleting_betty().await;
+
+    let blockers = client.user_delete_blockers(BETTY_ID).await.unwrap();
+
+    assert_eq!(blockers.resources.len(), 2);
+    assert_eq!(blockers.resources[0].permissions.len(), 2);
+    assert_eq!(blockers.groups[0].name, "Ops");
+    assert_eq!(
+        blockers.groups_to_delete,
+        ["9c7d4b20-0000-4000-8000-000000000961"]
+    );
+}
+
+#[tokio::test]
+async fn deleting_with_a_transfer_sends_the_successor_permissions_and_membership() {
+    let (fake, client) = client_blocked_from_deleting_betty().await;
+    let blockers = client.user_delete_blockers(BETTY_ID).await.unwrap();
+
+    let transfer = blockers.transfer_to(CAROL_ID).unwrap();
+    client
+        .delete_user_with_transfer(BETTY_ID, &transfer)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        fake.body_of("DELETE", &format!("/users/{BETTY_ID}.json")),
+        json!({"transfer": {
+            "owners": [
+                {"id": "3e4f5a60-0000-4000-8000-0000000000a2", "aco_foreign_key": "7a5b2c30-0000-4000-8000-0000000000e1"},
+                {"id": "3e4f5a60-0000-4000-8000-0000000000b2", "aco_foreign_key": "7a5b2c30-0000-4000-8000-0000000000e2"}
+            ],
+            "managers": [
+                {"id": "6d8e9f10-0000-4000-8000-0000000000c2", "group_id": GROUP_ID}
+            ]
+        }})
+    );
+}
+
+#[tokio::test]
+async fn a_successor_without_access_to_everything_is_refused() {
+    let (_fake, client) = client_blocked_from_deleting_betty().await;
+    let blockers = client.user_delete_blockers(BETTY_ID).await.unwrap();
+
+    let error = blockers.transfer_to(ERIN_ID).unwrap_err();
+
+    assert!(error.to_string().contains("has no access"), "{error}");
+}
+
+#[tokio::test]
+async fn nothing_blocks_a_dry_run_that_succeeds() {
+    let path = format!("/groups/{GROUP_ID}/dry-run.json");
+    let (_fake, client) = logged_in_with("DELETE", &path, json!([])).await;
+
+    assert!(client
+        .group_delete_blockers(GROUP_ID)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn deleting_a_folder_with_its_content_asks_the_cascade() {
+    let path = format!("/folders/{FOLDER_ID}.json");
+    let (fake, client) = logged_in_with("DELETE", &path, Value::Null).await;
+
+    client.delete_folder_with_content(FOLDER_ID).await.unwrap();
+
+    let request = single_request(&fake, "DELETE", &path);
+    assert_eq!(request.query_value("cascade").as_deref(), Some("1"));
+}

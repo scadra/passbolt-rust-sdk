@@ -668,8 +668,11 @@ pub fn build_revoke_changes(
         .iter()
         .filter(|permission| {
             let foreign_key = permission.aro_foreign_key.as_deref().unwrap_or("");
-            user_ids.iter().any(|user_id| user_id == foreign_key)
-                || group_ids.iter().any(|group_id| group_id == foreign_key)
+            match permission.aro.as_deref() {
+                Some("User") => user_ids.iter().any(|user_id| user_id == foreign_key),
+                Some("Group") => group_ids.iter().any(|group_id| group_id == foreign_key),
+                _ => false,
+            }
         })
         .filter_map(|permission| {
             let id = permission.id.clone()?;
@@ -996,6 +999,13 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].aro, "Group");
         assert_eq!(changes[0].delete, Some(true));
+    }
+
+    #[test]
+    fn test_revoke_a_user_leaves_a_group_of_the_same_id() {
+        let permissions = vec![make_perm("perm-2", "Group", "same-id")];
+        let changes = build_revoke_changes(&permissions, &["same-id".into()], &[]);
+        assert!(changes.is_empty());
     }
 
     #[test]

@@ -323,30 +323,102 @@ async fn sharing_personal_v5_metadata_moves_it_to_the_shared_key_first() {
     );
 }
 
-#[tokio::test]
-async fn sharing_like_a_folder_adds_its_permissions() {
-    let fake = fake_serving_shareable_resource(r#"{"password":"p"}"#, ada_owner_permissions());
+fn move_path() -> String {
+    format!("/move/resource/{RESOURCE_ID}.json")
+}
+
+/// The resource in `FOLDER_ID` with `permissions`, ada's own being `ada_permission_type`, and
+/// `destination` holding `destination_permissions`.
+fn fake_moving_resource(
+    permissions: Value,
+    ada_permission_type: i32,
+    destination: &str,
+    destination_permissions: Value,
+) -> FakePassbolt {
+    let fake = fake_serving_shareable_resource(r#"{"password":"p"}"#, permissions);
+    let mut resource = data::resource_v4("password-and-description", r#"{"password":"p"}"#);
+    resource["folder_parent_id"] = FOLDER_ID.into();
+    resource["permission"] = data::permission("p-ada", "User", ADA_ID, ada_permission_type);
+    fake.on("GET", &resource_path(), resource);
     fake.on(
         "GET",
         &format!("/folders/{FOLDER_ID}.json"),
         data::folder(json!([
             data::permission("f-ada", "User", ADA_ID, 15),
-            data::permission("f-ops", "Group", GROUP_ID, 7)
+            data::permission("f-betty", "User", BETTY_ID, 1)
         ])),
     );
-    let client = login_ada(&fake).await;
+    fake.on(
+        "GET",
+        &format!("/folders/{destination}.json"),
+        data::folder(destination_permissions),
+    );
+    fake.on("PUT", &move_path(), Value::Null);
+    fake
+}
 
-    share::share_like_folder(&client, RESOURCE_ID, FOLDER_ID)
-        .await
-        .unwrap();
+async fn move_into(fake: &FakePassbolt, destination: &str) -> Result<(), PassboltError> {
+    let client = login_ada(fake).await;
+    share::move_with_folder_permissions(&client, RESOURCE_ID, Some(destination)).await
+}
 
+#[tokio::test]
+async fn moving_trades_the_old_folder_permissions_for_the_destination_ones() {
+    let fake = fake_moving_resource(
+        ada_owner_betty_reader_permissions(),
+        15,
+        CHILD_FOLDER_ID,
+        json!([
+            data::permission("d-ada", "User", ADA_ID, 15),
+            data::permission("d-carol", "User", CAROL_ID, 7)
+        ]),
+    );
+
+    move_into(&fake, CHILD_FOLDER_ID).await.unwrap();
+
+    assert_eq!(
+        fake.body_of("PUT", &move_path())["folder_parent_id"],
+        CHILD_FOLDER_ID
+    );
     let body = fake.body_of("PUT", &share_path());
     assert_eq!(
         body["permissions"],
-        json!([{ "aro": "Group", "aro_foreign_key": GROUP_ID, "type": 7 }]),
-        "ada is already owner"
+        json!([
+            { "aro": "User", "aro_foreign_key": CAROL_ID, "type": 7 },
+            { "id": "p-betty", "aro": "User", "aro_foreign_key": BETTY_ID, "delete": true }
+        ])
     );
-    assert_eq!(secret_user_ids(&body), BTreeSet::from([BETTY_ID]));
+}
+
+#[tokio::test]
+async fn moving_is_refused_before_anything_moves_for_a_non_owner() {
+    let fake = fake_moving_resource(ada_owner_permissions(), 7, CHILD_FOLDER_ID, json!([]));
+
+    let error = move_into(&fake, CHILD_FOLDER_ID).await.unwrap_err();
+
+    assert!(error.to_string().contains("Only an owner"), "{error}");
+    assert!(fake.requests_to("PUT", &move_path()).is_empty());
+}
+
+#[tokio::test]
+async fn a_move_leaving_no_owner_is_refused_before_anything_moves() {
+    // Ada only owns the resource through the folder it leaves.
+    let fake = fake_moving_resource(
+        json!([data::permission("p-ada", "User", ADA_ID, 15)]),
+        15,
+        CHILD_FOLDER_ID,
+        json!([data::permission("d-betty", "User", BETTY_ID, 7)]),
+    );
+    fake.on(
+        "GET",
+        &format!("/folders/{FOLDER_ID}.json"),
+        data::folder(json!([data::permission("f-ada", "User", ADA_ID, 15)])),
+    );
+
+    let error = move_into(&fake, CHILD_FOLDER_ID).await.unwrap_err();
+
+    assert!(error.to_string().contains("without owner"), "{error}");
+    assert!(fake.requests_to("PUT", &move_path()).is_empty());
 }
 
 const CHILD_FOLDER_ID: &str = "5f6e7d8c-0000-4000-8000-0000000000f2";
@@ -387,10 +459,25 @@ fn fake_serving_a_folder_tree() -> FakePassbolt {
     resource["folder_parent_id"] = CHILD_FOLDER_ID.into();
     resource["permission"] = data::permission("p-ada", "User", ADA_ID, 15);
     fake.on("GET", "/resources.json", json!([resource]));
+    fake.on(
+        "GET",
+        &format!("/folders/{CHILD_FOLDER_ID}.json"),
+        folder_in(CHILD_FOLDER_ID, Some(FOLDER_ID), 15),
+    );
     for id in [FOLDER_ID, CHILD_FOLDER_ID, FOREIGN_FOLDER_ID] {
         fake.on("PUT", &folder_share_path(id), Value::Null);
     }
     fake
+}
+
+/// `folder_in`, betty reading it with the permission `permission_id`.
+fn folder_betty_reads(id: &str, parent: Option<&str>, permission_id: &str) -> Value {
+    let mut folder = folder_in(id, parent, 15);
+    folder["permissions"]
+        .as_array_mut()
+        .unwrap()
+        .push(data::permission(permission_id, "User", BETTY_ID, 1));
+    folder
 }
 
 async fn share_folder_with_betty(fake: &FakePassbolt, with_content: bool) {
@@ -571,4 +658,85 @@ async fn sharing_with_a_user_whose_key_is_unusable_sends_nothing(
 
     assert!(error.to_string().contains(reason), "{error}");
     assert!(fake.requests_to("PUT", &share_path()).is_empty());
+}
+
+#[tokio::test]
+async fn raising_an_access_on_a_folder_only_reaches_the_content_the_user_has() {
+    let fake = fake_serving_a_folder_tree();
+    fake.on(
+        "GET",
+        &format!("/folders/{FOLDER_ID}.json"),
+        folder_betty_reads(FOLDER_ID, None, "p-betty-root"),
+    );
+    fake.on(
+        "GET",
+        &format!("/folders/{CHILD_FOLDER_ID}.json"),
+        folder_betty_reads(CHILD_FOLDER_ID, Some(FOLDER_ID), "p-betty-child"),
+    );
+
+    share_folder_with_betty(&fake, true).await;
+
+    assert_eq!(
+        fake.body_of("PUT", &folder_share_path(CHILD_FOLDER_ID))["permissions"],
+        json!([{ "id": "p-betty-child", "aro": "User", "aro_foreign_key": BETTY_ID, "type": 7 }]),
+        "the child's own permission"
+    );
+    assert!(
+        fake.requests_to("PUT", &share_path()).is_empty(),
+        "betty has no access to the resource"
+    );
+}
+
+#[tokio::test]
+async fn a_folder_already_shared_so_copies_nothing_to_its_content() {
+    let fake = fake_serving_a_folder_tree();
+    let mut folder = folder_betty_reads(FOLDER_ID, None, "p-betty-root");
+    folder["permissions"][1]["type"] = 7.into();
+    fake.on("GET", &format!("/folders/{FOLDER_ID}.json"), folder);
+
+    share_folder_with_betty(&fake, true).await;
+
+    for id in [FOLDER_ID, CHILD_FOLDER_ID] {
+        assert!(fake.requests_to("PUT", &folder_share_path(id)).is_empty());
+    }
+    assert!(fake.requests_to("PUT", &share_path()).is_empty());
+}
+
+#[tokio::test]
+async fn revoking_someone_without_access_changes_nothing_for_the_others() {
+    let fake = fake_serving_shareable_resource(
+        r#"{"password":"p"}"#,
+        ada_owner_betty_reader_permissions(),
+    );
+    let client = login_ada(&fake).await;
+
+    let error = share_with(&client, &[BETTY_ID, CAROL_ID], &[], -1)
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains(CAROL_ID), "{error}");
+    assert!(!error.to_string().contains(BETTY_ID), "{error}");
+    assert!(fake.requests_to("PUT", &share_path()).is_empty());
+}
+
+#[tokio::test]
+async fn adding_a_manager_as_member_keeps_them_manager() {
+    let fake = fake_serving_group();
+    let client = login_ada(&fake).await;
+
+    // Ada manages the group already.
+    group_update::update_group(
+        &client,
+        GROUP_ID,
+        Some("Ops renamed"),
+        &[ADA_ID.into()],
+        &[],
+        &[],
+    )
+    .await
+    .unwrap();
+
+    let body = fake.body_of("PUT", &group_path());
+    let membership_changes = body.get("groups_users").and_then(Value::as_array);
+    assert!(membership_changes.is_none_or(Vec::is_empty), "{body}");
 }

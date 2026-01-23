@@ -153,7 +153,14 @@ pub async fn update_resource<H: HttpClient>(
     }
     if new_type.is_v5() {
         let metadata = document::metadata(new_type, &fields)?;
-        let personal = resource.metadata_key_type.as_deref() == Some("user_key");
+        // As the browser extension decides it: personal while only the user has access and
+        // the settings allow personal keys.
+        let personal = resource.personal == Some(true)
+            && client
+                .metadata_settings()
+                .await?
+                .keys
+                .allows_personal_keys();
         let me = client.get_me().await?;
         let encrypted = document::encrypt_metadata(client, &metadata, personal, &me).await?;
         payload.metadata = Some(encrypted.metadata);

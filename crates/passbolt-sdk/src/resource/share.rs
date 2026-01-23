@@ -14,6 +14,7 @@ use crate::client::PassboltSdk;
 use crate::crypto;
 use crate::error::PassboltError;
 use crate::http::HttpClient;
+use crate::permission::{changes, grants, moved, OWNER};
 use crate::resource::document;
 use crate::types::{
     build_revoke_changes, Permission, Resource, ResourceType, SecretPayload, ShareChange,
@@ -32,17 +33,12 @@ pub async fn share_resource<H: HttpClient>(
     group_ids: &[String],
     permission_type: i32,
 ) -> Result<(), PassboltError> {
-    let changed = change_permissions(client, id, user_ids, group_ids, permission_type).await?;
-    if !changed && permission_type == -1 {
-        return Err(PassboltError::InvalidArgument(
-            "No matching permissions found to revoke for the given users/groups".into(),
-        ));
-    }
+    change_permissions(client, id, user_ids, group_ids, permission_type).await?;
     Ok(())
 }
 
 /// The work of [`share_resource`]; `false` when the permissions are already as asked.
-pub(crate) async fn change_permissions<H: HttpClient>(
+async fn change_permissions<H: HttpClient>(
     client: &PassboltSdk<H>,
     id: &str,
     user_ids: &[String],
@@ -51,10 +47,7 @@ pub(crate) async fn change_permissions<H: HttpClient>(
 ) -> Result<bool, PassboltError> {
     let existing = client.get_resource_permissions(id).await?;
     if permission_type == -1 {
-        let permissions = build_revoke_changes(&existing, user_ids, group_ids);
-        if permissions.is_empty() {
-            return Ok(false);
-        }
+        let permissions = revoke_changes(&existing, user_ids, group_ids)?;
         let payload = SharePayload {
             permissions,
             secrets: None,
@@ -69,6 +62,31 @@ pub(crate) async fn change_permissions<H: HttpClient>(
     }
     apply_changes(client, id, permissions).await?;
     Ok(true)
+}
+
+/// The removal of each permission of `user_ids` and `group_ids`; one without any access is
+/// refused before anything changes, so that a typo does not pass for a revocation.
+pub(crate) fn revoke_changes(
+    existing: &[Permission],
+    user_ids: &[String],
+    group_ids: &[String],
+) -> Result<Vec<ShareChange>, PassboltError> {
+    let without_access: Vec<String> = aros(user_ids, group_ids)
+        .filter(|(aro, aro_foreign_key)| {
+            !existing.iter().any(|permission| {
+                permission.aro.as_deref() == Some(*aro)
+                    && permission.aro_foreign_key.as_deref() == Some(*aro_foreign_key)
+            })
+        })
+        .map(|(aro, aro_foreign_key)| format!("{} {aro_foreign_key}", aro.to_lowercase()))
+        .collect();
+    if !without_access.is_empty() {
+        return Err(PassboltError::InvalidArgument(format!(
+            "No permission to revoke for {}",
+            without_access.join(", ")
+        )));
+    }
+    Ok(build_revoke_changes(existing, user_ids, group_ids))
 }
 
 /// `(aro, id)` of the users then the groups.
@@ -86,38 +104,67 @@ pub(crate) fn aros<'a>(
         )
 }
 
-/// Give the resource the permissions of `folder_id`, as the browser extension does when
-/// moving a resource into a shared folder: missing ones are added, others updated.
-pub async fn share_like_folder<H: HttpClient>(
+/// Move a resource into `destination` (`None`: the root) with the permissions a move gives.
+///
+/// As the browser extension does: those it did not get from the folder it leaves, plus the
+/// destination's, the higher level winning (see [`moved`]). Only an owner can; the permissions
+/// are checked before the move, applied after it.
+pub async fn move_with_folder_permissions<H: HttpClient>(
+    client: &PassboltSdk<H>,
+    id: &str,
+    destination: Option<&str>,
+) -> Result<(), PassboltError> {
+    let resource = client.get_resource(id).await?;
+    if !is_owner(resource.permission.as_ref()) {
+        return Err(PassboltError::InvalidArgument(format!(
+            "Only an owner of resource {id} can give it the folder permissions"
+        )));
+    }
+    let current = client.get_resource_permissions(id).await?;
+    let parent = match resource.folder_parent_id.as_deref() {
+        Some(parent_id) => Some(client.get_folder_permissions(parent_id).await?),
+        None => None,
+    };
+    let destination_permissions = match destination {
+        Some(folder_id) => Some(client.get_folder_permissions(folder_id).await?),
+        None => None,
+    };
+    let target = moved(
+        &current,
+        parent.as_deref(),
+        destination_permissions.as_deref(),
+        resource.permission.as_ref(),
+    )?;
+    client.move_resource(id, destination).await?;
+    let changes = changes(&current, &target);
+    if changes.is_empty() {
+        return Ok(());
+    }
+    apply_changes(client, id, changes).await
+}
+
+/// Give the resource just created in `folder_id` exactly the folder's permissions, as the
+/// browser extension does.
+pub(crate) async fn inherit_folder_permissions<H: HttpClient>(
     client: &PassboltSdk<H>,
     id: &str,
     folder_id: &str,
 ) -> Result<(), PassboltError> {
-    let folder = client.get_folder(folder_id).await?;
-    let existing = client.get_resource_permissions(id).await?;
-    let mut permissions = Vec::new();
-    for folder_permission in &folder.permissions {
-        let (Some(aro), Some(aro_foreign_key), Some(permission_type)) = (
-            folder_permission.aro.as_deref(),
-            folder_permission.aro_foreign_key.as_deref(),
-            folder_permission.permission_type,
-        ) else {
-            continue;
-        };
-        permissions.extend(merge_changes(
-            &existing,
-            std::iter::once((aro, aro_foreign_key)),
-            permission_type,
-        ));
-    }
-    if permissions.is_empty() {
+    let folder_permissions = client.get_folder_permissions(folder_id).await?;
+    let current = client.get_resource_permissions(id).await?;
+    let changes = changes(&current, &grants(&folder_permissions));
+    if changes.is_empty() {
         return Ok(());
     }
-    apply_changes(client, id, permissions).await
+    apply_changes(client, id, changes).await
+}
+
+pub(crate) fn is_owner(permission: Option<&Permission>) -> bool {
+    permission.and_then(|permission| permission.permission_type) == Some(OWNER)
 }
 
 /// Simulate `permissions`, give the users who gain access the secret, then share.
-async fn apply_changes<H: HttpClient>(
+pub(crate) async fn apply_changes<H: HttpClient>(
     client: &PassboltSdk<H>,
     id: &str,
     permissions: Vec<ShareChange>,

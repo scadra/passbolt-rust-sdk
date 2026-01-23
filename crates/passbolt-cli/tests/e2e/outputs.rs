@@ -198,25 +198,6 @@ fn a_folder_moves_back_to_the_root_with_an_empty_parent() {
 }
 
 #[test]
-fn moving_to_the_root_with_the_folder_permissions_is_refused() {
-    let resource = create_resource(&unique_name("root"), "p", &[]);
-
-    passbolt()
-        .args([
-            "move",
-            "resource",
-            "--id",
-            &resource.id,
-            "--folder-parent-id",
-            "",
-            "--with-folder-permissions",
-        ])
-        .assert()
-        .failure()
-        .stderr(contains("needs a folder"));
-}
-
-#[test]
 fn a_full_keepass_export_contains_the_user_resources() {
     let name = unique_name("full-export");
     let _resource = create_resource(&name, "full-export-password", &["--type", "v5-default"]);
