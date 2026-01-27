@@ -42,7 +42,7 @@ use passbolt_sdk::config::SdkConfig;
 use passbolt_sdk::platform::native::{NativeHttpClient, NativeHttpConfig};
 use passbolt_sdk::{MfaProvider, PassboltSdk};
 
-use crate::mfa::{TotpSecretProvider, NON_INTERACTIVE_TOTP};
+use crate::mfa::{totp_provider, NON_INTERACTIVE_TOTP};
 use crate::types::{
     FfiAro, FfiComment, FfiFavorite, FfiFolder, FfiFolderQuery, FfiFolderTreeNode, FfiGroup,
     FfiGroupDeleteDryRun, FfiPasswordExpirySettings, FfiPermission, FfiResource, FfiResourceQuery,
@@ -207,7 +207,9 @@ impl PassboltClient {
     ) -> Result<Arc<Self>, PassboltFfiError> {
         let http_config = build_http_config(options.tls_skip_verify, options.proxy.clone());
         let config = build_sdk_config(server_url, private_key_armored, passphrase, options);
-        let mfa_provider = TotpSecretProvider::from_config(&config);
+        let mfa_provider = totp_provider(&config).map_err(|error| PassboltFfiError::Config {
+            message: error.to_string(),
+        })?;
         RUNTIME.block_on(async {
             let http =
                 NativeHttpClient::new(&http_config).map_err(|error| PassboltFfiError::Config {
@@ -841,7 +843,7 @@ mod tests {
 
         assert_eq!(config.mfa_mode, "");
         assert_eq!(config.mfa_totp_token, "");
-        assert!(TotpSecretProvider::from_config(&config).is_none());
+        assert!(totp_provider(&config).unwrap().is_none());
     }
 
     #[test]
@@ -850,7 +852,7 @@ mod tests {
 
         assert_eq!(config.mfa_mode, NON_INTERACTIVE_TOTP);
         assert_eq!(config.mfa_totp_token, "JBSWY3DPEHPK3PXP");
-        assert!(TotpSecretProvider::from_config(&config).is_some());
+        assert!(totp_provider(&config).unwrap().is_some());
     }
 
     #[test]

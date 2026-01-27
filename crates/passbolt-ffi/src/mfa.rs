@@ -10,96 +10,59 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use passbolt_sdk::config::SdkConfig;
 use passbolt_sdk::error::PassboltError;
-use passbolt_sdk::MfaProvider;
-use totp_rs::{Algorithm, Secret, TOTP};
+use passbolt_sdk::mfa::TotpProvider;
 
 pub const NON_INTERACTIVE_TOTP: &str = "non-interactive-totp";
 
-/// Non-interactive MFA: generates the TOTP code from a base32 secret.
-pub struct TotpSecretProvider {
-    secret: String,
-    offset_seconds: i64,
-}
-
-impl TotpSecretProvider {
-    /// Provider for the `non-interactive-totp` mode, `None` for any other mode.
-    pub fn from_config(config: &SdkConfig) -> Option<Self> {
-        (config.mfa_mode == NON_INTERACTIVE_TOTP).then(|| Self {
-            secret: config.mfa_totp_token.clone(),
-            offset_seconds: config.mfa_totp_offset,
-        })
+/// The TOTP provider of the `non-interactive-totp` mode, `None` for any other mode. A retry
+/// waits for the next TOTP window: the same code is never sent twice.
+pub fn totp_provider(config: &SdkConfig) -> Result<Option<TotpProvider>, PassboltError> {
+    if config.mfa_mode != NON_INTERACTIVE_TOTP {
+        return Ok(None);
     }
-
-    fn code_at(&self, unix_seconds: u64) -> Result<String, PassboltError> {
-        let secret_bytes = Secret::Encoded(self.secret.clone())
-            .to_bytes()
-            .map_err(|error| {
-                PassboltError::Other(format!("Invalid TOTP secret (must be base32): {error}"))
-            })?;
-        let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, secret_bytes)
-            .map_err(|error| PassboltError::Other(format!("Failed to create TOTP: {error}")))?;
-        Ok(totp.generate(unix_seconds))
-    }
-}
-
-impl MfaProvider for TotpSecretProvider {
-    fn get_totp_code(&self) -> Result<String, PassboltError> {
-        let now_seconds = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| PassboltError::Other(format!("System clock error: {error}")))?
-            .as_secs();
-        let adjusted_seconds = if self.offset_seconds >= 0 {
-            now_seconds.saturating_add(self.offset_seconds.unsigned_abs())
-        } else {
-            now_seconds.saturating_sub(self.offset_seconds.unsigned_abs())
-        };
-        self.code_at(adjusted_seconds)
-    }
-}
-
-impl Drop for TotpSecretProvider {
-    fn drop(&mut self) {
-        zeroize::Zeroize::zeroize(&mut self.secret);
-    }
+    TotpProvider::new(
+        &config.mfa_totp_token,
+        config.mfa_totp_offset,
+        std::time::Duration::ZERO,
+    )
+    .map(Some)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // RFC 6238 SHA1 seed "12345678901234567890" in base32.
-    const RFC_SECRET: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
-
-    fn provider(secret: &str) -> TotpSecretProvider {
-        TotpSecretProvider {
-            secret: secret.into(),
-            offset_seconds: 0,
-        }
+    /// The login config, non-interactive TOTP with `mfa_totp_token` when it is not empty.
+    fn config(mfa_totp_token: &str) -> SdkConfig {
+        crate::build_sdk_config(
+            "https://passbolt.test".into(),
+            "armored key".into(),
+            "passphrase".into(),
+            crate::FfiLoginOptions {
+                mfa_totp_token: Some(mfa_totp_token.into()),
+                ..crate::FfiLoginOptions::default()
+            },
+        )
     }
 
     #[test]
-    fn test_code_at_matches_rfc_6238_vector() {
-        let code = provider(RFC_SECRET).code_at(59).unwrap();
-
-        assert_eq!(code, "287082");
+    fn test_without_a_secret_there_is_no_totp_provider() {
+        assert!(totp_provider(&config("")).unwrap().is_none());
     }
 
     #[test]
-    fn test_code_at_rejects_non_base32_secret() {
-        let error = provider("not base32!").code_at(59).unwrap_err();
+    fn test_an_80_bit_secret_gives_a_provider() {
+        assert!(totp_provider(&config("JBSWY3DPEHPK3PXP"))
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn test_a_secret_that_is_not_base32_is_refused_at_login() {
+        let error = totp_provider(&config("not base32!")).err().unwrap();
 
         assert!(error.to_string().contains("base32"), "{error}");
-    }
-
-    #[test]
-    fn test_get_totp_code_returns_six_digits() {
-        let code = provider(RFC_SECRET).get_totp_code().unwrap();
-
-        assert_eq!(code.len(), 6);
-        assert!(code.chars().all(|character| character.is_ascii_digit()));
     }
 }

@@ -15,13 +15,11 @@ name = "uniffi-bindgen"
 path = "uniffi-bindgen.rs"
 
 [dependencies]
-passbolt-sdk = { path = "../passbolt-sdk", features = ["native"] }
+passbolt-sdk = { path = "../passbolt-sdk", features = ["native", "totp"] }
 uniffi = { version = "0.29", features = ["cli"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 secrecy = "0.10"
 chrono = "0.4"
-totp-rs = "5"
-zeroize = "1"
 serde = "1"
 serde_json = "1"
 

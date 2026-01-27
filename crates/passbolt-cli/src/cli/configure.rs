@@ -73,11 +73,13 @@ pub struct ConfigureArgs {
     #[arg(long, env = "PASSBOLT_TLS_CLIENT_PRIVATE_KEY_FILE")]
     pub tls_client_private_key_file: Option<String>,
 
-    /// Number of MFA retries
+    /// Number of MFA attempts, at most 3: the server disables the account after too many wrong
+    /// codes
     #[arg(long, env = "PASSBOLT_MFA_RETRYS")]
     pub mfa_retrys: Option<u32>,
 
-    /// Delay between MFA retries (e.g. 10s)
+    /// Minimum delay between MFA attempts (e.g. 10s); a new attempt also waits for a new TOTP
+    /// code
     #[arg(long, env = "PASSBOLT_MFA_DELAY")]
     pub mfa_delay: Option<String>,
 

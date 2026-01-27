@@ -53,11 +53,13 @@ pub struct Cli {
     #[arg(long, global = true, env = "PASSBOLT_MFA_TOTP_OFFSET")]
     pub mfa_totp_offset: Option<i64>,
 
-    /// Number of MFA retries [default: 3]
+    /// Number of MFA attempts, at most 3: the server disables the account after too many wrong
+    /// codes [default: 3]
     #[arg(long, global = true, env = "PASSBOLT_MFA_RETRYS")]
     pub mfa_retrys: Option<u32>,
 
-    /// Delay between MFA retries (e.g. 10s) [default: 10s]
+    /// Minimum delay between MFA attempts (e.g. 10s); a new attempt also waits for a new TOTP
+    /// code [default: 10s]
     #[arg(long, global = true, env = "PASSBOLT_MFA_DELAY")]
     pub mfa_delay: Option<String>,
 
