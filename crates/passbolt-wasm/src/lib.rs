@@ -673,13 +673,25 @@ mod wasm_tests {
             "challenge, userId, armoredKey, fingerprint, serverKey, serverFingerprint",
             r#"
             const json = (body, headers = {}) =>
-                new Response(JSON.stringify({ header: { status: "success" }, body }), { headers });
+                new Response(JSON.stringify({ header: { status: "success" }, body }), {
+                    headers: { "X-GPGAuth-Version": "1.3.0", ...headers },
+                });
+            const step = (authenticated, progress, headers) => ({
+                "X-GPGAuth-Authenticated": authenticated,
+                "X-GPGAuth-Progress": progress,
+                ...headers,
+            });
             return async (request) => {
                 const body = request.method === "POST" ? await request.text() : "";
                 if (request.url.endsWith("/auth/login.json")) {
                     return body.includes("user_token_result")
-                        ? json({ user: { id: userId } }, { "X-GPGAuth-Authenticated": "true" })
-                        : json(null, { "X-GPGAuth-User-Auth-Token": encodeURIComponent(challenge) });
+                        ? json({ user: { id: userId } }, step("true", "complete", { "X-GPGAuth-Refer": "/" }))
+                        : json(
+                              null,
+                              step("false", "stage1", {
+                                  "X-GPGAuth-User-Auth-Token": encodeURIComponent(challenge),
+                              }),
+                          );
                 }
                 if (request.url.endsWith("/auth/verify.json")) {
                     // Holds no private key: it cannot answer the pinned key's challenge.

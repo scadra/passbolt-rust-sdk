@@ -73,3 +73,42 @@ async fn auth_status_is_false_for_an_expired_session() {
 
     assert!(!client.check_auth_status().await.unwrap());
 }
+
+#[tokio::test]
+async fn an_answer_without_gpgauth_headers_is_refused() {
+    let fake = FakePassbolt::new();
+    fake.without_gpgauth_headers();
+
+    let error = PassboltSdk::login(fake.clone(), &ada_config(), None, 1)
+        .await
+        .err()
+        .unwrap();
+
+    assert!(
+        error
+            .to_string()
+            .contains("GPGAuth: version none is not supported"),
+        "{error}"
+    );
+    assert_eq!(
+        fake.requests_to("POST", "/auth/login.json").len(),
+        1,
+        "no stage 2"
+    );
+}
+
+#[tokio::test]
+async fn an_identity_check_answered_without_gpgauth_headers_is_refused_before_login() {
+    let fake = FakePassbolt::new();
+    fake.without_gpgauth_headers();
+    let mut config = ada_config();
+    config.server_public_key = SERVER.public.into();
+
+    let error = PassboltSdk::login(fake.clone(), &config, None, 1)
+        .await
+        .err()
+        .unwrap();
+
+    assert!(matches!(error, PassboltError::Auth(_)), "{error:?}");
+    assert!(fake.requests_to("POST", "/auth/login.json").is_empty());
+}

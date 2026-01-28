@@ -107,6 +107,8 @@ struct State {
     mfa_failures_of_others: u32,
     /// Disabled after too many failed TOTP verifications.
     user_disabled: bool,
+    /// Answers without the `X-GPGAuth-*` headers, as a proxy or another server would.
+    without_gpgauth_headers: bool,
     mfa_verification_ignored: bool,
     no_csrf_cookie: bool,
     csrf_cookie_sent: bool,
@@ -278,6 +280,11 @@ impl FakePassbolt {
         self.state.lock().unwrap().mfa_failures_of_others = failures;
     }
 
+    /// Answer without any `X-GPGAuth-*` header, as something else than Passbolt would.
+    pub fn without_gpgauth_headers(&self) {
+        self.state.lock().unwrap().without_gpgauth_headers = true;
+    }
+
     /// Whether too many failed TOTP verifications disabled the user.
     pub fn user_disabled(&self) -> bool {
         self.state.lock().unwrap().user_disabled
@@ -355,6 +362,11 @@ impl FakePassbolt {
         response
             .headers
             .push(("X-GPGAuth-Version".into(), "1.3.0".into()));
+        if self.state.lock().unwrap().without_gpgauth_headers {
+            response
+                .headers
+                .retain(|(name, _)| !name.to_ascii_lowercase().starts_with("x-gpgauth"));
+        }
         response
     }
 

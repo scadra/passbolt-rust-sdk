@@ -18,7 +18,7 @@ use crate::crypto::{
     decrypt_message, encrypt_message, parse_public_key, public_key_fingerprint, PrivateKey,
 };
 use crate::error::{AuthError, PassboltError};
-use crate::http::HttpClient;
+use crate::http::{HttpClient, HttpResponse};
 
 /// Result of a successful login — CSRF token and user ID.
 pub struct AuthTokens {
@@ -74,6 +74,7 @@ pub async fn login<H: HttpClient>(
         ))
         .into());
     }
+    check_gpgauth_headers(&response, Stage::One)?;
 
     // Extract challenge from response header
     let challenge_encoded = response
@@ -122,8 +123,62 @@ pub async fn login<H: HttpClient>(
         ))
         .into());
     }
+    check_gpgauth_headers(&verify_response, Stage::Complete)?;
 
     extract_auth_tokens(&verify_response)
+}
+
+/// A `GPGAuth` step, for the headers its answer must carry.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    /// The server proves its identity (`/auth/verify.json`).
+    Zero,
+    /// The server sends the challenge.
+    One,
+    /// The user is logged in.
+    Complete,
+}
+
+/// The `X-GPGAuth-*` headers of the answer to `stage`, checked as the browser extension checks
+/// them (`GpgAuthHeader`): a proxy or another server answering in Passbolt's place is refused
+/// with a clear error, instead of failing later.
+fn check_gpgauth_headers(response: &HttpResponse, stage: Stage) -> Result<(), AuthError> {
+    let header = |name: &str| response.header(name);
+    let refuse = |reason: &str| Err(AuthError::LoginFailed(format!("GPGAuth: {reason}")));
+    if header("X-GPGAuth-Version") != Some("1.3.0") {
+        return refuse(&format!(
+            "version {} is not supported, 1.3.0 is",
+            header("X-GPGAuth-Version").unwrap_or("none")
+        ));
+    }
+    if header("X-GPGAuth-Error").is_some() {
+        return refuse(header("X-GPGAuth-Debug").unwrap_or("the server reports an error"));
+    }
+    let (authenticated, progress) = match stage {
+        Stage::Zero => ("false", "stage0"),
+        Stage::One => ("false", "stage1"),
+        Stage::Complete => ("true", "complete"),
+    };
+    if header("X-GPGAuth-Authenticated") != Some(authenticated) {
+        return refuse(&format!(
+            "X-GPGAuth-Authenticated should be {authenticated}"
+        ));
+    }
+    if header("X-GPGAuth-Progress") != Some(progress) {
+        return refuse(&format!("X-GPGAuth-Progress should be {progress}"));
+    }
+    let expected = [
+        ("X-GPGAuth-User-Auth-Token", stage == Stage::One),
+        ("X-GPGAuth-Verify-Response", stage == Stage::Zero),
+        ("X-GPGAuth-Refer", stage == Stage::Complete),
+    ];
+    for (name, present) in expected {
+        if header(name).is_some() != present {
+            let should = if present { "be set" } else { "not be set" };
+            return refuse(&format!("{name} should {should} at this stage"));
+        }
+    }
+    Ok(())
 }
 
 /// Refuse to send back anything but a `GPGAuth` nonce, as the server checks it
@@ -259,6 +314,7 @@ pub async fn verify_server<H: HttpClient>(
         .await?;
     // The server answers "authentication failed": stage 0 does not log in.
     if response.header("X-GPGAuth-Verify-Response") == Some(expected_token) {
+        check_gpgauth_headers(&response, Stage::Zero)?;
         return Ok(());
     }
     Err(AuthError::ServerIdentityMismatch(
@@ -301,6 +357,79 @@ pub async fn check_server_identity<H: HttpClient>(
 mod tests {
     use super::*;
     use rstest::rstest;
+
+    /// An answer with the `X-GPGAuth-*` headers the server sends for a `stage1` challenge.
+    fn stage1_headers() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("X-GPGAuth-Version", "1.3.0"),
+            ("X-GPGAuth-Authenticated", "false"),
+            ("X-GPGAuth-Progress", "stage1"),
+            ("X-GPGAuth-User-Auth-Token", "token"),
+        ]
+    }
+
+    fn answer(headers: &[(&str, &str)]) -> HttpResponse {
+        HttpResponse {
+            status: 200,
+            headers: headers
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                .collect(),
+            body: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_gpgauth_headers_of_a_stage1_answer_pass() {
+        assert!(check_gpgauth_headers(&answer(&stage1_headers()), Stage::One).is_ok());
+    }
+
+    #[rstest]
+    #[case::other_version("X-GPGAuth-Version", Some("1.2.0"), "1.2.0 is not supported")]
+    #[case::already_authenticated("X-GPGAuth-Authenticated", Some("true"), "Authenticated")]
+    #[case::wrong_progress("X-GPGAuth-Progress", Some("complete"), "Progress should be stage1")]
+    #[case::no_token("X-GPGAuth-User-Auth-Token", None, "User-Auth-Token should be set")]
+    fn test_gpgauth_headers_of_a_stage1_answer_are_refused(
+        #[case] name: &str,
+        #[case] value: Option<&str>,
+        #[case] reason: &str,
+    ) {
+        let mut headers = stage1_headers();
+        headers.retain(|(header, _)| *header != name);
+        if let Some(value) = value {
+            headers.push((name, value));
+        }
+
+        let error = check_gpgauth_headers(&answer(&headers), Stage::One).unwrap_err();
+
+        assert!(error.to_string().contains(reason), "{error}");
+    }
+
+    #[test]
+    fn test_a_gpgauth_error_gives_its_debug_message() {
+        let mut headers = stage1_headers();
+        headers.extend([
+            ("X-GPGAuth-Error", "true"),
+            ("X-GPGAuth-Debug", "Unknown key"),
+        ]);
+
+        let error = check_gpgauth_headers(&answer(&headers), Stage::One).unwrap_err();
+
+        assert!(error.to_string().contains("Unknown key"), "{error}");
+    }
+
+    #[test]
+    fn test_a_completed_login_must_say_where_to_go() {
+        let headers = [
+            ("X-GPGAuth-Version", "1.3.0"),
+            ("X-GPGAuth-Authenticated", "true"),
+            ("X-GPGAuth-Progress", "complete"),
+        ];
+
+        let error = check_gpgauth_headers(&answer(&headers), Stage::Complete).unwrap_err();
+
+        assert!(error.to_string().contains("Refer should be set"), "{error}");
+    }
 
     #[rstest]
     #[case::quotemeta_space("BEGIN\\+PGP\\+MESSAGE", "BEGIN PGP MESSAGE")]
