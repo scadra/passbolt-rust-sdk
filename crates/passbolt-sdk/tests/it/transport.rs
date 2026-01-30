@@ -213,3 +213,23 @@ async fn reads_a_cookie_set_by_any_earlier_response() {
         Some("t0k3n")
     );
 }
+
+#[tokio::test]
+async fn says_it_is_the_rust_client() {
+    let server = MockServer::start().await;
+    Mock::given(header(
+        "User-Agent",
+        concat!("passbolt-rust/", env!("CARGO_PKG_VERSION")),
+    ))
+    .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+    .expect(1)
+    .mount(&server)
+    .await;
+
+    let response = native_client()
+        .get(&server_url(&server, "/healthcheck/status.json"), &[])
+        .await
+        .unwrap();
+
+    assert_eq!(response.status, 200);
+}

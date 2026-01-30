@@ -26,6 +26,7 @@ mod pinning;
 mod resource_types;
 mod resources;
 mod session;
+mod session_api;
 mod session_keys;
 mod sharing;
 mod sharing_rules;

@@ -314,6 +314,13 @@ impl<H: HttpClient> PassboltSdk<H> {
         Ok(response.status < 400)
     }
 
+    /// Keep the session alive, as the browser extension does every few minutes
+    /// (`keepSessionAliveService`): a long-lived client stays logged in between operations.
+    pub async fn keep_alive(&self) -> Result<(), PassboltError> {
+        let _: Value = self.get("/users/me.json").await?;
+        Ok(())
+    }
+
     // ── Internal HTTP helpers ─────────────────────────────────────────────────
 
     /// Token to send as `X-CSRF-Token`: the `csrfToken` cookie, whichever request set it.

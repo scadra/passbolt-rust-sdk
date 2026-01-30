@@ -715,6 +715,13 @@ impl PassboltClient {
         self.inner.base_url.clone()
     }
 
+    /// Keep the session alive, as the browser extension does every few minutes.
+    pub fn keep_alive(&self) -> Result<(), PassboltFfiError> {
+        RUNTIME
+            .block_on(self.inner.keep_alive())
+            .map_err(Into::into)
+    }
+
     /// The fingerprint of the active shared metadata key, to pin in
     /// [`FfiLoginOptions::metadata_key_fingerprint`]; `None` without one.
     pub fn metadata_key_fingerprint(&self) -> Result<Option<String>, PassboltFfiError> {

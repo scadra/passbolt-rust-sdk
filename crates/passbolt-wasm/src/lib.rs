@@ -201,6 +201,12 @@ impl PassboltSession {
         self.client.logout().await;
     }
 
+    /// Keep the session alive, as the browser extension does every few minutes.
+    #[wasm_bindgen(js_name = "keepAlive")]
+    pub async fn keep_alive(&self) -> Result<(), JsError> {
+        self.client.keep_alive().await.map_err(to_js_error)
+    }
+
     /// Check if the session is still valid.
     #[wasm_bindgen(js_name = "checkAuth")]
     pub async fn check_auth(&self) -> Result<bool, JsError> {

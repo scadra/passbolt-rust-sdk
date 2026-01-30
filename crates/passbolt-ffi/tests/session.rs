@@ -426,3 +426,14 @@ fn the_active_metadata_key_fingerprint_is_given_to_pin() {
         Some(crypto::public_key_fingerprint(METADATA_PUBLIC).unwrap())
     );
 }
+
+#[test]
+fn keeping_the_session_alive_reads_the_user() {
+    let passbolt = Passbolt::new();
+    let client = passbolt.login();
+    let before = passbolt.requests("GET", "/users/me.json").len();
+
+    client.keep_alive().unwrap();
+
+    assert_eq!(passbolt.requests("GET", "/users/me.json").len(), before + 1);
+}
