@@ -671,3 +671,13 @@ async fn deleting_a_folder_with_its_content_asks_the_cascade() {
     let request = single_request(&fake, "DELETE", &path);
     assert_eq!(request.query_value("cascade").as_deref(), Some("1"));
 }
+
+#[tokio::test]
+async fn keeping_the_session_alive_reads_the_user() {
+    let (fake, client) = logged_in_with("GET", "/users/me.json", data::user("ada")).await;
+    let before = fake.requests_to("GET", "/users/me.json").len();
+
+    client.keep_alive().await.unwrap();
+
+    assert_eq!(fake.requests_to("GET", "/users/me.json").len(), before + 1);
+}

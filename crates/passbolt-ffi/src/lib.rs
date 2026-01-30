@@ -42,7 +42,7 @@ use passbolt_sdk::config::SdkConfig;
 use passbolt_sdk::platform::native::{NativeHttpClient, NativeHttpConfig};
 use passbolt_sdk::{MfaProvider, PassboltSdk};
 
-use crate::mfa::{TotpSecretProvider, NON_INTERACTIVE_TOTP};
+use crate::mfa::{totp_provider, NON_INTERACTIVE_TOTP};
 use crate::types::{
     FfiAro, FfiComment, FfiFavorite, FfiFolder, FfiFolderQuery, FfiFolderTreeNode, FfiGroup,
     FfiGroupDeleteDryRun, FfiPasswordExpirySettings, FfiPermission, FfiResource, FfiResourceQuery,
@@ -66,14 +66,20 @@ fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.trim().is_empty())
 }
 
-fn build_http_config(tls_skip_verify: bool, proxy: Option<String>) -> NativeHttpConfig {
+/// A request waits this long by default before failing, instead of blocking the caller forever.
+const DEFAULT_TIMEOUT_SECONDS: u64 = 60;
+
+fn build_http_config(options: &FfiLoginOptions) -> NativeHttpConfig {
     NativeHttpConfig {
-        tls_skip_verify,
-        client_cert_pem: None,
-        client_key_pem: None,
-        proxy_url: non_empty(proxy),
+        tls_skip_verify: options.tls_skip_verify,
+        client_cert_pem: non_empty(options.client_certificate_pem.clone()).map(String::into_bytes),
+        client_key_pem: non_empty(options.client_key_pem.clone()).map(String::into_bytes),
+        proxy_url: non_empty(options.proxy.clone()),
         resolve: Vec::new(),
-        timeout: None,
+        timeout: match options.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS) {
+            0 => None,
+            seconds => Some(std::time::Duration::from_secs(seconds)),
+        },
     }
 }
 
@@ -91,6 +97,11 @@ pub struct FfiLoginOptions {
     /// [`PassboltClient::metadata_key_fingerprint`]: shared metadata is then only encrypted
     /// for that key.
     pub metadata_key_fingerprint: Option<String>,
+    /// Seconds a request may take; `None` is 60, `0` waits forever.
+    pub timeout_seconds: Option<u64>,
+    /// PEM certificate and private key, for a server asking for a client certificate (mTLS).
+    pub client_certificate_pem: Option<String>,
+    pub client_key_pem: Option<String>,
 }
 
 /// The server public key, to pin.
@@ -114,6 +125,7 @@ fn build_sdk_config(
         mfa_totp_token,
         server_public_key,
         metadata_key_fingerprint,
+        ..
     } = options;
     let mfa_totp_token = non_empty(mfa_totp_token);
     SdkConfig {
@@ -205,9 +217,11 @@ impl PassboltClient {
         passphrase: String,
         options: FfiLoginOptions,
     ) -> Result<Arc<Self>, PassboltFfiError> {
-        let http_config = build_http_config(options.tls_skip_verify, options.proxy.clone());
+        let http_config = build_http_config(&options);
         let config = build_sdk_config(server_url, private_key_armored, passphrase, options);
-        let mfa_provider = TotpSecretProvider::from_config(&config);
+        let mfa_provider = totp_provider(&config).map_err(|error| PassboltFfiError::Config {
+            message: error.to_string(),
+        })?;
         RUNTIME.block_on(async {
             let http =
                 NativeHttpClient::new(&http_config).map_err(|error| PassboltFfiError::Config {
@@ -701,6 +715,13 @@ impl PassboltClient {
         self.inner.base_url.clone()
     }
 
+    /// Keep the session alive, as the browser extension does every few minutes.
+    pub fn keep_alive(&self) -> Result<(), PassboltFfiError> {
+        RUNTIME
+            .block_on(self.inner.keep_alive())
+            .map_err(Into::into)
+    }
+
     /// The fingerprint of the active shared metadata key, to pin in
     /// [`FfiLoginOptions::metadata_key_fingerprint`]; `None` without one.
     pub fn metadata_key_fingerprint(&self) -> Result<Option<String>, PassboltFfiError> {
@@ -718,7 +739,10 @@ pub fn fetch_server_key(
     server_url: String,
     tls_skip_verify: bool,
 ) -> Result<FfiServerKey, PassboltFfiError> {
-    let http_config = build_http_config(tls_skip_verify, None);
+    let http_config = build_http_config(&FfiLoginOptions {
+        tls_skip_verify,
+        ..FfiLoginOptions::default()
+    });
     RUNTIME.block_on(async {
         let http =
             NativeHttpClient::new(&http_config).map_err(|error| PassboltFfiError::Config {
@@ -841,7 +865,7 @@ mod tests {
 
         assert_eq!(config.mfa_mode, "");
         assert_eq!(config.mfa_totp_token, "");
-        assert!(TotpSecretProvider::from_config(&config).is_none());
+        assert!(totp_provider(&config).unwrap().is_none());
     }
 
     #[test]
@@ -850,7 +874,7 @@ mod tests {
 
         assert_eq!(config.mfa_mode, NON_INTERACTIVE_TOTP);
         assert_eq!(config.mfa_totp_token, "JBSWY3DPEHPK3PXP");
-        assert!(TotpSecretProvider::from_config(&config).is_some());
+        assert!(totp_provider(&config).unwrap().is_some());
     }
 
     #[test]
@@ -900,13 +924,48 @@ mod tests {
         #[case] expected: Option<&str>,
         #[values(true, false)] tls_skip_verify: bool,
     ) {
-        let http_config = build_http_config(tls_skip_verify, proxy.map(String::from));
+        let http_config = build_http_config(&FfiLoginOptions {
+            tls_skip_verify,
+            proxy: proxy.map(String::from),
+            ..FfiLoginOptions::default()
+        });
 
         assert_eq!(http_config.proxy_url.as_deref(), expected);
         assert_eq!(http_config.tls_skip_verify, tls_skip_verify);
         assert!(http_config.client_cert_pem.is_none());
         assert!(http_config.client_key_pem.is_none());
         assert_eq!(http_config.resolve, Vec::new());
+    }
+
+    #[rstest]
+    #[case::default(None, Some(std::time::Duration::from_secs(60)))]
+    #[case::set(Some(5), Some(std::time::Duration::from_secs(5)))]
+    #[case::forever(Some(0), None)]
+    fn test_requests_time_out_after_a_minute_by_default(
+        #[case] timeout_seconds: Option<u64>,
+        #[case] expected: Option<std::time::Duration>,
+    ) {
+        let http_config = build_http_config(&FfiLoginOptions {
+            timeout_seconds,
+            ..FfiLoginOptions::default()
+        });
+
+        assert_eq!(http_config.timeout, expected);
+    }
+
+    #[test]
+    fn test_the_client_certificate_goes_to_the_transport() {
+        let http_config = build_http_config(&FfiLoginOptions {
+            client_certificate_pem: Some("certificate".into()),
+            client_key_pem: Some("key".into()),
+            ..FfiLoginOptions::default()
+        });
+
+        assert_eq!(
+            http_config.client_cert_pem.as_deref(),
+            Some(&b"certificate"[..])
+        );
+        assert_eq!(http_config.client_key_pem.as_deref(), Some(&b"key"[..]));
     }
 
     #[test]

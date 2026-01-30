@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use secrecy::{ExposeSecret, SecretString};
 use serde::de::DeserializeOwned;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 
 use serde_json::Value;
@@ -29,6 +30,11 @@ use crate::mfa::MfaProvider;
 use crate::transfer::{DeleteBlockers, Transfer};
 #[allow(clippy::wildcard_imports)] // too many types to enumerate explicitly
 use crate::types::*;
+
+/// The server disables an account once its failed TOTP verifications since login exceed
+/// `passbolt.security.mfa.maxAttempts` (4 by default): a session never sends more than 3 wrong
+/// codes, whatever the number of attempts asked.
+const MAX_MFA_FAILURES: u32 = 3;
 
 /// Saves of the session keys bundle that conflict with another session's (409).
 const SESSION_KEYS_SAVE_ATTEMPTS: u32 = 3;
@@ -53,6 +59,8 @@ pub struct PassboltSdk<H: HttpClient> {
     /// Answers the MFA challenge the server sends on any request after login.
     mfa_provider: Option<Box<dyn MfaProvider>>,
     mfa_attempts: u32,
+    /// TOTP codes refused during this session, against [`MAX_MFA_FAILURES`].
+    mfa_failures: AtomicU32,
 }
 
 #[derive(Clone, Copy)]
@@ -113,6 +121,22 @@ fn count(value: &Value, pointer: &str) -> u32 {
         .pointer(pointer)
         .and_then(Value::as_array)
         .map_or(0, |items| u32::try_from(items.len()).unwrap_or(u32::MAX))
+}
+
+/// The MFA providers a challenge offers (`mfa_providers`); empty when it does not say.
+fn mfa_providers(challenge: &HttpResponse) -> Vec<String> {
+    serde_json::from_slice::<Value>(&challenge.body)
+        .ok()
+        .and_then(|body| body.pointer("/body/mfa_providers").cloned())
+        .and_then(|providers| serde_json::from_value(providers).ok())
+        .unwrap_or_default()
+}
+
+/// A wrong code: the server answers it with the validation error of the `totp` field.
+fn is_refused_code(response: &HttpResponse) -> bool {
+    response.status == 400
+        && serde_json::from_slice::<Value>(&response.body)
+            .is_ok_and(|body| body.pointer("/body/totp").is_some())
 }
 
 fn server_message(response: &HttpResponse) -> String {
@@ -203,7 +227,8 @@ impl<H: HttpClient> PassboltSdk<H> {
             resource_types: OnceLock::new(),
             metadata_settings: OnceLock::new(),
             mfa_provider,
-            mfa_attempts: max_attempts.max(1),
+            mfa_attempts: max_attempts.clamp(1, MAX_MFA_FAILURES),
+            mfa_failures: AtomicU32::new(0),
         };
 
         // Login is exempt from CSRF: the token cookie comes with this first GET.
@@ -265,10 +290,35 @@ impl<H: HttpClient> PassboltSdk<H> {
     ///
     /// Returns `true` if the session is valid, `false` if expired/unauthenticated.
     /// Callers can use this for keep-alive or session refresh logic.
+    ///
+    /// As the browser extension reads `/auth/is-authenticated.json`: the MFA challenge is an
+    /// error, never answered here (a status check must not use MFA attempts), and so are a 404
+    /// and an answer that is not JSON.
     pub async fn check_auth_status(&self) -> Result<bool, PassboltError> {
         let url = format!("{}/auth/is-authenticated.json", self.base_url);
-        let response = self.http_get(&url).await?;
+        let response = self.send_once(Method::Get, &url, None).await?;
+        if is_mfa_challenge(&response) {
+            return Err(AuthError::MfaRequired.into());
+        }
+        if response.status == 404 || serde_json::from_slice::<Value>(&response.body).is_err() {
+            return Err(ApiError {
+                status: response.status,
+                message: format!(
+                    "unexpected answer to the session check: {}",
+                    server_message(&response)
+                ),
+                validation_errors: None,
+            }
+            .into());
+        }
         Ok(response.status < 400)
+    }
+
+    /// Keep the session alive, as the browser extension does every few minutes
+    /// (`keepSessionAliveService`): a long-lived client stays logged in between operations.
+    pub async fn keep_alive(&self) -> Result<(), PassboltError> {
+        let _: Value = self.get("/users/me.json").await?;
+        Ok(())
     }
 
     // ── Internal HTTP helpers ─────────────────────────────────────────────────
@@ -302,7 +352,7 @@ impl<H: HttpClient> PassboltSdk<H> {
         if !is_mfa_challenge(&response) {
             return Ok(response);
         }
-        self.verify_mfa().await?;
+        self.verify_mfa(&response).await?;
         let response = self.send_once(method, url, body).await?;
         if is_mfa_challenge(&response) {
             return Err(AuthError::MfaFailed {
@@ -341,12 +391,24 @@ impl<H: HttpClient> PassboltSdk<H> {
         Ok(response)
     }
 
-    /// Answer the TOTP challenge; the server sets the `passbolt_mfa` cookie on success.
-    async fn verify_mfa(&self) -> Result<(), PassboltError> {
+    /// Answer the TOTP `challenge`; the server sets the `passbolt_mfa` cookie on success.
+    ///
+    /// A refused code is tried again, up to the attempts asked and never more than
+    /// [`MAX_MFA_FAILURES`] refused codes in the session. Any other refusal ends the attempts:
+    /// the server logs the user out (and disables them) when it gets too many.
+    async fn verify_mfa(&self, challenge: &HttpResponse) -> Result<(), PassboltError> {
+        let providers = mfa_providers(challenge);
+        if !providers.is_empty() && !providers.iter().any(|provider| provider == "totp") {
+            return Err(AuthError::MfaUnsupported { providers }.into());
+        }
         let provider = self.mfa_provider.as_deref().ok_or(AuthError::MfaRequired)?;
         let url = format!("{}/mfa/verify/totp.json", self.base_url);
+        let mut attempts = 0;
         let mut last_error = String::new();
-        for _ in 0..self.mfa_attempts {
+        while attempts < self.mfa_attempts
+            && self.mfa_failures.load(Ordering::SeqCst) < MAX_MFA_FAILURES
+        {
+            attempts += 1;
             let body = serde_json::to_vec(
                 &serde_json::json!({ "totp": provider.get_totp_code()?, "remember": false }),
             )?;
@@ -354,10 +416,17 @@ impl<H: HttpClient> PassboltSdk<H> {
             if response.status < 400 {
                 return Ok(());
             }
+            if !is_refused_code(&response) {
+                return Err(AuthError::MfaLockedOut(server_message(&response)).into());
+            }
+            self.mfa_failures.fetch_add(1, Ordering::SeqCst);
             last_error = server_message(&response);
         }
+        if attempts == 0 {
+            last_error = format!("{MAX_MFA_FAILURES} codes were already refused in this session");
+        }
         Err(AuthError::MfaFailed {
-            attempts: self.mfa_attempts,
+            attempts,
             message: last_error,
         }
         .into())

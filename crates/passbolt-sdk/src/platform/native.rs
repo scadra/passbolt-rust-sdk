@@ -42,11 +42,16 @@ pub struct NativeHttpClient {
     cookies: Arc<Jar>,
 }
 
+/// Sent with every request, as `passbolt-rust/<version>`: the server shows it, in the account
+/// recovery emails for instance.
+pub const USER_AGENT: &str = concat!("passbolt-rust/", env!("CARGO_PKG_VERSION"));
+
 impl NativeHttpClient {
     /// Build a new native HTTP client from the given configuration.
     pub fn new(config: &NativeHttpConfig) -> Result<Self, PassboltError> {
         let cookies = Arc::new(Jar::default());
         let mut builder = ClientBuilder::new()
+            .user_agent(USER_AGENT)
             .use_rustls_tls()
             .cookie_provider(Arc::clone(&cookies))
             .redirect(same_origin_redirects())

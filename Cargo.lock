@@ -2466,12 +2466,10 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "totp-rs",
  "uniffi",
  "url",
  "uuid",
  "wiremock",
- "zeroize",
 ]
 
 [[package]]

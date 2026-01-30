@@ -41,6 +41,15 @@ pub enum AuthError {
     #[error("MFA verification failed after {attempts} attempt(s): {message}")]
     MfaFailed { attempts: u32, message: String },
 
+    #[error(
+        "MFA with a TOTP code is not enabled for this account; it offers: {}",
+        providers.join(", ")
+    )]
+    MfaUnsupported { providers: Vec<String> },
+
+    #[error("The server ended the session after too many MFA attempts: {0}")]
+    MfaLockedOut(String),
+
     #[error("Session expired")]
     SessionExpired,
 

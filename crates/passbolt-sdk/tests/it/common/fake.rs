@@ -99,6 +99,16 @@ struct State {
     challenge: Option<String>,
     mfa_code: Option<String>,
     mfa_verified: bool,
+    /// The MFA providers the challenge lists; `None`: TOTP.
+    mfa_providers: Option<Value>,
+    /// Failed TOTP verifications since the last login, as `MfaRateLimiterService` counts them.
+    mfa_failures: u32,
+    /// Failures other clients add right after each login.
+    mfa_failures_of_others: u32,
+    /// Disabled after too many failed TOTP verifications.
+    user_disabled: bool,
+    /// Answers without the `X-GPGAuth-*` headers, as a proxy or another server would.
+    without_gpgauth_headers: bool,
     mfa_verification_ignored: bool,
     no_csrf_cookie: bool,
     csrf_cookie_sent: bool,
@@ -260,6 +270,26 @@ impl FakePassbolt {
         self.state.lock().unwrap().mfa_code = Some(code.to_string());
     }
 
+    /// The MFA challenge lists `providers` instead of TOTP alone.
+    pub fn offer_mfa_providers(&self, providers: &[&str]) {
+        self.state.lock().unwrap().mfa_providers = Some(json!(providers));
+    }
+
+    /// TOTP verifications another client fails right after each login.
+    pub fn fail_mfa_before(&self, failures: u32) {
+        self.state.lock().unwrap().mfa_failures_of_others = failures;
+    }
+
+    /// Answer without any `X-GPGAuth-*` header, as something else than Passbolt would.
+    pub fn without_gpgauth_headers(&self) {
+        self.state.lock().unwrap().without_gpgauth_headers = true;
+    }
+
+    /// Whether too many failed TOTP verifications disabled the user.
+    pub fn user_disabled(&self) -> bool {
+        self.state.lock().unwrap().user_disabled
+    }
+
     /// Send `plaintext` as the `GPGAuth` challenge instead of a valid token.
     pub fn send_challenge(&self, plaintext: &str) {
         self.state.lock().unwrap().challenge = Some(plaintext.to_string());
@@ -327,6 +357,27 @@ impl FakePassbolt {
         });
 
         let body = body.unwrap_or(Value::Null);
+        let mut response = self.route_request(method, path, query, &body);
+        // `GpgAuthHeadersMiddleware` adds it to every answer.
+        response
+            .headers
+            .push(("X-GPGAuth-Version".into(), "1.3.0".into()));
+        if self.state.lock().unwrap().without_gpgauth_headers {
+            response
+                .headers
+                .retain(|(name, _)| !name.to_ascii_lowercase().starts_with("x-gpgauth"));
+        }
+        response
+    }
+
+    fn route_request(
+        &self,
+        method: &'static str,
+        path: &str,
+        query: &str,
+        body: &Value,
+    ) -> HttpResponse {
+        let body = body.clone();
         match (method, path) {
             ("POST", "/auth/login.json") => self.gpgauth_login(&body),
             ("POST", "/auth/verify.json") => self.verify_server(&body),
@@ -360,11 +411,16 @@ impl FakePassbolt {
                 && !MFA_WHITELIST.iter().any(|prefix| path.starts_with(prefix)) =>
             {
                 // The 302 to /mfa/verify/error.json, as seen after reqwest follows it.
+                let mut challenge = data::mfa_error();
+                let providers = self.state.lock().unwrap().mfa_providers.clone();
+                if let Some(providers) = providers {
+                    challenge["mfa_providers"] = providers;
+                }
                 json_response(
                     403,
                     "MFA authentication is required.",
                     "/mfa/verify/error.json",
-                    &data::mfa_error(),
+                    &challenge,
                 )
             }
             _ => {
@@ -693,9 +749,12 @@ impl FakePassbolt {
                 && *version == "gpgauthv1.3.0"
                 && uuid::Uuid::try_parse(id).is_ok()
             {
-                response
-                    .headers
-                    .push(("X-GPGAuth-Verify-Response".into(), nonce));
+                // `_initForAllSteps`, then the decrypted nonce.
+                response.headers.extend([
+                    ("X-GPGAuth-Authenticated".into(), "false".into()),
+                    ("X-GPGAuth-Progress".into(), "stage0".into()),
+                    ("X-GPGAuth-Verify-Response".into(), nonce),
+                ]);
             }
         }
         response
@@ -732,6 +791,10 @@ impl FakePassbolt {
                 URL,
                 &Value::Null,
             );
+            // `_initForAllSteps`, then `_stage1`.
+            response
+                .headers
+                .push(("X-GPGAuth-Authenticated".into(), "false".into()));
             response
                 .headers
                 .push(("X-GPGAuth-Progress".into(), "stage1".into()));
@@ -757,24 +820,51 @@ impl FakePassbolt {
         if let Some((status, message)) = verification_error {
             return json_response(status, &message, URL, &Value::Null);
         }
+        // The failed TOTP verifications counted are those since this login.
+        let mut state = self.state.lock().unwrap();
+        state.mfa_failures = state.mfa_failures_of_others;
+        drop(state);
         let mut response = json_response(
             200,
             "You are successfully logged in.",
             URL,
             &data::user("ada"),
         );
-        response
-            .headers
-            .push(("X-GPGAuth-Authenticated".into(), "true".into()));
+        // `_stage2` once the token is right.
+        response.headers.extend([
+            ("X-GPGAuth-Authenticated".into(), "true".into()),
+            ("X-GPGAuth-Progress".into(), "complete".into()),
+            ("X-GPGAuth-Refer".into(), "/".into()),
+        ]);
         response
     }
 
+    /// `TotpVerifyPostController`: a wrong code is a validation error until the failures since
+    /// login exceed `passbolt.security.mfa.maxAttempts` (4): the user is then logged out and
+    /// disabled (`_handleMaxFailedAttempts`).
     fn verify_totp(&self, body: &Value) -> HttpResponse {
         const URL: &str = "/mfa/verify/totp.json";
+        const MAX_ATTEMPTS: u32 = 4;
         {
             let mut state = self.state.lock().unwrap();
             if body["totp"].as_str() != state.mfa_code.as_deref() {
-                return json_response(400, "The OTP is not valid.", URL, &Value::Null);
+                state.mfa_failures += 1;
+                if state.mfa_failures > MAX_ATTEMPTS {
+                    state.user_disabled = true;
+                    state.login_token = None;
+                    return json_response(
+                        400,
+                        "You have been logged out due to too many failed attempts.",
+                        URL,
+                        &Value::Null,
+                    );
+                }
+                return json_response(
+                    400,
+                    "Something went wrong when validating the one-time password.",
+                    URL,
+                    &json!({ "totp": { "isValidOtp": "This OTP is not valid." } }),
+                );
             }
             state.mfa_verified = !state.mfa_verification_ignored;
         }

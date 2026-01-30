@@ -71,15 +71,15 @@ impl Passbolt {
             .and(path("/auth/login.json"))
             .and(body_string_contains("user_token_result"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("X-GPGAuth-Authenticated", "true")
+                gpgauth(200, "true", "complete")
+                    .insert_header("X-GPGAuth-Refer", "/")
                     .set_body_json(envelope(&json!({"user": {"id": ADA_ID}}))),
             )
             .with_priority(1);
         let stage_1 = Mock::given(method("POST"))
             .and(path("/auth/login.json"))
             .respond_with(
-                ResponseTemplate::new(200)
+                gpgauth(200, "false", "stage1")
                     .insert_header(
                         "X-GPGAuth-User-Auth-Token",
                         php_quotemeta_urlencode(&challenge),
@@ -158,7 +158,7 @@ impl Respond for DecryptingServer {
         token.map_or_else(
             || ResponseTemplate::new(400).set_body_json(envelope(&Value::Null)),
             |token| {
-                ResponseTemplate::new(200)
+                gpgauth(200, "false", "stage0")
                     .insert_header(
                         "X-GPGAuth-Verify-Response",
                         String::from_utf8(token).unwrap(),
@@ -167,6 +167,14 @@ impl Respond for DecryptingServer {
             },
         )
     }
+}
+
+/// An answer with the `X-GPGAuth-*` headers of a login step, as Passbolt sends them.
+fn gpgauth(status: u16, authenticated: &str, progress: &str) -> ResponseTemplate {
+    ResponseTemplate::new(status)
+        .insert_header("X-GPGAuth-Version", "1.3.0")
+        .insert_header("X-GPGAuth-Authenticated", authenticated)
+        .insert_header("X-GPGAuth-Progress", progress)
 }
 
 fn envelope(body: &Value) -> Value {
@@ -417,4 +425,15 @@ fn the_active_metadata_key_fingerprint_is_given_to_pin() {
         fingerprint,
         Some(crypto::public_key_fingerprint(METADATA_PUBLIC).unwrap())
     );
+}
+
+#[test]
+fn keeping_the_session_alive_reads_the_user() {
+    let passbolt = Passbolt::new();
+    let client = passbolt.login();
+    let before = passbolt.requests("GET", "/users/me.json").len();
+
+    client.keep_alive().unwrap();
+
+    assert_eq!(passbolt.requests("GET", "/users/me.json").len(), before + 1);
 }

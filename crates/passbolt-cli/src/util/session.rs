@@ -28,11 +28,11 @@ pub async fn get_client(config: &Config) -> Result<Client> {
             "none" => None,
             // `noninteractive-totp` is go-passbolt-cli's spelling.
             "non-interactive-totp" | "noninteractive-totp" => {
-                Some(Box::new(crate::util::mfa::AutoTotpProvider::new(
-                    sdk_config.mfa_totp_token.clone(),
+                Some(Box::new(passbolt_sdk::mfa::TotpProvider::new(
+                    &sdk_config.mfa_totp_token,
                     sdk_config.mfa_totp_offset,
                     config.mfa_retry_delay()?,
-                )))
+                )?))
             }
             "interactive-totp" => Some(Box::new(crate::util::mfa::TerminalMfaProvider)),
             other => anyhow::bail!(

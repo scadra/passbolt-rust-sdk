@@ -201,6 +201,12 @@ impl PassboltSession {
         self.client.logout().await;
     }
 
+    /// Keep the session alive, as the browser extension does every few minutes.
+    #[wasm_bindgen(js_name = "keepAlive")]
+    pub async fn keep_alive(&self) -> Result<(), JsError> {
+        self.client.keep_alive().await.map_err(to_js_error)
+    }
+
     /// Check if the session is still valid.
     #[wasm_bindgen(js_name = "checkAuth")]
     pub async fn check_auth(&self) -> Result<bool, JsError> {
@@ -673,13 +679,25 @@ mod wasm_tests {
             "challenge, userId, armoredKey, fingerprint, serverKey, serverFingerprint",
             r#"
             const json = (body, headers = {}) =>
-                new Response(JSON.stringify({ header: { status: "success" }, body }), { headers });
+                new Response(JSON.stringify({ header: { status: "success" }, body }), {
+                    headers: { "X-GPGAuth-Version": "1.3.0", ...headers },
+                });
+            const step = (authenticated, progress, headers) => ({
+                "X-GPGAuth-Authenticated": authenticated,
+                "X-GPGAuth-Progress": progress,
+                ...headers,
+            });
             return async (request) => {
                 const body = request.method === "POST" ? await request.text() : "";
                 if (request.url.endsWith("/auth/login.json")) {
                     return body.includes("user_token_result")
-                        ? json({ user: { id: userId } }, { "X-GPGAuth-Authenticated": "true" })
-                        : json(null, { "X-GPGAuth-User-Auth-Token": encodeURIComponent(challenge) });
+                        ? json({ user: { id: userId } }, step("true", "complete", { "X-GPGAuth-Refer": "/" }))
+                        : json(
+                              null,
+                              step("false", "stage1", {
+                                  "X-GPGAuth-User-Auth-Token": encodeURIComponent(challenge),
+                              }),
+                          );
                 }
                 if (request.url.endsWith("/auth/verify.json")) {
                     // Holds no private key: it cannot answer the pinned key's challenge.
