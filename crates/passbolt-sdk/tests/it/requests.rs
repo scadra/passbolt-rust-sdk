@@ -538,7 +538,6 @@ async fn get_resources_sends_every_filter() {
             owned_by_me: true,
             group_ids: vec![GROUP_ID.into()],
             folder_ids: vec![FOLDER_ID.into()],
-            search: Some("git".into()),
             ..Default::default()
         })
         .await
@@ -560,10 +559,22 @@ async fn get_resources_sends_every_filter() {
         request.query_value("filter[is-owned-by-me]").as_deref(),
         Some("1")
     );
-    assert_eq!(
-        request.query_value("filter[search]").as_deref(),
-        Some("git")
-    );
+}
+
+#[tokio::test]
+async fn the_resource_search_is_not_sent_the_server_ignores_it() {
+    let (fake, client) = logged_in_with("GET", "/resources.json", json!([])).await;
+
+    client
+        .get_resources(ResourceQuery {
+            search: Some("git".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let request = single_request(&fake, "GET", "/resources.json");
+    assert_eq!(request.query_value("filter[search]"), None);
 }
 
 #[tokio::test]

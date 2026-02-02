@@ -1000,12 +1000,26 @@ impl<H: HttpClient> PassboltSdk<H> {
         if options.owned_by_me {
             params.push(("filter[is-owned-by-me]", "1".into()));
         }
-        if let Some(search) = options.search {
-            params.push(("filter[search]", search));
+        let resources: Vec<Resource> = self
+            .get_paginated("/resources.json", &params, &options.pagination)
+            .await?;
+        // The server ignores `filter[search]` on resources, and cannot read v5 names anyway.
+        let Some(search) = options.search else {
+            return Ok(resources);
+        };
+        let needle = search.to_lowercase();
+        let mut found = Vec::new();
+        for resource in resources {
+            let name = match self.decrypt_resource_metadata(&resource).await {
+                Ok(Some(metadata)) => metadata.name.unwrap_or_default(),
+                Ok(None) => resource.name.clone(),
+                Err(_) => continue,
+            };
+            if name.to_lowercase().contains(&needle) {
+                found.push(resource);
+            }
         }
-
-        self.get_paginated("/resources.json", &params, &options.pagination)
-            .await
+        Ok(found)
     }
 
     pub async fn get_resource(&self, id: &str) -> Result<Resource, PassboltError> {
@@ -1838,6 +1852,8 @@ pub struct ResourceQuery {
     pub owned_by_me: bool,
     pub group_ids: Vec<String>,
     pub folder_ids: Vec<String>,
+    /// Part of the name, any case, the v5 names decrypted: searched here, as the server ignores
+    /// it on resources.
     pub search: Option<String>,
     pub pagination: PaginationParams,
 }

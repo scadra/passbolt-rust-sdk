@@ -215,3 +215,36 @@ async fn a_password_string_that_looks_like_json_is_a_password() {
         Some(r#"{"password":"not this"}"#)
     );
 }
+
+#[tokio::test]
+async fn raw_resources_are_searched_by_name_their_v5_names_decrypted() {
+    let fake = FakePassbolt::new();
+    fake.with_directory();
+    let mut v4 = data::resource_v4("password-and-description", "p");
+    v4["id"] = "7a5b2c30-0000-4000-8000-0000000000a4".into();
+    v4["name"] = "GitLab".into();
+    let personal_v5 = serde_json::to_value(data::resource_v5(
+        &data::metadata("GitHub"),
+        &ADA,
+        "user_key",
+        "gpgkey-ada",
+    ))
+    .unwrap();
+    let mut other = personal_v5.clone();
+    other["id"] = "7a5b2c30-0000-4000-8000-0000000000a5".into();
+    other["metadata"] = ADA.encrypt(&data::metadata("Bank").to_string()).into();
+    fake.on("GET", "/resources.json", json!([v4, personal_v5, other]));
+    let client = login_ada(&fake).await;
+
+    let found = client
+        .get_resources(ResourceQuery {
+            search: Some("git".into()),
+            ..ResourceQuery::default()
+        })
+        .await
+        .unwrap();
+
+    let mut ids: Vec<&str> = found.iter().map(|resource| resource.id.as_str()).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, ["7a5b2c30-0000-4000-8000-0000000000a4", RESOURCE_ID]);
+}

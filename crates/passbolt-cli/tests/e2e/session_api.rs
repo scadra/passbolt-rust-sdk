@@ -33,3 +33,20 @@ fn keeping_the_session_alive_keeps_it_usable() {
     assert!(block_on(sdk.check_auth_status()).unwrap());
     block_on(sdk.logout());
 }
+
+#[test]
+fn raw_resources_are_searched_by_their_decrypted_name() {
+    let name = crate::common::unique_name("searched");
+    let resource = crate::common::create_resource(&name, "p", &["--type", "v5-default"]);
+    let sdk = sdk_login(Account::User);
+
+    let found = block_on(sdk.get_resources(passbolt_sdk::ResourceQuery {
+        search: Some(name.to_uppercase()),
+        ..passbolt_sdk::ResourceQuery::default()
+    }))
+    .unwrap();
+
+    let ids: Vec<&str> = found.iter().map(|found| found.id.as_str()).collect();
+    assert_eq!(ids, [resource.id.as_str()]);
+    block_on(sdk.logout());
+}
