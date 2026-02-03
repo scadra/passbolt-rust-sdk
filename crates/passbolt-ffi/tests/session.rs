@@ -437,3 +437,27 @@ fn keeping_the_session_alive_reads_the_user() {
 
     assert_eq!(passbolt.requests("GET", "/users/me.json").len(), before + 1);
 }
+
+#[test]
+fn a_missing_resource_view_keeps_the_not_found_status() {
+    let passbolt = Passbolt::new();
+    passbolt.on_status(
+        "GET",
+        &format!("/resources/{RESOURCE_ID}.json"),
+        404,
+        &Value::Null,
+    );
+
+    let error = passbolt
+        .login()
+        .get_resource_view(RESOURCE_ID.into())
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            PassboltFfiError::Api { status: 404, .. } | PassboltFfiError::NotFound { .. }
+        ),
+        "{error}"
+    );
+}

@@ -151,7 +151,8 @@ fn parse_filters(expressions: &[String]) -> Result<Vec<passbolt_sdk::filter::Fil
     expressions
         .iter()
         .map(|expression| passbolt_sdk::filter::Filter::parse(expression))
-        .collect()
+        .collect::<Result<_, _>>()
+        .map_err(Into::into)
 }
 
 fn parse_expiry_opt(expiry: Option<&String>) -> Result<Option<serde_json::Value>> {
@@ -159,6 +160,7 @@ fn parse_expiry_opt(expiry: Option<&String>) -> Result<Option<serde_json::Value>
         .map(String::as_str)
         .map(passbolt_sdk::resource::expiry::parse_expiry)
         .transpose()
+        .map_err(Into::into)
 }
 
 #[allow(clippy::too_many_lines)]

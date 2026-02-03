@@ -14,6 +14,8 @@
 ///
 /// Syntax: `field=value`, `field~=value` (contains), `field^=value` (starts),
 /// `field$=value` (ends with). Case-insensitive comparisons.
+use crate::error::PassboltError;
+
 #[derive(Debug, Clone)]
 pub struct Filter {
     pub field: String,
@@ -21,7 +23,7 @@ pub struct Filter {
     pub value: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterOp {
     Eq,
     Contains,
@@ -31,44 +33,35 @@ pub enum FilterOp {
 }
 
 impl Filter {
-    pub fn parse(expression: &str) -> anyhow::Result<Self> {
-        // Check operators in descending specificity
-        if let Some(position) = expression.find("~=") {
-            return Ok(Self {
-                field: expression[..position].trim().to_lowercase(),
-                op: FilterOp::Contains,
-                value: expression[position + 2..].trim().to_string(),
-            });
-        }
-        if let Some(position) = expression.find("^=") {
-            return Ok(Self {
-                field: expression[..position].trim().to_lowercase(),
-                op: FilterOp::StartsWith,
-                value: expression[position + 2..].trim().to_string(),
-            });
-        }
-        if let Some(position) = expression.find("$=") {
-            return Ok(Self {
-                field: expression[..position].trim().to_lowercase(),
-                op: FilterOp::EndsWith,
-                value: expression[position + 2..].trim().to_string(),
-            });
-        }
-        if let Some(position) = expression.find("!=") {
-            return Ok(Self {
-                field: expression[..position].trim().to_lowercase(),
-                op: FilterOp::NotEq,
-                value: expression[position + 2..].trim().to_string(),
-            });
-        }
-        if let Some(position) = expression.find('=') {
-            return Ok(Self {
-                field: expression[..position].trim().to_lowercase(),
-                op: FilterOp::Eq,
-                value: expression[position + 1..].trim().to_string(),
-            });
-        }
-        anyhow::bail!("Invalid filter expression: {expression}  (expected: field=value)")
+    /// `field<operator>value`: the first operator written splits it, so the value may hold
+    /// operators itself (`uri=a!=b` is `uri` equal to `a!=b`).
+    pub fn parse(expression: &str) -> Result<Self, PassboltError> {
+        const OPERATORS: [(&str, FilterOp); 5] = [
+            ("~=", FilterOp::Contains),
+            ("^=", FilterOp::StartsWith),
+            ("$=", FilterOp::EndsWith),
+            ("!=", FilterOp::NotEq),
+            ("=", FilterOp::Eq),
+        ];
+        // Two-character operators first: `a!=b` is `!=` at 1 before `=` at 2.
+        let (position, operator, op) = OPERATORS
+            .iter()
+            .filter_map(|(operator, op)| {
+                expression
+                    .find(operator)
+                    .map(|position| (position, *operator, *op))
+            })
+            .min_by_key(|(position, operator, _)| (*position, std::cmp::Reverse(operator.len())))
+            .ok_or_else(|| {
+                PassboltError::InvalidArgument(format!(
+                    "Invalid filter expression: {expression}  (expected: field=value)"
+                ))
+            })?;
+        Ok(Self {
+            field: expression[..position].trim().to_lowercase(),
+            op,
+            value: expression[position + operator.len()..].trim().to_string(),
+        })
     }
 
     /// Test a field value string against this filter.
@@ -166,6 +159,40 @@ mod tests {
     #[test]
     fn test_parse_invalid() {
         assert!(Filter::parse("noop").is_err());
+    }
+
+    #[rstest::rstest]
+    #[case::value_holding_another_operator("uri=a!=b", "uri", FilterOp::Eq, "a!=b")]
+    #[case::value_holding_an_equal_sign("name~=x=y", "name", FilterOp::Contains, "x=y")]
+    #[case::not_equal_before_equal("name!=a", "name", FilterOp::NotEq, "a")]
+    #[case::starts_with_holding_contains(
+        "uri^=https://a~=b",
+        "uri",
+        FilterOp::StartsWith,
+        "https://a~=b"
+    )]
+    fn test_parse_splits_at_the_first_operator(
+        #[case] expression: &str,
+        #[case] field: &str,
+        #[case] op: FilterOp,
+        #[case] value: &str,
+    ) {
+        let filter = Filter::parse(expression).unwrap();
+
+        assert_eq!(
+            (filter.field.as_str(), filter.op, filter.value.as_str()),
+            (field, op, value)
+        );
+    }
+
+    #[test]
+    fn test_an_invalid_expression_is_an_invalid_argument() {
+        let error = Filter::parse("no operator").unwrap_err();
+
+        assert!(
+            matches!(error, PassboltError::InvalidArgument(_)),
+            "{error:?}"
+        );
     }
 
     #[test]

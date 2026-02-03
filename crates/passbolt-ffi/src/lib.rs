@@ -281,9 +281,7 @@ impl PassboltClient {
                 &self.inner,
                 &id,
             ))
-            .map_err(|error| PassboltFfiError::Other {
-                message: format!("{error:#}"),
-            })?;
+            .map_err(PassboltFfiError::from)?;
         to_json(&view)
     }
 

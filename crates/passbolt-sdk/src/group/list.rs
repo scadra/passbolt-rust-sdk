@@ -10,9 +10,8 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use anyhow::Result;
-
 use crate::client::{GroupQuery, PassboltSdk};
+use crate::error::PassboltError;
 use crate::filter::Filter;
 use crate::group::filter::filter_groups;
 use crate::http::HttpClient;
@@ -23,7 +22,7 @@ pub async fn list_groups<H: HttpClient>(
     user_id: Option<String>,
     manager_id: Option<String>,
     filters: &[Filter],
-) -> Result<Vec<Group>> {
+) -> Result<Vec<Group>, PassboltError> {
     let query = GroupQuery {
         user_id,
         manager_id,

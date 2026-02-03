@@ -10,9 +10,8 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use anyhow::Result;
-
 use crate::client::{FolderQuery, PassboltSdk};
+use crate::error::PassboltError;
 use crate::filter::Filter;
 use crate::folder::filter::filter_folders;
 use crate::http::HttpClient;
@@ -24,7 +23,7 @@ pub async fn list_folders<H: HttpClient>(
     group_ids: Vec<String>,
     parent_folder_ids: Vec<String>,
     filters: &[Filter],
-) -> Result<Vec<Folder>> {
+) -> Result<Vec<Folder>, PassboltError> {
     let folders = client
         .get_folders(FolderQuery {
             search,
