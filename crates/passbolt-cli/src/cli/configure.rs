@@ -22,7 +22,7 @@ pub struct ConfigureArgs {
     pub server_address: Option<String>,
 
     /// User PGP private key (armored inline)
-    #[arg(long, env = "PASSBOLT_USER_PRIVATE_KEY")]
+    #[arg(long)]
     pub user_private_key: Option<String>,
 
     /// Path to PGP private key file
@@ -30,7 +30,7 @@ pub struct ConfigureArgs {
     pub user_private_key_file: Option<String>,
 
     /// Master password
-    #[arg(long, env = "PASSBOLT_USER_PASSWORD")]
+    #[arg(long)]
     pub user_password: Option<String>,
 
     /// MFA mode
@@ -38,7 +38,7 @@ pub struct ConfigureArgs {
     pub mfa_mode: Option<String>,
 
     /// TOTP token
-    #[arg(long, env = "PASSBOLT_MFA_TOTP_TOKEN")]
+    #[arg(long)]
     pub mfa_totp_token: Option<String>,
 
     /// TLS skip verify
@@ -62,7 +62,7 @@ pub struct ConfigureArgs {
     pub tls_client_cert: Option<String>,
 
     /// TLS client private key (PEM, inline)
-    #[arg(long, env = "PASSBOLT_TLS_CLIENT_PRIVATE_KEY")]
+    #[arg(long)]
     pub tls_client_private_key: Option<String>,
 
     /// Path to TLS client certificate file
@@ -88,8 +88,12 @@ pub struct ConfigureArgs {
     pub mfa_totp_offset: Option<i64>,
 }
 
+/// Write the settings into the config file, the `PASSBOLT_*` variables included as
+/// go-passbolt-cli does, but not the secrets: a password or key exported for one run must not
+/// end up on disk. Secrets are saved only when given on the command line.
 pub fn run(args: &ConfigureArgs) -> Result<()> {
     let mut config = Config::load()?;
+    config.keep_the_secrets_of(&Config::load_file()?);
 
     if let Some(value) = &args.server_address {
         config.server_address.clone_from(value);
