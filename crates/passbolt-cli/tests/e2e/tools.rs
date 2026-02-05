@@ -17,7 +17,8 @@ use keepass::{Database, DatabaseKey};
 use predicates::str::contains;
 
 use crate::common::{
-    create_folder, create_resource, passbolt, run, run_json, unique_name, Cleanup,
+    create_folder, create_resource, passbolt, run, run_json, share_with_user_id, unique_name,
+    Cleanup,
 };
 
 #[test]
@@ -88,6 +89,52 @@ fn keepass_export_contains_the_folder_resources() {
     let exported = database.root.iter().any(|node| {
         matches!(node, NodeRef::Entry(entry)
             if entry.get_title() == Some(name.as_str()) && entry.get_password() == Some("exported-password"))
+    });
+    assert!(exported, "{name} missing from the export");
+}
+
+#[test]
+fn keepass_export_contains_shared_v5_resources() {
+    let folder = create_folder(&unique_name("export-shared"), &[]);
+    let name = unique_name("exported-shared");
+    let _resource = create_resource(
+        &name,
+        "shared-password",
+        &["--type", "v5-default", "--folder-parent-id", &folder.id],
+    );
+    run(&[
+        "share",
+        "folder",
+        "--id",
+        &folder.id,
+        "-u",
+        &share_with_user_id(),
+        "-t",
+        "1",
+        "--with-content",
+    ]);
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("export.kdbx");
+
+    run(&[
+        "export",
+        "keepass",
+        "--output",
+        file.to_str().unwrap(),
+        "--password",
+        "kdbx-password",
+        "--folder-id",
+        &folder.id,
+    ]);
+
+    let database = Database::open(
+        &mut std::fs::File::open(&file).unwrap(),
+        DatabaseKey::new().with_password("kdbx-password"),
+    )
+    .unwrap();
+    let exported = database.root.iter().any(|node| {
+        matches!(node, NodeRef::Entry(entry)
+            if entry.get_title() == Some(name.as_str()) && entry.get_password() == Some("shared-password"))
     });
     assert!(exported, "{name} missing from the export");
 }

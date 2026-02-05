@@ -24,14 +24,25 @@ pub async fn list_folders<H: HttpClient>(
     parent_folder_ids: Vec<String>,
     filters: &[Filter],
 ) -> Result<Vec<Folder>, PassboltError> {
-    let folders = client
+    let mut folders = client
         .get_folders(FolderQuery {
             search,
-            group_id: group_ids.first().cloned(),
             parent_folder_ids,
             ..Default::default()
         })
         .await?;
+    // The folders any of the groups has a permission on.
+    if !group_ids.is_empty() {
+        folders.retain(|folder| {
+            folder.permissions.iter().any(|permission| {
+                permission.aro.as_deref() == Some("Group")
+                    && permission
+                        .aro_foreign_key
+                        .as_ref()
+                        .is_some_and(|group_id| group_ids.contains(group_id))
+            })
+        });
+    }
 
     Ok(filter_folders(folders, filters))
 }

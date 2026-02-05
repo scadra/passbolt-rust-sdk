@@ -324,3 +324,33 @@ fn an_unknown_column_is_refused() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown column colour"));
 }
+
+#[test]
+fn secret_fields_alone_create_a_resource_of_the_matching_type() {
+    let cases = [
+        ("password=s3cr3t", "v5-default", "password", "s3cr3t"),
+        ("description=a note", "v5-note", "note", "a note"),
+    ];
+    for (secret_field, slug, read_field, read_value) in cases {
+        let name = unique_name("secret-field");
+        let created = run_json(&[
+            "create",
+            "resource",
+            "--name",
+            &name,
+            "--secret-field",
+            secret_field,
+        ]);
+        let resource = Cleanup::new("resource", &created);
+
+        let fetched = run_json(&["get", "resource", "--id", &resource.id]);
+
+        assert_eq!(fetched["resource_type"], slug, "{fetched}");
+        let value = if read_field == "note" {
+            &fetched["secret"]["description"]
+        } else {
+            &fetched[read_field]
+        };
+        assert_eq!(value, read_value, "{fetched}");
+    }
+}

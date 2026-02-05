@@ -324,7 +324,7 @@ pub enum ListEntity {
         favorite: bool,
         #[arg(long)]
         own: bool,
-        /// Filter by group ID(s) — may be repeated
+        /// Only the resources shared with this group (one: the server filters on one group)
         #[arg(short = 'g', long)]
         group: Vec<String>,
         /// Filter by folder ID(s) — may be repeated
@@ -346,7 +346,7 @@ pub enum ListEntity {
         /// Filter by parent folder ID(s) — may be repeated
         #[arg(short = 'f', long)]
         folder: Vec<String>,
-        /// Filter by group ID(s) — may be repeated
+        /// Only the folders shared with one of these groups — may be repeated
         #[arg(short = 'g', long)]
         group: Vec<String>,
         #[arg(short = 'c', long)]

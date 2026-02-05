@@ -10,10 +10,11 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-//! Columns of `list folder`, `list user` and `list group`, named as go-passbolt-cli names them.
+//! Columns of `list folder`, `list user`, `list group` and of the permissions, named as
+//! go-passbolt-cli names them.
 
 use anyhow::{bail, Result};
-use passbolt_sdk::types::{Folder, Group, GroupUser, User};
+use passbolt_sdk::types::{Folder, Group, GroupUser, Permission, User};
 use serde_json::{Map, Value};
 
 use crate::util::output;
@@ -302,6 +303,47 @@ pub const GROUP_MEMBER_COLUMNS: [Column<GroupUser>; 5] = [
         value: |member| member.is_admin.unwrap_or(false).into(),
     },
 ];
+
+/// `get resource-permissions` and `get folder-permissions`.
+pub const PERMISSION_COLUMNS: [Column<Permission>; 5] = [
+    Column {
+        name: "aro",
+        aliases: &[],
+        header: "ARO",
+        value: |permission| permission.aro.clone().into(),
+    },
+    Column {
+        name: "aro_foreign_key",
+        aliases: &["aro_id"],
+        header: "ARO ID",
+        value: |permission| permission.aro_foreign_key.clone().into(),
+    },
+    Column {
+        name: "type",
+        aliases: &["permission_type"],
+        header: "Type",
+        value: |permission| permission.type_name().into(),
+    },
+    Column {
+        name: "id",
+        aliases: &[],
+        header: "ID",
+        value: |permission| permission.id.clone().into(),
+    },
+    Column {
+        name: "modified",
+        aliases: &[],
+        header: "Modified",
+        value: |permission| {
+            permission
+                .modified
+                .map(|modified| modified.to_rfc3339())
+                .into()
+        },
+    },
+];
+
+pub const PERMISSION_DEFAULTS: [&str; 3] = ["aro", "aro_foreign_key", "type"];
 
 #[cfg(test)]
 mod tests {

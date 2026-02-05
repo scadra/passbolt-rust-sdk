@@ -588,3 +588,27 @@ async fn the_newest_key_the_user_holds_a_share_of_is_used() {
 
     assert_eq!(body["metadata_key_id"], "mk-old");
 }
+
+#[rstest]
+#[case::password("password", json!("s3cr3t"), "v5-default")]
+#[case::note("description", json!("a note"), "v5-note")]
+#[case::pin_code("pin_code", json!("123456"), "v5-pin-code")]
+#[tokio::test]
+async fn secret_fields_alone_choose_the_type(
+    #[case] field: &str,
+    #[case] value: Value,
+    #[case] slug: &str,
+) {
+    let fake = v5_server(data::metadata_keys_settings());
+    let mut secret_fields = serde_json::Map::new();
+    secret_fields.insert(field.into(), value);
+    let new_resource = NewResource {
+        name: "GitHub".into(),
+        secret_fields,
+        ..NewResource::default()
+    };
+
+    let body = create(&fake, &new_resource).await.unwrap();
+
+    assert_eq!(body["resource_type_id"], data::resource_type_id(slug));
+}

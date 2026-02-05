@@ -143,17 +143,35 @@ pub async fn create_resource<H: HttpClient>(
     Ok(created)
 }
 
-/// The slug matching the fields set, in the server's default version.
+/// Whether resources of type `slug` need a password.
+#[must_use]
+pub fn requires_password(slug: &str) -> bool {
+    matches!(
+        slug,
+        "password-string"
+            | "password-and-description"
+            | "password-description-totp"
+            | "v5-default"
+            | "v5-default-with-totp"
+    )
+}
+
+/// The slug matching the fields set, `--secret-field` ones included, in the server's default
+/// version.
 fn default_slug(new_resource: &NewResource, v5: bool) -> Result<&'static str, PassboltError> {
-    let has_password = new_resource.password.is_some();
-    let has_totp = new_resource.totp.is_some();
+    let secret_field = |name: &str| new_resource.secret_fields.contains_key(name);
+    let has_password = new_resource.password.is_some() || secret_field("password");
+    let has_totp = new_resource.totp.is_some() || secret_field("totp");
+    let has_pin_code = new_resource.pin_code.is_some() || secret_field("pin_code");
+    let has_custom_fields = !new_resource.custom_fields.is_empty() || secret_field("custom_fields");
+    let has_note = new_resource.note.is_some() || secret_field("description");
     let slug = match (v5, has_password, has_totp) {
         (true, true, true) => "v5-default-with-totp",
         (true, true, false) => "v5-default",
         (true, false, true) => "v5-totp-standalone",
-        (true, false, false) if new_resource.pin_code.is_some() => "v5-pin-code",
-        (true, false, false) if !new_resource.custom_fields.is_empty() => "v5-custom-fields",
-        (true, false, false) if new_resource.note.is_some() => "v5-note",
+        (true, false, false) if has_pin_code => "v5-pin-code",
+        (true, false, false) if has_custom_fields => "v5-custom-fields",
+        (true, false, false) if has_note => "v5-note",
         (false, true, true) => "password-description-totp",
         (false, true, false) => "password-and-description",
         (false, false, true) => "totp",

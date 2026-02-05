@@ -210,16 +210,7 @@ async fn dispatch(
                             && note.is_none()
                             && secret_field.is_empty()
                     },
-                    |slug| {
-                        matches!(
-                            slug,
-                            "password-string"
-                                | "password-and-description"
-                                | "password-description-totp"
-                                | "v5-default"
-                                | "v5-default-with-totp"
-                        )
-                    },
+                    passbolt_sdk::resource::create::requires_password,
                 );
                 let resolved_password = match password {
                     Some(provided_password) => Some(provided_password.clone()),
@@ -328,24 +319,16 @@ async fn dispatch(
                 }
             }
 
-            GetEntity::ResourcePermissions { id, .. } => {
+            GetEntity::ResourcePermissions { id, column } => {
                 let permissions =
                     passbolt_sdk::resource::get::get_resource_permissions(client, id).await?;
-                if json_output {
-                    output::print_json(&permissions)?;
-                } else {
-                    let rows: Vec<Vec<String>> = permissions
-                        .iter()
-                        .map(|permission| {
-                            vec![
-                                permission.aro.clone().unwrap_or_default(),
-                                permission.aro_foreign_key.clone().unwrap_or_default(),
-                                permission.type_name().to_string(),
-                            ]
-                        })
-                        .collect();
-                    output::print_table(&["ARO", "ARO ID", "Type"], rows);
-                }
+                util::columns::print(
+                    &permissions,
+                    &util::columns::PERMISSION_COLUMNS,
+                    column,
+                    &util::columns::PERMISSION_DEFAULTS,
+                    json_output,
+                )?;
             }
 
             GetEntity::Folder { id } => {
@@ -364,23 +347,15 @@ async fn dispatch(
                 }
             }
 
-            GetEntity::FolderPermissions { id, .. } => {
+            GetEntity::FolderPermissions { id, column } => {
                 let permissions = client.get_folder_permissions(id).await?;
-                if json_output {
-                    output::print_json(&permissions)?;
-                } else {
-                    let rows: Vec<Vec<String>> = permissions
-                        .iter()
-                        .map(|permission| {
-                            vec![
-                                permission.aro.clone().unwrap_or_default(),
-                                permission.aro_foreign_key.clone().unwrap_or_default(),
-                                permission.type_name().to_string(),
-                            ]
-                        })
-                        .collect();
-                    output::print_table(&["ARO", "ARO ID", "Type"], rows);
-                }
+                util::columns::print(
+                    &permissions,
+                    &util::columns::PERMISSION_COLUMNS,
+                    column,
+                    &util::columns::PERMISSION_DEFAULTS,
+                    json_output,
+                )?;
             }
 
             GetEntity::User { id } => {
