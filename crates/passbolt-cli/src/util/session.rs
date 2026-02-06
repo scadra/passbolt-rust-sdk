@@ -36,7 +36,7 @@ pub async fn get_client(config: &Config) -> Result<Client> {
             }
             "interactive-totp" => Some(Box::new(crate::util::mfa::TerminalMfaProvider)),
             other => anyhow::bail!(
-                "Unknown MFA mode {other}: use none, interactive-totp or noninteractive-totp"
+                "Unknown MFA mode {other}: use none, interactive-totp or non-interactive-totp"
             ),
         };
 

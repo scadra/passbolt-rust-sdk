@@ -61,8 +61,8 @@ pub fn collect_subtree_ids(root_id: &str, folders: &[Folder]) -> HashSet<String>
     let mut queue = VecDeque::new();
     queue.push_back(root_id.to_owned());
     while let Some(current) = queue.pop_front() {
-        if folders.iter().any(|folder| folder.id == current) {
-            ids.insert(current.clone());
+        // A folder seen already ends the branch: parent links forming a cycle loop no more.
+        if folders.iter().any(|folder| folder.id == current) && ids.insert(current.clone()) {
             for child in folders.iter().filter(|candidate| {
                 candidate
                     .folder_parent_id
@@ -170,6 +170,16 @@ mod tests {
         assert!(ids.contains("child2"));
         assert!(ids.contains("grandchild"));
         assert!(!ids.contains("other"));
+    }
+
+    #[test]
+    fn test_collect_subtree_ids_ends_on_a_cycle() {
+        let folders = vec![
+            make_folder("first", Some("second")),
+            make_folder("second", Some("first")),
+        ];
+
+        assert_eq!(collect_subtree_ids("first", &folders).len(), 2);
     }
 
     #[test]

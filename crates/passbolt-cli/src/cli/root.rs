@@ -37,16 +37,18 @@ pub struct Cli {
     #[arg(long, global = true, env = "PASSBOLT_USER_PRIVATE_KEY_FILE")]
     pub user_private_key_file: Option<String>,
 
-    /// Master password (passphrase for the private key)
-    #[arg(long, global = true, env = "PASSBOLT_USER_PASSWORD")]
+    /// Master password (passphrase for the private key); also read from
+    /// `PASSBOLT_USER_PASSWORD`, which `configure` never saves
+    #[arg(long, global = true)]
     pub user_password: Option<String>,
 
     /// MFA mode: interactive-totp | non-interactive-totp | none [default: interactive-totp]
     #[arg(long, global = true, env = "PASSBOLT_MFA_MODE")]
     pub mfa_mode: Option<String>,
 
-    /// TOTP token for non-interactive MFA
-    #[arg(long, global = true, env = "PASSBOLT_MFA_TOTP_TOKEN")]
+    /// TOTP token for non-interactive MFA; also read from `PASSBOLT_MFA_TOTP_TOKEN`, which
+    /// `configure` never saves
+    #[arg(long, global = true)]
     pub mfa_totp_token: Option<String>,
 
     /// TOTP clock offset in seconds [default: 0]
@@ -322,7 +324,7 @@ pub enum ListEntity {
         favorite: bool,
         #[arg(long)]
         own: bool,
-        /// Filter by group ID(s) — may be repeated
+        /// Only the resources shared with this group (one: the server filters on one group)
         #[arg(short = 'g', long)]
         group: Vec<String>,
         /// Filter by folder ID(s) — may be repeated
@@ -344,7 +346,7 @@ pub enum ListEntity {
         /// Filter by parent folder ID(s) — may be repeated
         #[arg(short = 'f', long)]
         folder: Vec<String>,
-        /// Filter by group ID(s) — may be repeated
+        /// Only the folders shared with one of these groups — may be repeated
         #[arg(short = 'g', long)]
         group: Vec<String>,
         #[arg(short = 'c', long)]

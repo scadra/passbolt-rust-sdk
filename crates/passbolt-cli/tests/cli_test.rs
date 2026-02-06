@@ -451,3 +451,38 @@ fn an_unknown_mfa_mode_is_refused_before_contacting_the_server() {
         .failure()
         .stderr(contains("Unknown MFA mode interactive"));
 }
+
+#[test]
+fn test_configure_keeps_the_environment_out_of_the_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+
+    passbolt()
+        .env("PASSBOLT_CONFIG", &config)
+        .env("PASSBOLT_USER_PASSWORD", "exported-for-one-run")
+        .env("PASSBOLT_MFA_TOTP_TOKEN", "JBSWY3DPEHPK3PXP")
+        .args(["configure", "--server-address", "https://passbolt.test"])
+        .assert()
+        .success();
+
+    let saved = std::fs::read_to_string(&config).unwrap();
+    assert!(saved.contains("https://passbolt.test"), "{saved}");
+    assert!(!saved.contains("exported-for-one-run"), "{saved}");
+    assert!(!saved.contains("JBSWY3DPEHPK3PXP"), "{saved}");
+}
+
+#[test]
+fn test_configure_saves_what_is_given_on_the_command_line() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config.toml");
+
+    passbolt()
+        .env("PASSBOLT_CONFIG", &config)
+        .args(["configure", "--server-address", "https://passbolt.test"])
+        .args(["--user-password", "typed-on-purpose"])
+        .assert()
+        .success();
+
+    let saved = std::fs::read_to_string(&config).unwrap();
+    assert!(saved.contains("typed-on-purpose"), "{saved}");
+}

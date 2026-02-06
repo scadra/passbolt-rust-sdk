@@ -51,7 +51,6 @@ chrono = { version = "0.4", features = ["serde"] }
 # KeePass export
 keepass = { version = "0.6", features = ["save_kdbx4"] }
 secstr = "0.5"
-pgp = "0.14"
 
 [features]
 # End-to-end tests against a real server: scripts/e2e.sh
@@ -68,6 +67,7 @@ path = "tests/e2e_migration/main.rs"
 required-features = ["e2e"]
 
 [dev-dependencies]
+pgp = "0.14"
 totp-rs = "5"
 assert_cmd = "2"
 predicates = "3"

@@ -10,9 +10,8 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use anyhow::Result;
-
 use crate::client::{PassboltSdk, UserQuery};
+use crate::error::PassboltError;
 use crate::filter::Filter;
 use crate::http::HttpClient;
 use crate::types::User;
@@ -25,7 +24,7 @@ pub async fn list_users<H: HttpClient>(
     resource_id: Option<String>,
     admin_only: bool,
     filters: &[Filter],
-) -> Result<Vec<User>> {
+) -> Result<Vec<User>, PassboltError> {
     let query = UserQuery {
         search,
         group_id,

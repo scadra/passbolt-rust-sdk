@@ -10,9 +10,10 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
+
+use crate::error::PassboltError;
 
 /// Parse an expiry string into a JSON value suitable for the API.
 ///
@@ -20,7 +21,7 @@ use serde_json::Value;
 /// - RFC3339 date/time:   `"2025-12-31T00:00:00Z"`
 /// - Duration from now:   `"2w"`, `"7d"`, `"48h"`, `"30m"`, or a sum: `"1w2d3h"`
 /// - Clear expiry:        `"none"` / `""`
-pub fn parse_expiry(input: &str) -> Result<Value> {
+pub fn parse_expiry(input: &str) -> Result<Value, PassboltError> {
     let input = input.trim();
 
     if input.is_empty() || input.eq_ignore_ascii_case("none") {
@@ -34,14 +35,14 @@ pub fn parse_expiry(input: &str) -> Result<Value> {
 
     // Duration from now: 7d, 48h, 30m, or a sum such as 1w2d3h.
     let delta = parse_duration(input).ok_or_else(|| {
-        anyhow::anyhow!(
+        PassboltError::InvalidArgument(format!(
             "Unrecognised expiry format: {input}  \
              (use RFC3339, a duration like '2w'/'7d'/'48h'/'30m' or '1w2d3h', or 'none')"
-        )
+        ))
     })?;
-    let expires_at = Utc::now()
-        .checked_add_signed(delta)
-        .ok_or_else(|| anyhow::anyhow!("Expiry duration out of range: {input}"))?;
+    let expires_at = Utc::now().checked_add_signed(delta).ok_or_else(|| {
+        PassboltError::InvalidArgument(format!("Expiry duration out of range: {input}"))
+    })?;
 
     Ok(Value::String(expires_at.to_rfc3339()))
 }

@@ -11,29 +11,22 @@
 // @since         0.1.0
 
 use anyhow::{Context, Result};
-use indicatif::{ProgressBar, ProgressStyle};
-use secrecy::ExposeSecret;
+use indicatif::ProgressBar;
 use secstr::SecStr;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
-use std::sync::Arc;
-use tokio::task::JoinSet;
 use zeroize::ZeroizeOnDrop;
 
 use crate::Client;
-use passbolt_sdk::metadata::MetadataKeys;
+use passbolt_sdk::resource::list::list_resources;
 use passbolt_sdk::resource::view::ResourceView;
-use passbolt_sdk::types::{Folder, Resource, ResourceType, TotpData};
-use passbolt_sdk::{crypto, metadata};
-
-type TaskResult = (usize, Option<String>, Result<ResourceView>);
+use passbolt_sdk::types::{Folder, TotpData};
 
 /// Export Passbolt resources to a `KeePass` KDBX file, preserving folder hierarchy.
 ///
 /// If `folder_id` is provided, only resources inside that folder subtree are exported.
-/// Decryption is parallelised across tokio blocking threads, bounded to `workers` threads
-/// (0 = auto-detect number of CPUs).
-#[allow(clippy::too_many_lines)]
+/// The resources are listed as `list resource` lists them, their secrets decrypted by
+/// `workers` threads (0 = one per CPU).
 pub async fn export_keepass(
     client: &Client,
     output_path: &Path,
@@ -46,113 +39,34 @@ pub async fn export_keepass(
         .await
         .context("Failed to fetch folders")?;
 
-    // When a root folder is specified, compute the set of folder IDs in its subtree.
-    let (resources, folders) = if let Some(root_id) = folder_id {
-        let subtree_ids = collect_subtree_ids(root_id, &all_folders)?;
-        let folder_id_strings: Vec<String> = subtree_ids.iter().cloned().collect();
-        let resources = client
-            .get_resources(passbolt_sdk::ResourceQuery {
-                folder_ids: folder_id_strings,
+    let (query, folders) = match folder_id {
+        Some(root_id) => {
+            if !all_folders.iter().any(|folder| folder.id == root_id) {
+                anyhow::bail!("folder {root_id} not found");
+            }
+            let subtree_ids = passbolt_sdk::collect_subtree_ids(root_id, &all_folders);
+            let query = passbolt_sdk::ResourceQuery {
+                folder_ids: subtree_ids.iter().cloned().collect(),
                 ..Default::default()
-            })
-            .await
-            .context("Failed to fetch resources")?;
-        // Only keep folders that belong to the subtree
-        let folders: Vec<Folder> = all_folders
-            .into_iter()
-            .filter(|folder| subtree_ids.contains(&folder.id))
-            .collect();
-        (resources, folders)
-    } else {
-        let resources = client
-            .get_resources(passbolt_sdk::ResourceQuery::default())
-            .await
-            .context("Failed to fetch resources")?;
-        (resources, all_folders)
+            };
+            let folders: Vec<Folder> = all_folders
+                .into_iter()
+                .filter(|folder| subtree_ids.contains(&folder.id))
+                .collect();
+            (query, folders)
+        }
+        None => (passbolt_sdk::ResourceQuery::default(), all_folders),
     };
 
-    let concurrency = if workers == 0 {
-        std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
-    } else {
-        workers
-    }
-    .max(1);
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
-
-    let total = resources.len() as u64;
-    let progress_bar = Arc::new(ProgressBar::new(total));
-    progress_bar.set_style(
-        ProgressStyle::with_template(
-            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}",
-        )
-        .unwrap_or_else(|_| ProgressStyle::default_bar())
-        .progress_chars("#>-"),
-    );
-    progress_bar.set_message("Decrypting secrets...");
-
-    // Share the crypto material across blocking tasks via Arc
-    let pgp_key = client.pgp_key_arc();
-    let passphrase = client.passphrase_arc();
-
-    // Fetch the shared metadata keys once, if a v5 resource needs them.
-    let needs_shared_keys = resources.iter().any(|resource| {
-        resource.is_v5() && resource.metadata_key_type.as_deref() != Some("user_key")
-    });
-    let metadata_keys = if needs_shared_keys {
-        client
-            .metadata_keys()
-            .await
-            .context("Failed to fetch the metadata keys")?
-    } else {
-        Arc::default()
-    };
-
-    let resource_types = client
-        .resource_types()
+    let progress = ProgressBar::new_spinner().with_message("Decrypting secrets...");
+    progress.enable_steady_tick(std::time::Duration::from_millis(100));
+    let views = list_resources(client, query, &[], Some(workers))
         .await
-        .context("Failed to fetch the resource types")?;
+        .context("Failed to fetch resources")?;
+    progress.finish_with_message("Secrets decrypted");
 
-    // Spawn one blocking task per resource; collect (original_index, result)
-    let mut tasks: JoinSet<TaskResult> = JoinSet::new();
-
-    for (index, resource) in resources.iter().enumerate() {
-        let encrypted = extract_secret_data(resource);
-        let name = resource.name.clone();
-        let folder_parent_id = resource.folder_parent_id.clone();
-        let task_resource = resource.clone();
-        let key = Arc::clone(&pgp_key);
-        let task_metadata_keys = Arc::clone(&metadata_keys);
-        let task_resource_types = Arc::clone(&resource_types);
-        let task_passphrase = Arc::clone(&passphrase);
-        let task_progress_bar = Arc::clone(&progress_bar);
-        let permit = Arc::clone(&semaphore).acquire_owned().await?;
-
-        tasks.spawn_blocking(move || {
-            let _permit = permit;
-            let view = decrypt_view(
-                task_resource,
-                &encrypted,
-                &key,
-                task_passphrase.expose_secret(),
-                &task_metadata_keys,
-                &task_resource_types,
-            )
-            .with_context(|| format!("Failed to decrypt '{name}'"));
-            task_progress_bar.inc(1);
-            (index, folder_parent_id, view)
-        });
-    }
-
-    let mut task_results = Vec::with_capacity(resources.len());
-    while let Some(join_result) = tasks.join_next().await {
-        task_results.push(
-            join_result.map_err(|error| anyhow::anyhow!("Decryption task panicked: {error}"))?,
-        );
-    }
-
-    progress_bar.finish_with_message("Secrets decrypted");
-
-    let (entries, failures) = collect_entries(&resources, task_results);
+    let total = views.len();
+    let (entries, failures) = collect_entries(&views);
     let exported = entries.len();
 
     write_kdbx(output_path, password, entries, &folders)?;
@@ -160,76 +74,34 @@ pub async fn export_keepass(
     println!("Exported {exported} entries to {}", output_path.display());
 
     // A partial backup must not look like a complete one to scripts: report and fail.
-    ensure_no_decryption_failure(&failures, resources.len())
+    ensure_no_decryption_failure(&failures, total)
 }
 
-/// Turn decryption results into index-ordered entries, skipping the resources
-/// whose secret could not be decrypted; their errors are returned instead.
-fn collect_entries(
-    resources: &[Resource],
-    task_results: Vec<TaskResult>,
-) -> (Vec<(Option<String>, KeePassEntry)>, Vec<anyhow::Error>) {
-    // Cannot use vec![None; n] because KeePassEntry is not Clone (intentional: ZeroizeOnDrop).
-    let mut ordered: Vec<Option<(Option<String>, KeePassEntry)>> =
-        (0..resources.len()).map(|_| None).collect();
+/// The entries of the decrypted views, with their folder; the views that could not be
+/// decrypted are skipped, their errors returned instead.
+fn collect_entries(views: &[ResourceView]) -> (Vec<(Option<String>, KeePassEntry)>, Vec<String>) {
+    let mut entries = Vec::with_capacity(views.len());
     let mut failures = Vec::new();
-
-    for (index, folder_parent_id, view) in task_results {
-        match view {
-            Ok(view) => {
-                ordered[index] = Some((folder_parent_id, build_entry(&view)));
-            }
-            Err(error) => failures.push(error),
+    for view in views {
+        match &view.error {
+            None => entries.push((view.folder_parent_id.clone(), build_entry(view))),
+            Some(error) => failures.push(format!("Failed to decrypt '{}': {error}", view.name)),
         }
     }
-
-    (ordered.into_iter().flatten().collect(), failures)
+    (entries, failures)
 }
 
-fn ensure_no_decryption_failure(failures: &[anyhow::Error], total: usize) -> Result<()> {
+fn ensure_no_decryption_failure(failures: &[String], total: usize) -> Result<()> {
     if failures.is_empty() {
         return Ok(());
     }
     for failure in failures {
-        eprintln!("Skipped: {failure:#}");
+        eprintln!("Skipped: {failure}");
     }
     anyhow::bail!(
         "{} of {total} secrets could not be decrypted and were not exported",
         failures.len()
     )
-}
-
-/// Extract already-fetched encrypted secret data from a resource.
-fn extract_secret_data(resource: &Resource) -> String {
-    resource
-        .secrets
-        .first()
-        .and_then(|secret| secret.data.clone())
-        .unwrap_or_default()
-}
-
-/// Decrypt the metadata and the secret of `resource`, in a blocking thread.
-///
-/// The secret is read by the resource type, as `get resource` does: a `password-string`
-/// password stays a password even if it looks like JSON.
-fn decrypt_view(
-    resource: Resource,
-    encrypted_secret: &str,
-    key: &pgp::SignedSecretKey,
-    passphrase: &str,
-    metadata_keys: &MetadataKeys,
-    resource_types: &[ResourceType],
-) -> Result<ResourceView> {
-    let metadata = metadata::decrypt_resource_metadata(&resource, key, passphrase, metadata_keys)
-        .context("metadata")?;
-    let view = ResourceView::new(resource, metadata, resource_types)?;
-    if encrypted_secret.is_empty() {
-        return Ok(view);
-    }
-    let plaintext = crypto::decrypt_message(encrypted_secret, key, passphrase)
-        .context("GPG decryption failed")?;
-    let text = String::from_utf8(plaintext).context("Secret is not valid UTF-8")?;
-    Ok(view.with_secret(&text)?)
 }
 
 // ─── Internal types ───────────────────────────────────────────────────────────
@@ -474,29 +346,6 @@ fn build_kp_entry(mut source: KeePassEntry) -> keepass::db::Entry {
     entry
 }
 
-/// Collect all folder IDs in the subtree rooted at `root_id` (inclusive).
-fn collect_subtree_ids(root_id: &str, folders: &[Folder]) -> Result<HashSet<String>> {
-    if !folders.iter().any(|folder| folder.id == root_id) {
-        anyhow::bail!("folder {root_id} not found");
-    }
-    let mut ids = HashSet::new();
-    let mut queue = VecDeque::from([root_id.to_owned()]);
-    while let Some(current) = queue.pop_front() {
-        if !ids.insert(current.clone()) {
-            continue;
-        }
-        for child in folders.iter().filter(|candidate| {
-            candidate
-                .folder_parent_id
-                .as_deref()
-                .is_some_and(|parent_id| parent_id == current)
-        }) {
-            queue.push_back(child.id.clone());
-        }
-    }
-    Ok(ids)
-}
-
 /// Return folders in BFS order (parents before children). A folder whose
 /// parent is not in `folders` is a root, so an exported sub-folder keeps its tree.
 fn bfs_folders(folders: &[Folder]) -> Vec<&Folder> {
@@ -539,14 +388,8 @@ mod tests {
     use super::*;
     use keepass::db::{Database, Node, Value};
     use keepass::DatabaseKey;
+    use passbolt_sdk::types::{Resource, ResourceType};
     use rstest::rstest;
-
-    const SERVER_PRIVATE: &str =
-        include_str!("../../../passbolt-sdk/tests/fixtures/keys/server_private.asc");
-    const SERVER_PUBLIC: &str =
-        include_str!("../../../passbolt-sdk/tests/fixtures/keys/server_public.asc");
-    const METADATA_PRIVATE: &str =
-        include_str!("../../../passbolt-sdk/tests/fixtures/keys/metadata_private.asc");
 
     fn make_resource(name: &str) -> Resource {
         Resource {
@@ -608,18 +451,6 @@ mod tests {
             notes: String::new(),
             otp: otp.map(Into::into),
         }
-    }
-
-    fn encrypt_for_server(plaintext: &str) -> String {
-        let public_key = crypto::parse_public_key(SERVER_PUBLIC).unwrap();
-        crypto::encrypt_message(plaintext.as_bytes(), &[&public_key]).unwrap()
-    }
-
-    fn server_private_key() -> pgp::SignedSecretKey {
-        crypto::parse_private_key(SERVER_PRIVATE)
-            .unwrap()
-            .key
-            .clone()
     }
 
     fn folder_ids<'a>(folders: &[&'a Folder]) -> Vec<&'a str> {
@@ -690,46 +521,6 @@ mod tests {
         #[case] expected: &str,
     ) {
         assert_eq!(build_otpauth(title, username, &totp), expected);
-    }
-
-    #[test]
-    fn test_collect_subtree_ids_returns_root_and_descendants_only() {
-        let folders = vec![
-            make_folder("top", None),
-            make_folder("root", Some("top")),
-            make_folder("grandchild", Some("child")),
-            make_folder("child", Some("root")),
-            make_folder("sibling", Some("top")),
-        ];
-
-        let ids = collect_subtree_ids("root", &folders).unwrap();
-
-        let expected: HashSet<String> = ["root", "child", "grandchild"]
-            .into_iter()
-            .map(Into::into)
-            .collect();
-        assert_eq!(ids, expected);
-    }
-
-    #[test]
-    fn test_collect_subtree_ids_fails_on_unknown_root() {
-        let folders = vec![make_folder("top", None)];
-
-        let error = collect_subtree_ids("missing", &folders).unwrap_err();
-
-        assert_eq!(error.to_string(), "folder missing not found");
-    }
-
-    #[test]
-    fn test_collect_subtree_ids_stops_on_cycle() {
-        let folders = vec![
-            make_folder("first", Some("second")),
-            make_folder("second", Some("first")),
-        ];
-
-        let ids = collect_subtree_ids("first", &folders).unwrap();
-
-        assert_eq!(ids.len(), 2);
     }
 
     #[rstest]
@@ -811,15 +602,10 @@ mod tests {
     }
 
     fn view_of(resource: Resource, secret: &str) -> ResourceView {
-        decrypt_view(
-            resource,
-            &encrypt_for_server(secret),
-            &server_private_key(),
-            "",
-            &MetadataKeys::default(),
-            &types(),
-        )
-        .unwrap()
+        ResourceView::new(resource, None, &types())
+            .unwrap()
+            .with_secret(secret)
+            .unwrap()
     }
 
     #[test]
@@ -858,37 +644,17 @@ mod tests {
     }
 
     #[test]
-    fn test_decrypt_view_fails_with_wrong_key() {
-        let wrong_key = crypto::parse_private_key(METADATA_PRIVATE)
-            .unwrap()
-            .key
-            .clone();
-
-        let view = decrypt_view(
-            make_resource("name"),
-            &encrypt_for_server("secret"),
-            &wrong_key,
-            "",
-            &MetadataKeys::default(),
-            &types(),
-        );
-
-        assert!(view.is_err());
-    }
-
-    #[test]
     fn test_collect_entries_skips_and_counts_decryption_failures() {
-        let resources = vec![make_resource("decrypted"), make_resource("broken")];
-        let task_results: Vec<TaskResult> = vec![
-            (1, None, Err(anyhow::anyhow!("Failed to decrypt 'broken'"))),
-            (0, None, Ok(view_of(make_resource("decrypted"), "secret"))),
-        ];
+        let broken = ResourceView::new(make_resource("broken"), None, &types())
+            .unwrap()
+            .with_error(&passbolt_sdk::PassboltError::Other("no key".into()));
+        let views = vec![view_of(make_resource("decrypted"), "secret"), broken];
 
-        let (entries, failures) = collect_entries(&resources, task_results);
+        let (entries, failures) = collect_entries(&views);
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].1.title, "decrypted");
-        assert_eq!(failures.len(), 1);
+        assert_eq!(failures, ["Failed to decrypt 'broken': no key"]);
     }
 
     #[test]
@@ -922,7 +688,7 @@ mod tests {
 
     #[test]
     fn test_ensure_no_decryption_failure_reports_count() {
-        let failures = vec![anyhow::anyhow!("Failed to decrypt 'broken'")];
+        let failures = vec!["Failed to decrypt 'broken'".to_string()];
 
         let error = ensure_no_decryption_failure(&failures, 3).unwrap_err();
 

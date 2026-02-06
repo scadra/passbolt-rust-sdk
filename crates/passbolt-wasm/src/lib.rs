@@ -257,7 +257,7 @@ impl PassboltSession {
     pub async fn get_resource_view(&self, id: String) -> Result<JsValue, JsError> {
         let view = passbolt_sdk::resource::get::get_resource_view(&self.client, &id)
             .await
-            .map_err(|error| JsError::new(&error.to_string()))?;
+            .map_err(to_js_error)?;
         to_js_value(&view)
     }
 

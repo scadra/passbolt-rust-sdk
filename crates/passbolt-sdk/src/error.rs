@@ -126,13 +126,6 @@ pub enum PassboltError {
     Other(String),
 }
 
-/// Transition helper: convert any `anyhow::Error` into `PassboltError::Other`.
-impl From<anyhow::Error> for PassboltError {
-    fn from(error: anyhow::Error) -> Self {
-        Self::Other(format!("{error:#}"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -157,16 +150,6 @@ mod tests {
     #[case::other(PassboltError::Other("as is".into()), "as is")]
     fn test_error_message(#[case] error: PassboltError, #[case] expected: &str) {
         assert_eq!(error.to_string(), expected);
-    }
-
-    #[test]
-    fn test_from_anyhow_keeps_the_context_chain() {
-        let error = anyhow::anyhow!("root cause").context("while reading");
-
-        let error = PassboltError::from(error);
-
-        assert!(matches!(error, PassboltError::Other(_)), "{error:?}");
-        assert_eq!(error.to_string(), "while reading: root cause");
     }
 
     #[test]

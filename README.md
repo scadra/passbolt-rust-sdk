@@ -71,12 +71,14 @@ If you've found a security related issue in Passbolt, please don't open an issue
   - [group](#group)
   - [exec](#exec)
   - [export](#export)
+  - [migrate-metadata](#migrate-metadata)
 - [Global Flags](#global-flags)
 - [Output Formats](#output-formats)
 - [Filter Syntax](#filter-syntax)
 - [Expiry Format](#expiry-format)
 - [MFA](#mfa)
 - [TLS / mTLS](#tls--mtls)
+- [Security Notes](#security-notes)
 
 ---
 
@@ -142,8 +144,14 @@ mfa_delay              = "10s"
 
 # TLS
 tls_skip_verify        = false
-# tls_client_cert_file      = "/path/to/cert.pem"
-# tls_client_private_key_file = "/path/to/key.pem"
+# tls_client_cert        = """-----BEGIN CERTIFICATE----- ..."""   # mTLS, PEM
+# tls_client_private_key = """-----BEGIN PRIVATE KEY----- ..."""
+# proxy                  = "http://proxy.example.com:3128"
+# resolve                = "passbolt.example.com:443:10.0.0.5"     # like curl --resolve
+
+# Written by `passbolt verify`: do not edit by hand
+# server_public_key        = """-----BEGIN PGP PUBLIC KEY BLOCK----- ..."""
+# metadata_key_fingerprint = "..."
 
 # Performance
 timeout                = "1m"
@@ -157,19 +165,27 @@ debug                  = false
 
 CLI flags > Environment variables (`PASSBOLT_*`) > Config file > Defaults
 
+`passbolt configure` saves the `PASSBOLT_*` variables set when it runs, except the secrets
+(password, TOTP secret, private keys): a secret exported for one command never ends up on disk.
+Give a secret on the `configure` command line to save it.
+
 ---
 
 ## Authentication
 
-The CLI uses a **2-step GPG challenge-response** flow to obtain a JWT:
+The CLI logs in with **GPGAuth**, as the browser extension does, then keeps the session cookie:
 
-1. `POST /auth/jwt/login.json` with the user's key fingerprint
-2. Server responds with a GPG-encrypted challenge
-3. CLI decrypts the challenge with the user's private key + passphrase
-4. `POST /auth/jwt/login.json` with the decrypted token
-5. Server returns `access_token` + `refresh_token` (JWT)
+1. Once `passbolt verify` pinned the server key, the server first proves it holds its private
+   key: it must decrypt a fresh token (`POST /auth/verify.json`).
+2. `POST /auth/login.json` with the user's key fingerprint: the server answers a challenge
+   encrypted for the user.
+3. The CLI decrypts it, checks it is a GPGAuth token, and sends it back.
+4. The server sets the session cookie; requests then carry the CSRF token.
 
-The `verify` command pre-validates the server's identity and caches verification tokens.
+Each answer must carry the `X-GPGAuth-*` headers of its step (version 1.3.0, progress,
+authenticated flag), as the browser extension checks them: a proxy or another server answering
+instead of Passbolt is refused. After login, the CLI checks the server's copy of the user's key
+matches the private key.
 
 ---
 
@@ -195,15 +211,24 @@ passbolt configure [OPTIONS]
 | `--timeout` | Request timeout (e.g. `30s`, `1m`) |
 | `--workers` | Parallel workers (0 = auto) |
 
+The secrets are saved only when given here, never from the environment (see
+[Priority Order](#priority-order)).
+
 ---
 
 ### verify
 
-Verify server identity and cache tokens.
+Pin the server key and the shared metadata key in the config file.
 
 ```bash
 passbolt verify
+passbolt verify --force   # trust keys that changed, once your administrator confirmed it
 ```
+
+- The server key is pinned once the server proved it holds the private key; each login then
+  checks it again. Its fingerprint is computed from the key, not taken from the server.
+- The active shared metadata key is pinned: shared metadata is only encrypted for it.
+- A pinned key that changed is refused until `--force`.
 
 ---
 
@@ -232,8 +257,9 @@ passbolt list resource [OPTIONS]
 |---|---|
 | `--favorite` | Only show favorited entries |
 | `--own` | Only show entries owned by the current user |
-| `-g, --group <UUID>` | Filter by group |
-| `-f, --folder <UUID>` | Filter by folder |
+| `-g, --group <UUID>` | Only the resources shared with this group (one) |
+| `-f, --folder <UUID>` | Filter by folder (repeatable) |
+| `-s, --search <TEXT>` | Part of the name, any case (v5 names decrypted) |
 | `-c, --column <COL>` | Columns to display (repeatable): `ID`, `Name`, `Username`, `URI` |
 | `--filter <EXPR>` | Field filter expression (repeatable, see [Filter Syntax](#filter-syntax)) |
 
@@ -254,13 +280,22 @@ passbolt get resource --id <UUID>
 passbolt get resource --id <UUID> --json
 ```
 
+#### get totp
+
+The current TOTP code of a resource, with the seconds it remains valid.
+
+```bash
+passbolt get totp --id <UUID>
+```
+
 #### get resource-permissions
 
-List who has access to a resource.
+List who has access to a resource. Columns: `aro`, `aro_foreign_key` (`ARO ID`), `type`
+(`Permission Type`), `id`, `modified`.
 
 ```bash
 passbolt get resource-permissions --id <UUID>
-passbolt get resource-permissions --id <UUID> -c ARO -c "Permission Type"
+passbolt get resource-permissions --id <UUID> -c "Permission Type" -c "ARO ID"
 ```
 
 #### create resource
@@ -272,11 +307,17 @@ passbolt create resource --name <NAME> [OPTIONS]
 | Option | Description |
 |---|---|
 | `-n, --name <NAME>` | Entry name **(required)** |
+| `-t, --type <SLUG>` | Resource type (`v5-default`, `v5-note`, `password-and-description`…); by default from the fields given and the server's default version |
 | `-u, --username <USERNAME>` | Username |
-| `--uri <URI>` | URL |
-| `-p, --password <PASSWORD>` | Password (prompted securely if omitted) |
+| `--uri <URI>` | URL (repeatable for v5 types) |
+| `-p, --password <PASSWORD>` | Password (prompted securely when the type needs one) |
 | `-d, --description <DESC>` | Description |
-| `-f, --folder-parent-id <UUID>` | Parent folder |
+| `--note <NOTE>` | Secret note (`v5-note`) |
+| `--pin-code <PIN>` | PIN code (`v5-pin-code`, 4 to 12 digits) |
+| `--field <KEY=VALUE>` | Any metadata field, the value read as JSON if it is JSON (repeatable) |
+| `--secret-field <KEY=VALUE>` | Any secret field, idem; alone, it also chooses the type |
+| `--totp-key <BASE32>` | TOTP secret, with `--totp-algo`, `--totp-digits`, `--totp-period` |
+| `-f, --folder-parent-id <UUID>` | Parent folder: the resource gets its permissions |
 | `--expiry <EXPIRY>` | Expiry date (see [Expiry Format](#expiry-format)) |
 
 ```bash
@@ -294,7 +335,10 @@ passbolt create resource \
 passbolt update resource --id <UUID> [OPTIONS]
 ```
 
-Options: `--name`, `--username`, `--uri`, `--password`, `--description`, `--expiry`
+Options: `--name`, `--username`, `--uri`, `--password`, `--description`, `--note`,
+`--pin-code`, `--field`, `--secret-field`, `--expiry`, `--totp-*`, `--remove-totp`. Shared
+metadata is encrypted again for the shared key, personal metadata for the user while only they
+have access.
 
 ```bash
 passbolt update resource --id <UUID> --password "newpassword" --expiry "30d"
@@ -314,9 +358,12 @@ passbolt share resource --id <UUID> [OPTIONS]
 
 | Option | Description |
 |---|---|
-| `-t, --type <TYPE>` | Permission: `1`=Read, `7`=Update, `15`=Owner (default: `1`) |
+| `-t, --type <TYPE>` | Permission: `1`=Read, `7`=Update, `15`=Owner, `-1`=Revoke (default: `1`) |
 | `-u, --user <UUID>` | User to share with (repeatable) |
 | `-g, --group <UUID>` | Group to share with (repeatable) |
+
+At least one user or group is required. Revoking someone without access fails before anything
+changes.
 
 ```bash
 passbolt share resource --id <UUID> \
@@ -330,8 +377,13 @@ passbolt share resource --id <UUID> \
 ```bash
 passbolt move resource --id <UUID> --folder-parent-id <FOLDER_UUID>
 # Move to root:
-passbolt move resource --id <UUID>
+passbolt move resource --id <UUID> --folder-parent-id ""
+# Also change the permissions, as the browser extension does (owners only):
+passbolt move resource --id <UUID> --folder-parent-id <FOLDER_UUID> --with-folder-permissions
 ```
+
+With `--with-folder-permissions`, the resource loses the permissions it got from the folder it
+leaves and gets the destination's, the higher level winning: no access is lowered.
 
 ---
 
@@ -343,7 +395,8 @@ passbolt move resource --id <UUID>
 passbolt list folder [OPTIONS]
 ```
 
-Options: `-s/--search`, `-f/--folder` (parent), `-g/--group`, `-c/--column`, `--filter`
+Options: `-s/--search`, `-f/--folder` (parent), `-g/--group` (repeatable: folders shared with
+any of the groups), `-c/--column`, `--filter`
 
 #### get folder
 
@@ -363,6 +416,8 @@ passbolt get folder-permissions --id <UUID>
 passbolt create folder --name "DevOps" --folder-parent-id <PARENT_UUID>
 ```
 
+A folder created in a shared folder gets its permissions.
+
 #### update folder
 
 ```bash
@@ -372,19 +427,26 @@ passbolt update folder --id <UUID> --name "New Name"
 #### delete folder
 
 ```bash
-passbolt delete folder --id <UUID>
+passbolt delete folder --id <UUID>             # its content moves to the root
+passbolt delete folder --id <UUID> --cascade   # its content is deleted too
 ```
 
 #### share folder
 
 ```bash
 passbolt share folder --id <UUID> --type 15 --user <UUID>
+passbolt share folder --id <UUID> --type 1 --group <UUID> --with-content
 ```
+
+With `--with-content`, the change made on the folder is copied onto the sub-folders and
+resources the user owns, as the browser extension does: a new access only reaches the items
+without one, a change or a removal only the items that have it.
 
 #### move folder
 
 ```bash
 passbolt move folder --id <UUID> --folder-parent-id <TARGET_UUID>
+passbolt move folder --id <UUID> --folder-parent-id <TARGET_UUID> --with-folder-permissions
 ```
 
 ---
@@ -430,8 +492,13 @@ passbolt update user --id <UUID> --lastname "Dupont" --role admin
 #### delete user
 
 ```bash
-passbolt delete user --id <UUID>
+passbolt delete user --id <UUID> --dry-run                    # what blocks the deletion
+passbolt delete user --id <UUID> --transfer-to <USER_UUID>
 ```
+
+A user who alone owns shared resources or folders, or alone manages groups, is deleted only
+once someone takes them over: `--transfer-to` makes a user (or group) who already has access
+owner of each item, and manager of each group they belong to.
 
 ---
 
@@ -480,8 +547,11 @@ passbolt update group --id <UUID> \
 #### delete group
 
 ```bash
-passbolt delete group --id <UUID>
+passbolt delete group --id <UUID> --dry-run
+passbolt delete group --id <UUID> --transfer-to <USER_UUID>
 ```
+
+As for users: what the group alone owns needs a new owner first.
 
 ---
 
@@ -515,7 +585,22 @@ passbolt export keepass --output ~/backup.kdbx
 passbolt export keepass --output ~/backup.kdbx --password "kdbx-master-password"
 ```
 
-Folder structure is preserved in KeePass groups.
+Folder structure is preserved in KeePass groups. `--folder-id <UUID>` exports one folder and its
+sub-folders. A resource that cannot be decrypted is reported and the command fails, so that a
+partial backup never looks complete.
+
+---
+
+### migrate-metadata
+
+Upgrade the v4 resources to v5 (administrators): their name, username, URI and description get
+encrypted. A resource only one user can read gets metadata personal to that user, when the
+settings allow personal keys; the others the shared metadata key.
+
+```bash
+passbolt migrate-metadata
+passbolt migrate-metadata --shared-only
+```
 
 ---
 
@@ -533,13 +618,15 @@ These flags apply to every command and can be set via CLI, env var, or config fi
 | `--mfa-mode` | `PASSBOLT_MFA_MODE` | `interactive-totp` | MFA mode |
 | `--mfa-totp-token` | `PASSBOLT_MFA_TOTP_TOKEN` | — | TOTP secret |
 | `--mfa-totp-offset` | `PASSBOLT_MFA_TOTP_OFFSET` | `0` | TOTP clock offset (seconds) |
-| `--mfa-retrys` | `PASSBOLT_MFA_RETRYS` | `3` | MFA retry count |
-| `--mfa-delay` | `PASSBOLT_MFA_DELAY` | `10s` | Delay between MFA retries |
+| `--mfa-retrys` | `PASSBOLT_MFA_RETRYS` | `3` | MFA attempts, at most 3 |
+| `--mfa-delay` | `PASSBOLT_MFA_DELAY` | `10s` | Minimum delay between MFA attempts |
 | `--tls-skip-verify` | `PASSBOLT_TLS_SKIP_VERIFY` | `false` | Skip TLS verification |
 | `--tls-client-cert` | `PASSBOLT_TLS_CLIENT_CERT` | — | mTLS client cert (inline) |
 | `--tls-client-cert-file` | `PASSBOLT_TLS_CLIENT_CERT_FILE` | — | mTLS client cert file |
 | `--tls-client-private-key` | `PASSBOLT_TLS_CLIENT_PRIVATE_KEY` | — | mTLS client key (inline) |
 | `--tls-client-private-key-file` | `PASSBOLT_TLS_CLIENT_PRIVATE_KEY_FILE` | — | mTLS client key file |
+| `--proxy` | `PASSBOLT_PROXY` | — | HTTP(S) proxy URL |
+| `--resolve` | `PASSBOLT_RESOLVE` | — | Pin a host to an address: `host:port:address` |
 | `--timeout` | `PASSBOLT_TIMEOUT` | `1m` | Request timeout |
 | `--workers` | `PASSBOLT_WORKERS` | `0` (auto) | Parallel workers |
 | `--debug` | `PASSBOLT_DEBUG` | `false` | Debug output |
@@ -552,12 +639,12 @@ These flags apply to every command and can be set via CLI, env var, or config fi
 **Table (default)**
 
 ```
-┌──────────────────────────────────────┬────────────┬──────────────┐
-│ ID                                   │ Name       │ Username     │
-├──────────────────────────────────────┼────────────┼──────────────┤
-│ a1b2c3d4-e5f6-7890-abcd-ef1234567890 │ GitHub     │ alice        │
-│ b2c3d4e5-f6a7-8901-bcde-f12345678901 │ AWS        │ ops@corp.com │
-└──────────────────────────────────────┴────────────┴──────────────┘
++--------------------------------------+--------+--------------+
+| ID                                   | Name   | Username     |
++==============================================================+
+| a1b2c3d4-e5f6-7890-abcd-ef1234567890 | GitHub | alice        |
+| b2c3d4e5-f6a7-8901-bcde-f12345678901 | AWS    | ops@corp.com |
++--------------------------------------+--------+--------------+
 ```
 
 **JSON** (`--json`)
@@ -580,11 +667,14 @@ passbolt list resource --json | jq '.[].name'
 **Key-Value** (`get` commands without `--json`)
 
 ```
-ID:         a1b2c3d4-e5f6-7890-abcd-ef1234567890
-Name:       GitHub
-Username:   alice
-URI:        https://github.com
-Password:   s3cr3t
+ID: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+Type: v5-default
+Name: GitHub
+Username: alice
+URI: https://github.com
+Password: s3cr3t
+Description:
+Expiry:
 ```
 
 ---
@@ -600,6 +690,9 @@ The `--filter` flag supports the following operators:
 | `field^=value` | Starts with | `--filter "username^=john"` |
 | `field$=value` | Ends with | `--filter "uri$=.com"` |
 | `field!=value` | Not equal | `--filter "username!=admin"` |
+
+The first operator written splits the expression: `uri=https://a/?x!=y` is `uri` equal to
+`https://a/?x!=y`.
 
 Multiple `--filter` flags are ANDed together:
 
@@ -636,7 +729,7 @@ Three modes are supported:
 
 **`interactive-totp`** (default) — prompts for a 6-digit TOTP code on login:
 ```
-Enter TOTP code: ______
+TOTP code: ______
 ```
 
 **`non-interactive-totp`** — provide the TOTP *secret* (not the 6-digit code) in config or env:
@@ -646,6 +739,11 @@ passbolt list resource \
   --mfa-totp-token "JBSWY3DPEBLW64TMMQ======"
 ```
 The CLI computes the current code automatically. Use `--mfa-totp-offset` to compensate for clock drift.
+A new attempt waits for the next TOTP code: the same code is never sent twice.
+
+The server disables an account after too many wrong codes: the CLI sends at most 3 per session,
+whatever `--mfa-retrys` says, and stops as soon as the server ends the session. An account
+without TOTP (Yubikey, Duo…) gets an error naming the MFA it has.
 
 **`none`** — disable MFA (for accounts without MFA configured).
 
@@ -680,10 +778,14 @@ tls_client_private_key = """-----BEGIN PRIVATE KEY-----
 ## Security Notes
 
 - No OpenSSL dependency — TLS via [rustls](https://github.com/rustls/rustls), GPG via [pgp](https://github.com/rpgp/rpgp) (pure Rust).
-- All in-memory credentials use [`zeroize`](https://github.com/RustCrypto/utils/tree/master/zeroize): memory is wiped on drop.
-- Passwords are stored as `secrecy::SecretString` — never logged, even in `--debug` mode.
-- JWT tokens are zeroized after use.
-- GPG decryption buffers are cleared after each operation.
+- The passphrase is kept as a `secrecy::SecretString`, never logged, even in `--debug` mode; the
+  config and the KeePass entries are zeroized on drop with [`zeroize`](https://github.com/RustCrypto/utils/tree/master/zeroize).
+  Decrypted secrets do pass through ordinary strings on their way to the output.
+- With `passbolt verify`, each login checks the server holds the pinned key, and shared metadata
+  is only encrypted for the pinned metadata key.
+- Nothing is encrypted for a revoked or expired key.
+- What the CLI writes is checked against OpenPGP.js, the library of the browser extension
+  (`tests/interop`).
 
 ---
 

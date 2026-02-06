@@ -161,6 +161,20 @@ impl Config {
         Self::load_from(&Self::config_path()?)
     }
 
+    /// The config file as it is (if it exists), without the `PASSBOLT_*` variables.
+    pub fn load_file() -> Result<Self> {
+        Self::read(&Self::config_path()?, false)
+    }
+
+    /// Take the secrets of `stored` back, dropping those the environment set.
+    pub fn keep_the_secrets_of(&mut self, stored: &Self) {
+        self.user_private_key.clone_from(&stored.user_private_key);
+        self.user_password.clone_from(&stored.user_password);
+        self.mfa_totp_token.clone_from(&stored.mfa_totp_token);
+        self.tls_client_private_key
+            .clone_from(&stored.tls_client_private_key);
+    }
+
     /// Load the config at `path` (if it exists), then the `PASSBOLT_*` variables over it.
     pub fn load_from(path: &Path) -> Result<Self> {
         Self::read(path, true)

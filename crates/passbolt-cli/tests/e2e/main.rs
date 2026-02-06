@@ -15,6 +15,7 @@
 
 mod common;
 
+mod consistency;
 mod deletions;
 mod directory;
 mod errors;

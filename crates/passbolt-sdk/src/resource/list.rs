@@ -29,7 +29,9 @@ pub async fn list_resources<H: HttpClient>(
     filters: &[Filter],
     secret_workers: Option<usize>,
 ) -> Result<Vec<ResourceView>, PassboltError> {
-    let search = query.search.clone();
+    // Searched below, on the views: the names are decrypted once.
+    let mut query = query;
+    let search = query.search.take();
     let resources = client.get_resources(query).await?;
     let resource_types = client.resource_types().await?;
     let mut secrets = match secret_workers {

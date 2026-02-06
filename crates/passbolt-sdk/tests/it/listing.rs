@@ -215,3 +215,80 @@ async fn a_password_string_that_looks_like_json_is_a_password() {
         Some(r#"{"password":"not this"}"#)
     );
 }
+
+#[tokio::test]
+async fn raw_resources_are_searched_by_name_their_v5_names_decrypted() {
+    let fake = FakePassbolt::new();
+    fake.with_directory();
+    let mut v4 = data::resource_v4("password-and-description", "p");
+    v4["id"] = "7a5b2c30-0000-4000-8000-0000000000a4".into();
+    v4["name"] = "GitLab".into();
+    let personal_v5 = serde_json::to_value(data::resource_v5(
+        &data::metadata("GitHub"),
+        &ADA,
+        "user_key",
+        "gpgkey-ada",
+    ))
+    .unwrap();
+    let mut other = personal_v5.clone();
+    other["id"] = "7a5b2c30-0000-4000-8000-0000000000a5".into();
+    other["metadata"] = ADA.encrypt(&data::metadata("Bank").to_string()).into();
+    fake.on("GET", "/resources.json", json!([v4, personal_v5, other]));
+    let client = login_ada(&fake).await;
+
+    let found = client
+        .get_resources(ResourceQuery {
+            search: Some("git".into()),
+            ..ResourceQuery::default()
+        })
+        .await
+        .unwrap();
+
+    let mut ids: Vec<&str> = found.iter().map(|resource| resource.id.as_str()).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, ["7a5b2c30-0000-4000-8000-0000000000a4", RESOURCE_ID]);
+}
+
+#[tokio::test]
+async fn folders_of_any_of_the_groups_are_listed() {
+    const OTHER_GROUP_ID: &str = "9c7d4b20-0000-4000-8000-000000000961";
+    let fake = FakePassbolt::new();
+    let folder_of = |id: &str, group_id: Option<&str>| {
+        let mut permissions = vec![data::permission("p-ada", "User", ADA_ID, 15)];
+        if let Some(group_id) = group_id {
+            permissions.push(data::permission("p-group", "Group", group_id, 1));
+        }
+        let mut folder = data::folder(json!(permissions));
+        folder["id"] = id.into();
+        folder
+    };
+    fake.on(
+        "GET",
+        "/folders.json",
+        json!([
+            folder_of("5f6e7d8c-0000-4000-8000-0000000000a1", Some(GROUP_ID)),
+            folder_of("5f6e7d8c-0000-4000-8000-0000000000a2", Some(OTHER_GROUP_ID)),
+            folder_of("5f6e7d8c-0000-4000-8000-0000000000a3", None),
+        ]),
+    );
+    let client = login_ada(&fake).await;
+
+    let folders = passbolt_sdk::folder::list::list_folders(
+        &client,
+        None,
+        vec![GROUP_ID.into(), OTHER_GROUP_ID.into()],
+        Vec::new(),
+        &[],
+    )
+    .await
+    .unwrap();
+
+    let ids: Vec<&str> = folders.iter().map(|folder| folder.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "5f6e7d8c-0000-4000-8000-0000000000a1",
+            "5f6e7d8c-0000-4000-8000-0000000000a2"
+        ]
+    );
+}
