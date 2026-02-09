@@ -13,7 +13,7 @@
 //! What create and update share: the `resource` and `secret` documents of a resource type,
 //! their validation, and their encryption.
 
-use pgp::SignedPublicKey;
+use pgp::composed::SignedPublicKey;
 use serde_json::{Map, Value};
 
 use crate::client::PassboltSdk;

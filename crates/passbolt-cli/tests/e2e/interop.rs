@@ -12,7 +12,7 @@
 
 //! What the CLI stores on the server, read by OpenPGP.js as the browser extension does.
 
-use pgp::ArmorOptions;
+use pgp::composed::ArmorOptions;
 use serde_json::{json, Value};
 
 use crate::common::{

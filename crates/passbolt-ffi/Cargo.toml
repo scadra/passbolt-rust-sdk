@@ -2,7 +2,7 @@
 name = "passbolt-ffi"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.88"
 description = "Passbolt SDK — Multi-language FFI bindings (Python, Kotlin, Swift, C#)"
 license = "AGPL-3.0-or-later"
 

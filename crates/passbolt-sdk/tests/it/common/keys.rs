@@ -80,40 +80,48 @@ impl TestKey {
         serde_json::from_str(&self.decrypt(armored_message)).unwrap()
     }
 
-    /// Decrypt a UTF-8 text message signed by `signers`, outermost signature first, every
-    /// signature over the literal data as other `OpenPGP` implementations check them.
+    /// Decrypt a UTF-8 text message signed by exactly `signers`, every signature over the
+    /// literal data as other `OpenPGP` implementations check them.
     pub fn decrypt_signed(&self, armored_message: &str, signers: &[&Self]) -> String {
-        use pgp::{Deserializable, Message};
+        use pgp::composed::{Message, VerificationResult};
+        use pgp::packet::DataMode;
+        use pgp::types::VerifyingKey;
 
         let private_key = crypto::parse_private_key(self.private).unwrap();
-        let (message, _) =
-            Message::from_armor_single(std::io::Cursor::new(armored_message.as_bytes())).unwrap();
-        let (mut message, _) = message
-            .decrypt(|| self.passphrase.to_string(), &[&private_key.key])
+        let (message, _) = Message::from_armor(armored_message.as_bytes()).unwrap();
+        let mut message = message
+            .decrypt(&self.passphrase.into(), &private_key.key)
             .unwrap();
-        let mut signatures = Vec::new();
-        while let Message::Signed {
-            message: inner,
-            signature,
-            ..
-        } = message
-        {
-            signatures.push(signature);
-            message = *inner.unwrap();
-        }
-        let Message::Literal(literal) = message else {
-            panic!("no literal data")
+        let Message::Signed { reader, .. } = &message else {
+            panic!("not signed")
         };
-        assert!(!literal.is_binary(), "not a text message");
-        assert_eq!(signatures.len(), signers.len(), "signature count");
-        for (signature, signer) in signatures.iter().zip(signers) {
-            signature
-                .verify(
-                    &crypto::parse_public_key(signer.public).unwrap(),
-                    literal.data(),
-                )
-                .unwrap_or_else(|error| panic!("not signed by {}: {error}", signer.name));
+        assert_eq!(reader.num_signatures(), signers.len(), "signature count");
+        let text = message.as_data_string().unwrap();
+        assert!(
+            matches!(
+                message
+                    .literal_data_header()
+                    .map(pgp::packet::LiteralDataHeader::mode),
+                Some(DataMode::Utf8 | DataMode::Text)
+            ),
+            "not a text message"
+        );
+        let public_keys: Vec<_> = signers
+            .iter()
+            .map(|signer| crypto::parse_public_key(signer.public).unwrap())
+            .collect();
+        let verifying: Vec<&dyn VerifyingKey> = public_keys
+            .iter()
+            .map(|key| &key.primary_key as &dyn VerifyingKey)
+            .collect();
+        let results = message.verify_nested(&verifying).unwrap();
+        for (result, signer) in results.iter().zip(signers) {
+            assert!(
+                matches!(result, VerificationResult::Valid(_)),
+                "not signed by {}",
+                signer.name
+            );
         }
-        literal.to_string().unwrap()
+        text.replace("\r\n", "\n")
     }
 }
