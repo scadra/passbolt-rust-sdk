@@ -11,12 +11,12 @@
 // @since         0.1.0
 
 use pgp::composed::{
-    ArmorOptions, Deserializable, Message, MessageBuilder, PlainSessionKey, RawSessionKey,
-    SignedPublicKey, SignedSecretKey,
+    ArmorOptions, DecryptionOptions, Deserializable, Edata, Message, MessageBuilder,
+    PlainSessionKey, RawSessionKey, SignedPublicKey, SignedSecretKey, TheRing,
 };
 use pgp::crypto::hash::HashAlgorithm;
 use pgp::crypto::sym::SymmetricKeyAlgorithm;
-use pgp::packet::DataMode;
+use pgp::packet::{DataMode, ProtectedDataConfig, SymEncryptedProtectedDataConfig};
 use pgp::types::{DecryptionKey, EskType, KeyDetails, Password, PkeskVersion};
 use zeroize::Zeroize;
 
@@ -65,11 +65,41 @@ pub fn decrypt_message(
     private_key: &SignedSecretKey,
     passphrase: &str,
 ) -> Result<Vec<u8>, CryptoError> {
-    let message = parse_message(armored_message)?;
-    let decrypted = message
-        .decrypt(&Password::from(passphrase), private_key)
-        .map_err(|error| CryptoError::Decrypt(format!("{error}")))?;
-    content(decrypted)
+    let password = Password::from(passphrase);
+    let ring = TheRing {
+        secret_keys: vec![private_key],
+        key_passwords: vec![&password],
+        ..TheRing::default()
+    };
+    content(decrypt(parse_message(armored_message)?, ring)?)
+}
+
+/// Decrypt `message` with what `ring` holds. Besides SEIPD v1 and v2, the GnuPG AEAD (OCB)
+/// container is read: the server encrypts with GnuPG, which uses it for keys that ask for it.
+fn decrypt<'a>(message: Message<'a>, mut ring: TheRing<'_>) -> Result<Message<'a>, CryptoError> {
+    ring.decrypt_options = DecryptionOptions::new().enable_gnupg_aead();
+    message
+        .decrypt_the_ring(ring, true)
+        .map(|(decrypted, _)| decrypted)
+        .map_err(|error| CryptoError::Decrypt(error.to_string()))
+}
+
+/// The symmetric algorithm of a SEIPD v2 (AEAD) message, whose session key has no algorithm;
+/// `None` for the other containers.
+fn seipd_v2_algorithm(message: &Message<'_>) -> Option<SymmetricKeyAlgorithm> {
+    let Message::Encrypted {
+        edata: Edata::SymEncryptedProtectedData { reader },
+        ..
+    } = message
+    else {
+        return None;
+    };
+    match reader.config() {
+        ProtectedDataConfig::Seipd(SymEncryptedProtectedDataConfig::V2 { sym_alg, .. }) => {
+            Some(*sym_alg)
+        }
+        _ => None,
+    }
 }
 
 /// The symmetric key of one message, as Passbolt stores it: `<algorithm id>:<hex key>`.
@@ -102,10 +132,16 @@ impl SessionKey {
         )
     }
 
-    fn plain(&self) -> PlainSessionKey {
-        PlainSessionKey::V3_4 {
-            sym_alg: self.algorithm,
-            key: RawSessionKey::from(self.key.to_vec()),
+    /// The key to decrypt `message` with: SEIPD v2 session keys carry no algorithm.
+    fn plain_for(&self, message: &Message<'_>) -> PlainSessionKey {
+        let key = RawSessionKey::from(self.key.to_vec());
+        if seipd_v2_algorithm(message).is_some() {
+            PlainSessionKey::V6 { key }
+        } else {
+            PlainSessionKey::V3_4 {
+                sym_alg: self.algorithm,
+                key,
+            }
         }
     }
 }
@@ -135,18 +171,19 @@ pub fn decrypt_message_keeping_session_key(
     let password = Password::from(passphrase);
     let decrypt_with = |key: &dyn DecryptionKey,
                         pkesk: &pgp::packet::PublicKeyEncryptedSessionKey| {
+        let typ = match pkesk.version() {
+            PkeskVersion::V3 => EskType::V3_4,
+            PkeskVersion::V6 => EskType::V6,
+            PkeskVersion::Other(_) => return None,
+        };
         let values = pkesk.values().ok()?;
-        key.decrypt(&password, values, EskType::V3_4).ok()?.ok()
+        key.decrypt(&password, values, typ).ok()?.ok()
     };
     let plain_key = esk
         .iter()
         .filter_map(|esk| match esk {
-            pgp::composed::Esk::PublicKeyEncryptedSessionKey(pkesk)
-                if pkesk.version() == PkeskVersion::V3 =>
-            {
-                Some(pkesk)
-            }
-            _ => None,
+            pgp::composed::Esk::PublicKeyEncryptedSessionKey(pkesk) => Some(pkesk),
+            pgp::composed::Esk::SymKeyEncryptedSessionKey(_) => None,
         })
         .find_map(|pkesk| {
             if pkesk.match_identity(private_key.primary_key.public_key()) {
@@ -159,17 +196,26 @@ pub fn decrypt_message_keeping_session_key(
             decrypt_with(&subkey.key, pkesk)
         })
         .ok_or_else(|| failure("no session key for this key".into()))?;
-    let PlainSessionKey::V3_4 { sym_alg, key } = &plain_key else {
-        return Err(failure("unsupported session key version".into()));
+    let (algorithm, key) = match &plain_key {
+        PlainSessionKey::V3_4 { sym_alg, key } => (*sym_alg, key),
+        PlainSessionKey::V6 { key } => (
+            seipd_v2_algorithm(&message)
+                .ok_or_else(|| failure("a v6 session key outside SEIPD v2".into()))?,
+            key,
+        ),
+        PlainSessionKey::V5 { .. } => {
+            return Err(failure("unsupported session key version".into()))
+        }
     };
     let session_key = SessionKey {
-        algorithm: *sym_alg,
+        algorithm,
         key: zeroize::Zeroizing::new(key.as_ref().to_vec()),
     };
-    let decrypted = message
-        .decrypt_with_session_key(plain_key)
-        .map_err(|error| failure(error.to_string()))?;
-    Ok((content(decrypted)?, session_key))
+    let ring = TheRing {
+        session_keys: vec![plain_key],
+        ..TheRing::default()
+    };
+    Ok((content(decrypt(message, ring)?)?, session_key))
 }
 
 /// Decrypt with the session key of the message.
@@ -177,10 +223,12 @@ pub fn decrypt_with_session_key(
     armored_message: &str,
     session_key: &SessionKey,
 ) -> Result<Vec<u8>, CryptoError> {
-    let decrypted = parse_message(armored_message)?
-        .decrypt_with_session_key(session_key.plain())
-        .map_err(|error| CryptoError::Decrypt(error.to_string()))?;
-    content(decrypted)
+    let message = parse_message(armored_message)?;
+    let ring = TheRing {
+        session_keys: vec![session_key.plain_for(&message)],
+        ..TheRing::default()
+    };
+    content(decrypt(message, ring)?)
 }
 
 fn parse_message(armored_message: &str) -> Result<Message<'_>, CryptoError> {
@@ -387,6 +435,10 @@ mod tests {
 
     /// Fixture keypair without passphrase.
     const ERIN_PUBLIC: &str = include_str!("../tests/fixtures/keys/erin_public.asc");
+    const ERIN_PRIVATE: &str = include_str!("../tests/fixtures/keys/erin_private.asc");
+    /// Written by OpenPGP.js: see `tests/fixtures/messages/README.md`.
+    const SEIPD_V2_MESSAGE: &str = include_str!("../tests/fixtures/messages/erin_seipd_v2.asc");
+    const GNUPG_AEAD_MESSAGE: &str = include_str!("../tests/fixtures/messages/erin_gnupg_aead.asc");
     /// Passbolt server test keys: see `tests/fixtures/keys/README.md`.
     const EXPIRED_PUBLIC: &str = include_str!("../tests/fixtures/keys/expired_public.asc");
     const EXPIRED_PRIMARY_PUBLIC: &str =
@@ -645,5 +697,40 @@ mod tests {
         let session_key = SessionKey::parse("00FF").unwrap();
 
         assert_eq!(session_key.to_passbolt_string(), "9:00FF");
+    }
+
+    #[rstest]
+    #[case::seipd_v2(SEIPD_V2_MESSAGE)]
+    #[case::gnupg_aead(GNUPG_AEAD_MESSAGE)]
+    fn test_aead_messages_are_decrypted(#[case] armored: &str) {
+        let erin = parse_private_key(ERIN_PRIVATE).unwrap();
+
+        let plaintext = decrypt_message(armored, &erin.key, "erin-passphrase").unwrap();
+
+        assert_eq!(plaintext, b"line one\nline two");
+    }
+
+    #[rstest]
+    #[case::seipd_v2(SEIPD_V2_MESSAGE, "9:")]
+    #[case::gnupg_aead(GNUPG_AEAD_MESSAGE, "7:")]
+    fn test_the_session_key_of_an_aead_message_decrypts_it_again(
+        #[case] armored: &str,
+        #[case] algorithm: &str,
+    ) {
+        let erin = parse_private_key(ERIN_PRIVATE).unwrap();
+
+        let (_, session_key) =
+            decrypt_message_keeping_session_key(armored, &erin.key, "erin-passphrase").unwrap();
+        let stored = SessionKey::parse(&session_key.to_passbolt_string()).unwrap();
+
+        assert!(
+            session_key.to_passbolt_string().starts_with(algorithm),
+            "{}",
+            session_key.to_passbolt_string()
+        );
+        assert_eq!(
+            decrypt_with_session_key(armored, &stored).unwrap(),
+            b"line one\nline two"
+        );
     }
 }
