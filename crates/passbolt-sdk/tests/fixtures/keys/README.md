@@ -13,6 +13,10 @@ Do not use these keys outside the test suite.
 
 All but `erin` are RSA-2048 keys whose primary key also encrypts.
 
+`erin_seipd_v2_public.asc` is `erin` with the preferences OpenPGP.js writes when it asks for SEIPD
+v2 (features, AES-256/GCM first): the same key, rewritten with `openpgp.reformatKey` and
+`config: { aeadProtect: true }` from `tests/interop`.
+
 Copied from the Passbolt server test data (`passbolt_api`), to check that the client refuses
 to encrypt for keys the browser extension refuses:
 

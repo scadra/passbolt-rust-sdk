@@ -11,13 +11,14 @@
 // @since         0.1.0
 
 use pgp::composed::{
-    ArmorOptions, DecryptionOptions, Deserializable, Edata, Message, MessageBuilder,
-    PlainSessionKey, RawSessionKey, SignedPublicKey, SignedSecretKey, TheRing,
+    ArmorOptions, DecryptionOptions, Deserializable, DummyReader, Edata, Encryption, Message,
+    MessageBuilder, PlainSessionKey, RawSessionKey, SignedPublicKey, SignedSecretKey, TheRing,
 };
+use pgp::crypto::aead::{AeadAlgorithm, ChunkSize};
 use pgp::crypto::hash::HashAlgorithm;
 use pgp::crypto::sym::SymmetricKeyAlgorithm;
-use pgp::packet::{DataMode, ProtectedDataConfig, SymEncryptedProtectedDataConfig};
-use pgp::types::{DecryptionKey, EskType, KeyDetails, Password, PkeskVersion};
+use pgp::packet::{DataMode, Features, ProtectedDataConfig, SymEncryptedProtectedDataConfig};
+use pgp::types::{DecryptionKey, EskType, KeyDetails, KeyVersion, Password, PkeskVersion};
 use zeroize::Zeroize;
 
 use crate::error::CryptoError;
@@ -290,17 +291,51 @@ pub fn sign_and_encrypt(
     encrypt(text.into_bytes(), DataMode::Utf8, signers, recipients)
 }
 
+/// One session key packet per recipient key, primary key or subkey, whichever the SEIPD
+/// version of `builder`.
+macro_rules! encrypt_to_each {
+    ($builder:ident, $keys:expr, $rng:expr) => {
+        for key in $keys {
+            match key {
+                EncryptionKey::Subkey(subkey) => $builder.encrypt_to_key($rng, *subkey),
+                EncryptionKey::Primary(primary_key) => $builder.encrypt_to_key($rng, *primary_key),
+            }
+            .map_err(|error| CryptoError::Encrypt(error.to_string()))?;
+        }
+    };
+}
+
 fn encrypt(
     data: Vec<u8>,
     mode: DataMode,
     signers: &[Signer<'_>],
     recipients: &[&SignedPublicKey],
 ) -> Result<String, CryptoError> {
-    let failure = |error: pgp::errors::Error| CryptoError::Encrypt(error.to_string());
+    let now = chrono::Utc::now();
+    let keys = recipients
+        .iter()
+        .map(|recipient| encryption_key(recipient, &now))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut rng = rand::thread_rng();
-    let mut builder =
-        MessageBuilder::from_bytes("", data).seipd_v1(&mut rng, SymmetricKeyAlgorithm::AES256);
-    builder.data_mode(mode).map_err(failure)?;
+    let builder = MessageBuilder::from_bytes("", data);
+    if let Some((algorithm, aead)) = aead_cipher_suite(recipients) {
+        let mut builder = builder.seipd_v2(&mut rng, algorithm, aead, AEAD_CHUNK_SIZE);
+        encrypt_to_each!(builder, &keys, &mut rng);
+        return sign_and_armor(builder, mode, signers);
+    }
+    let mut builder = builder.seipd_v1(&mut rng, SymmetricKeyAlgorithm::AES256);
+    encrypt_to_each!(builder, &keys, &mut rng);
+    sign_and_armor(builder, mode, signers)
+}
+
+fn sign_and_armor<'a, E: Encryption>(
+    mut builder: MessageBuilder<'a, DummyReader, E>,
+    mode: DataMode,
+    signers: &[Signer<'a>],
+) -> Result<String, CryptoError> {
+    builder
+        .data_mode(mode)
+        .map_err(|error| CryptoError::Encrypt(error.to_string()))?;
     if mode == DataMode::Utf8 {
         builder.sign_text();
     }
@@ -311,18 +346,59 @@ fn encrypt(
             HashAlgorithm::Sha256,
         );
     }
-    // Recipients mix primary keys and subkeys: one session key packet each.
-    let now = chrono::Utc::now();
-    for recipient in recipients {
-        match encryption_key(recipient, &now)? {
-            EncryptionKey::Subkey(subkey) => builder.encrypt_to_key(&mut rng, subkey),
-            EncryptionKey::Primary(primary_key) => builder.encrypt_to_key(&mut rng, primary_key),
-        }
-        .map_err(failure)?;
-    }
     builder
-        .to_armored_string(&mut rng, ArmorOptions::default())
+        .to_armored_string(rand::thread_rng(), ArmorOptions::default())
         .map_err(|error| CryptoError::Encrypt(format!("armor: {error}")))
+}
+
+/// The chunk size OpenPGP.js writes SEIPD v2 with.
+const AEAD_CHUNK_SIZE: ChunkSize = ChunkSize::C256KiB;
+
+/// The SEIPD v2 cipher suite of a message for `recipients`, as `OpenPGP.js` and gopenpgp choose
+/// it: only when every key asks for SEIPD v2, the first suite they all prefer, else AES-128 OCB,
+/// which every SEIPD v2 reader supports. `None` writes SEIPD v1.
+fn aead_cipher_suite(
+    recipients: &[&SignedPublicKey],
+) -> Option<(SymmetricKeyAlgorithm, AeadAlgorithm)> {
+    use SymmetricKeyAlgorithm::{AES128, AES256};
+    const DESIRED: [(SymmetricKeyAlgorithm, AeadAlgorithm); 3] = [
+        (AES256, AeadAlgorithm::Gcm),
+        (AES256, AeadAlgorithm::Ocb),
+        (AES128, AeadAlgorithm::Gcm),
+    ];
+    let preferences = recipients
+        .iter()
+        .map(|recipient| primary_self_signature(recipient))
+        .collect::<Option<Vec<_>>>()?;
+    let seipd_v2 = !preferences.is_empty()
+        && preferences
+            .iter()
+            .all(|signature| signature.features().is_some_and(Features::seipd_v2));
+    if !seipd_v2 {
+        return None;
+    }
+    let preferred_by_all = DESIRED.into_iter().find(|suite| {
+        preferences
+            .iter()
+            .all(|signature| signature.preferred_aead_algs().contains(suite))
+    });
+    Some(preferred_by_all.unwrap_or((AES128, AeadAlgorithm::Ocb)))
+}
+
+/// The self-signature holding the preferences of `key`: the direct key signature of a v6 key,
+/// else the newest certification of its primary user ID (of any user ID if none is primary).
+fn primary_self_signature(key: &SignedPublicKey) -> Option<&pgp::packet::Signature> {
+    let newest = |signature: &&pgp::packet::Signature| {
+        signature.created().map(pgp::types::Timestamp::as_secs)
+    };
+    if key.primary_key.version() == KeyVersion::V6 {
+        return key.details.direct_signatures.iter().max_by_key(newest);
+    }
+    key.details
+        .users
+        .iter()
+        .flat_map(|user| &user.signatures)
+        .max_by_key(|signature| (signature.is_primary(), newest(signature)))
 }
 
 /// The key a message for `key` is encrypted with.
@@ -436,6 +512,9 @@ mod tests {
     /// Fixture keypair without passphrase.
     const ERIN_PUBLIC: &str = include_str!("../tests/fixtures/keys/erin_public.asc");
     const ERIN_PRIVATE: &str = include_str!("../tests/fixtures/keys/erin_private.asc");
+    /// Erin's key asking for SEIPD v2: see `tests/fixtures/keys/README.md`.
+    const ERIN_SEIPD_V2_PUBLIC: &str =
+        include_str!("../tests/fixtures/keys/erin_seipd_v2_public.asc");
     /// Written by OpenPGP.js: see `tests/fixtures/messages/README.md`.
     const SEIPD_V2_MESSAGE: &str = include_str!("../tests/fixtures/messages/erin_seipd_v2.asc");
     const GNUPG_AEAD_MESSAGE: &str = include_str!("../tests/fixtures/messages/erin_gnupg_aead.asc");
@@ -731,6 +810,60 @@ mod tests {
         assert_eq!(
             decrypt_with_session_key(armored, &stored).unwrap(),
             b"line one\nline two"
+        );
+    }
+
+    /// The SEIPD v2 cipher suite `armored` is written with, `None` for SEIPD v1.
+    fn cipher_suite_of(armored: &str) -> Option<(SymmetricKeyAlgorithm, AeadAlgorithm)> {
+        let message = parse_message(armored).unwrap();
+        let Message::Encrypted {
+            edata: Edata::SymEncryptedProtectedData { reader },
+            ..
+        } = &message
+        else {
+            panic!("not a SEIPD message");
+        };
+        match reader.config() {
+            ProtectedDataConfig::Seipd(SymEncryptedProtectedDataConfig::V2 {
+                sym_alg,
+                aead,
+                ..
+            }) => Some((*sym_alg, *aead)),
+            _ => None,
+        }
+    }
+
+    #[rstest]
+    #[case::asking_for_seipd_v2(&[ERIN_SEIPD_V2_PUBLIC], Some((SymmetricKeyAlgorithm::AES256, AeadAlgorithm::Gcm)))]
+    #[case::not_asking(&[ERIN_PUBLIC], None)]
+    #[case::not_all_asking(&[ERIN_SEIPD_V2_PUBLIC, SERVER_PUBLIC], None)]
+    fn test_seipd_v2_is_written_when_every_recipient_asks_for_it(
+        #[case] recipients: &[&str],
+        #[case] cipher_suite: Option<(SymmetricKeyAlgorithm, AeadAlgorithm)>,
+    ) {
+        let keys: Vec<SignedPublicKey> = recipients
+            .iter()
+            .map(|public| parse_public_key(public).unwrap())
+            .collect();
+
+        let armored = encrypt_message(b"secret", &keys.iter().collect::<Vec<_>>()).unwrap();
+
+        assert_eq!(cipher_suite_of(&armored), cipher_suite);
+    }
+
+    #[test]
+    fn test_a_seipd_v2_message_is_decrypted_with_its_session_key() {
+        let erin = parse_private_key(ERIN_PRIVATE).unwrap();
+        let recipient = parse_public_key(ERIN_SEIPD_V2_PUBLIC).unwrap();
+        let armored = encrypt_message(b"secret", &[&recipient]).unwrap();
+
+        let (plaintext, session_key) =
+            decrypt_message_keeping_session_key(&armored, &erin.key, "erin-passphrase").unwrap();
+
+        assert_eq!(plaintext, b"secret");
+        assert_eq!(
+            decrypt_with_session_key(&armored, &session_key).unwrap(),
+            b"secret"
         );
     }
 }

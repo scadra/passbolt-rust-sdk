@@ -159,3 +159,23 @@ fn the_session_key_of_a_seipd_v2_message_is_read_by_openpgp_js() {
     );
     assert_eq!(read["text"], "metadata");
 }
+
+#[test]
+fn a_seipd_v2_message_is_read_by_openpgp_js() {
+    let erin_asking_for_seipd_v2 = include_str!("../fixtures/keys/erin_seipd_v2_public.asc");
+    let signer = crypto::parse_private_key(ADA.private).unwrap();
+    let message = crypto::sign_and_encrypt(
+        "line one\nline two",
+        &[crypto::Signer {
+            key: &signer.key,
+            passphrase: ADA.passphrase,
+        }],
+        &[&crypto::parse_public_key(erin_asking_for_seipd_v2).unwrap()],
+    )
+    .unwrap();
+
+    assert_eq!(
+        read_with_openpgp_js(&message, &ERIN, &[&ADA]),
+        "line one\nline two"
+    );
+}
