@@ -92,7 +92,7 @@ cargo build --release
 sudo cp target/release/passbolt /usr/local/bin/
 ```
 
-**Requirements:** Rust 1.87+ (no OpenSSL required — uses rustls).
+**Requirements:** Rust 1.88+ (no OpenSSL required — uses rustls).
 
 ---
 

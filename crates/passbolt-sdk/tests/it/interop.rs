@@ -10,26 +10,29 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-//! What the SDK writes, read by OpenPGP.js, the library of the browser extension
-//! (`tests/interop`, set up with `npm ci --prefix tests/interop`).
+//! What the SDK writes, read by OpenPGP.js, the library of the browser extension, and what
+//! OpenPGP.js writes, read by the SDK (`tests/interop`, set up with
+//! `npm ci --prefix tests/interop`).
 
 use std::io::Write;
 use std::process::{Command, Stdio};
 
 use serde_json::{json, Value};
 
+use passbolt_sdk::crypto;
+use rstest::rstest;
+
 use crate::common::keys::TestKey;
 use crate::common::*;
 use crate::create_v5::{create, github, v5_server};
 
-/// `tests/interop/verify.mjs` on `input`: the decrypted text and each signature's result.
-fn openpgp_js(input: &Value) -> Value {
-    let script = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/interop/verify.mjs"
-    );
+/// The `tests/interop` `script` on `input`.
+fn openpgp_js(script: &str, input: &Value) -> Value {
     let mut node = Command::new("node")
-        .arg(script)
+        .arg(format!(
+            "{}/../../tests/interop/{script}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -51,18 +54,35 @@ fn openpgp_js(input: &Value) -> Value {
 
 /// Decrypt `message` with `key` in OpenPGP.js, checking it is signed by exactly `signers`.
 fn read_with_openpgp_js(message: &str, key: &TestKey, signers: &[&TestKey]) -> String {
-    let read = openpgp_js(&json!({
-        "message": message,
-        "decryption_key": key.private,
-        "passphrase": key.passphrase,
-        "verification_keys": signers.iter().map(|signer| signer.public).collect::<Vec<_>>(),
-    }));
+    let read = openpgp_js(
+        "verify.mjs",
+        &json!({
+            "message": message,
+            "decryption_key": key.private,
+            "passphrase": key.passphrase,
+            "verification_keys": signers.iter().map(|signer| signer.public).collect::<Vec<_>>(),
+        }),
+    );
     let signatures = read["signatures"].as_array().unwrap();
     assert_eq!(signatures.len(), signers.len(), "{read}");
     for signature in signatures {
         assert_eq!(signature["valid"], true, "{read}");
     }
     read["text"].as_str().unwrap().to_string()
+}
+
+/// `text` encrypted for erin by OpenPGP.js in the AEAD `container`.
+fn encrypted_by_openpgp_js(text: &str, container: &str) -> String {
+    let written = openpgp_js(
+        "encrypt.mjs",
+        &json!({
+            "text": text,
+            "container": container,
+            "private_key": ERIN.private,
+            "passphrase": ERIN.passphrase,
+        }),
+    );
+    written["message"].as_str().unwrap().to_string()
 }
 
 #[tokio::test]
@@ -108,6 +128,54 @@ fn multiline_text_keeps_its_line_endings() {
 
     assert_eq!(
         read_with_openpgp_js(&message, &ADA, &[&ADA]),
+        "line one\nline two"
+    );
+}
+
+#[rstest]
+#[case::seipd_v2("seipd_v2")]
+#[case::gnupg_aead("gnupg_aead")]
+fn aead_messages_of_openpgp_js_are_read(#[case] container: &str) {
+    let message = encrypted_by_openpgp_js(r#"{"password":"s3cr3t"}"#, container);
+
+    assert_eq!(ERIN.decrypt(&message), r#"{"password":"s3cr3t"}"#);
+}
+
+#[test]
+fn the_session_key_of_a_seipd_v2_message_is_read_by_openpgp_js() {
+    let message = encrypted_by_openpgp_js("metadata", "seipd_v2");
+    let erin = crypto::parse_private_key(ERIN.private).unwrap();
+
+    let (_, session_key) =
+        crypto::decrypt_message_keeping_session_key(&message, &erin.key, ERIN.passphrase).unwrap();
+
+    let read = openpgp_js(
+        "verify.mjs",
+        &json!({
+            "message": message,
+            "session_key": session_key.to_passbolt_string(),
+            "verification_keys": [],
+        }),
+    );
+    assert_eq!(read["text"], "metadata");
+}
+
+#[test]
+fn a_seipd_v2_message_is_read_by_openpgp_js() {
+    let erin_asking_for_seipd_v2 = include_str!("../fixtures/keys/erin_seipd_v2_public.asc");
+    let signer = crypto::parse_private_key(ADA.private).unwrap();
+    let message = crypto::sign_and_encrypt(
+        "line one\nline two",
+        &[crypto::Signer {
+            key: &signer.key,
+            passphrase: ADA.passphrase,
+        }],
+        &[&crypto::parse_public_key(erin_asking_for_seipd_v2).unwrap()],
+    )
+    .unwrap();
+
+    assert_eq!(
+        read_with_openpgp_js(&message, &ERIN, &[&ADA]),
         "line one\nline two"
     );
 }

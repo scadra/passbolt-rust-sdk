@@ -959,7 +959,7 @@ impl<H: HttpClient> PassboltSdk<H> {
     // ── Crypto accessors ────────────────────────────────────────────────────
 
     /// Get a reference-counted clone of the PGP private key for parallel tasks.
-    pub fn pgp_key_arc(&self) -> Arc<pgp::SignedSecretKey> {
+    pub fn pgp_key_arc(&self) -> Arc<pgp::composed::SignedSecretKey> {
         Arc::new(self.private_key.key.clone())
     }
 

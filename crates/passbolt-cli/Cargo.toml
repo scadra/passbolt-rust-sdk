@@ -2,7 +2,7 @@
 name = "passbolt-cli"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.88"
 description = "Passbolt CLI — Rust alternative to go-passbolt-cli"
 license = "AGPL-3.0-or-later"
 
@@ -67,7 +67,7 @@ path = "tests/e2e_migration/main.rs"
 required-features = ["e2e"]
 
 [dev-dependencies]
-pgp = "0.14"
+pgp = { version = "0.21", default-features = false }
 totp-rs = "5"
 assert_cmd = "2"
 predicates = "3"

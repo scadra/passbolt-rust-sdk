@@ -2,7 +2,7 @@
 name = "passbolt-wasm"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.88"
 description = "Passbolt SDK — WASM binding for browser extensions"
 license = "AGPL-3.0-or-later"
 

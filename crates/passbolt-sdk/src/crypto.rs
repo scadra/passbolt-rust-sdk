@@ -10,11 +10,15 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use pgp::{
-    ser::Serialize, types::PublicKeyTrait, ArmorOptions, Deserializable, Message, SignedPublicKey,
-    SignedSecretKey,
+use pgp::composed::{
+    ArmorOptions, DecryptionOptions, Deserializable, DummyReader, Edata, Encryption, Message,
+    MessageBuilder, PlainSessionKey, RawSessionKey, SignedPublicKey, SignedSecretKey, TheRing,
 };
-use std::io::Cursor;
+use pgp::crypto::aead::{AeadAlgorithm, ChunkSize};
+use pgp::crypto::hash::HashAlgorithm;
+use pgp::crypto::sym::SymmetricKeyAlgorithm;
+use pgp::packet::{DataMode, Features, ProtectedDataConfig, SymEncryptedProtectedDataConfig};
+use pgp::types::{DecryptionKey, EskType, KeyDetails, KeyVersion, Password, PkeskVersion};
 use zeroize::Zeroize;
 
 use crate::error::CryptoError;
@@ -33,22 +37,20 @@ impl Drop for PrivateKey {
 
 /// Parse and validate a PGP private key from ASCII-armored text.
 pub fn parse_private_key(armored: &str) -> Result<PrivateKey, CryptoError> {
-    let cursor = Cursor::new(armored.as_bytes());
-    let (key, _) = SignedSecretKey::from_armor_single(cursor)
+    let (key, _) = SignedSecretKey::from_armor_single(armored.as_bytes())
         .map_err(|error| CryptoError::KeyParse(format!("private key: {error}")))?;
-    key.verify()
+    key.verify_bindings()
         .map_err(|error| CryptoError::KeyParse(format!("private key verification: {error}")))?;
 
-    let fingerprint = hex::encode(key.fingerprint().as_bytes()).to_uppercase();
+    let fingerprint = hex::encode_upper(key.fingerprint().as_bytes());
     Ok(PrivateKey { key, fingerprint })
 }
 
 /// Parse a PGP public key from ASCII-armored text.
 pub fn parse_public_key(armored: &str) -> Result<SignedPublicKey, CryptoError> {
-    let cursor = Cursor::new(armored.as_bytes());
-    let (key, _) = SignedPublicKey::from_armor_single(cursor)
+    let (key, _) = SignedPublicKey::from_armor_single(armored.as_bytes())
         .map_err(|error| CryptoError::KeyParse(format!("public key: {error}")))?;
-    key.verify()
+    key.verify_bindings()
         .map_err(|error| CryptoError::KeyParse(format!("public key verification: {error}")))?;
     Ok(key)
 }
@@ -64,22 +66,47 @@ pub fn decrypt_message(
     private_key: &SignedSecretKey,
     passphrase: &str,
 ) -> Result<Vec<u8>, CryptoError> {
-    let cursor = Cursor::new(armored_message.as_bytes());
-    let (message, _) = Message::from_armor_single(cursor)
-        .map_err(|error| CryptoError::Decrypt(format!("parse message: {error}")))?;
+    let password = Password::from(passphrase);
+    let ring = TheRing {
+        secret_keys: vec![private_key],
+        key_passwords: vec![&password],
+        ..TheRing::default()
+    };
+    content(decrypt(parse_message(armored_message)?, ring)?)
+}
 
-    let (decrypted, _) = message
-        .decrypt(|| passphrase.to_string(), &[private_key])
-        .map_err(|error| CryptoError::Decrypt(format!("{error}")))?;
+/// Decrypt `message` with what `ring` holds. Besides SEIPD v1 and v2, the GnuPG AEAD (OCB)
+/// container is read: the server encrypts with GnuPG, which uses it for keys that ask for it.
+fn decrypt<'a>(message: Message<'a>, mut ring: TheRing<'_>) -> Result<Message<'a>, CryptoError> {
+    ring.decrypt_options = DecryptionOptions::new().enable_gnupg_aead();
+    message
+        .decrypt_the_ring(ring, true)
+        .map(|(decrypted, _)| decrypted)
+        .map_err(|error| CryptoError::Decrypt(error.to_string()))
+}
 
-    // GnuPG (the Passbolt server) compresses by default.
-    content(&decrypted)
+/// The symmetric algorithm of a SEIPD v2 (AEAD) message, whose session key has no algorithm;
+/// `None` for the other containers.
+fn seipd_v2_algorithm(message: &Message<'_>) -> Option<SymmetricKeyAlgorithm> {
+    let Message::Encrypted {
+        edata: Edata::SymEncryptedProtectedData { reader },
+        ..
+    } = message
+    else {
+        return None;
+    };
+    match reader.config() {
+        ProtectedDataConfig::Seipd(SymEncryptedProtectedDataConfig::V2 { sym_alg, .. }) => {
+            Some(*sym_alg)
+        }
+        _ => None,
+    }
 }
 
 /// The symmetric key of one message, as Passbolt stores it: `<algorithm id>:<hex key>`.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SessionKey {
-    algorithm: pgp::crypto::sym::SymmetricKeyAlgorithm,
+    algorithm: SymmetricKeyAlgorithm,
     key: zeroize::Zeroizing<Vec<u8>>,
 }
 
@@ -105,6 +132,19 @@ impl SessionKey {
             hex::encode_upper(self.key.as_slice())
         )
     }
+
+    /// The key to decrypt `message` with: SEIPD v2 session keys carry no algorithm.
+    fn plain_for(&self, message: &Message<'_>) -> PlainSessionKey {
+        let key = RawSessionKey::from(self.key.to_vec());
+        if seipd_v2_algorithm(message).is_some() {
+            PlainSessionKey::V6 { key }
+        } else {
+            PlainSessionKey::V3_4 {
+                sym_alg: self.algorithm,
+                key,
+            }
+        }
+    }
 }
 
 /// Never print the key itself.
@@ -124,55 +164,59 @@ pub fn decrypt_message_keeping_session_key(
     private_key: &SignedSecretKey,
     passphrase: &str,
 ) -> Result<(Vec<u8>, SessionKey), CryptoError> {
-    use pgp::composed::{decrypt_session_key, PlainSessionKey};
-    use pgp::types::{EskType, PkeskVersion};
-
     let failure = |reason: String| CryptoError::Decrypt(reason);
-    let (message, _) = Message::from_armor_single(Cursor::new(armored_message.as_bytes()))
-        .map_err(|error| failure(format!("parse message: {error}")))?;
-    let Message::Encrypted { esk, edata } = message else {
+    let message = parse_message(armored_message)?;
+    let Message::Encrypted { esk, .. } = &message else {
         return Err(failure("not an encrypted message".into()));
     };
-    let passphrase = || passphrase.to_string();
+    let password = Password::from(passphrase);
+    let decrypt_with = |key: &dyn DecryptionKey,
+                        pkesk: &pgp::packet::PublicKeyEncryptedSessionKey| {
+        let typ = match pkesk.version() {
+            PkeskVersion::V3 => EskType::V3_4,
+            PkeskVersion::V6 => EskType::V6,
+            PkeskVersion::Other(_) => return None,
+        };
+        let values = pkesk.values().ok()?;
+        key.decrypt(&password, values, typ).ok()?.ok()
+    };
     let plain_key = esk
         .iter()
         .filter_map(|esk| match esk {
-            pgp::Esk::PublicKeyEncryptedSessionKey(pkesk)
-                if pkesk.version() == PkeskVersion::V3 =>
-            {
-                Some(pkesk)
-            }
-            _ => None,
+            pgp::composed::Esk::PublicKeyEncryptedSessionKey(pkesk) => Some(pkesk),
+            pgp::composed::Esk::SymKeyEncryptedSessionKey(_) => None,
         })
         .find_map(|pkesk| {
-            let values = pkesk.values().ok()?;
-            if pkesk.match_identity(&private_key.primary_key) {
-                return decrypt_session_key(
-                    &private_key.primary_key,
-                    passphrase,
-                    values,
-                    EskType::V3_4,
-                )
-                .ok();
+            if pkesk.match_identity(private_key.primary_key.public_key()) {
+                return decrypt_with(&private_key.primary_key, pkesk);
             }
             let subkey = private_key
                 .secret_subkeys
                 .iter()
-                .find(|subkey| pkesk.match_identity(&subkey.key))?;
-            decrypt_session_key(&subkey.key, passphrase, values, EskType::V3_4).ok()
+                .find(|subkey| pkesk.match_identity(subkey.key.public_key()))?;
+            decrypt_with(&subkey.key, pkesk)
         })
         .ok_or_else(|| failure("no session key for this key".into()))?;
-    let PlainSessionKey::V3_4 { sym_alg, key } = &plain_key else {
-        return Err(failure("unsupported session key version".into()));
+    let (algorithm, key) = match &plain_key {
+        PlainSessionKey::V3_4 { sym_alg, key } => (*sym_alg, key),
+        PlainSessionKey::V6 { key } => (
+            seipd_v2_algorithm(&message)
+                .ok_or_else(|| failure("a v6 session key outside SEIPD v2".into()))?,
+            key,
+        ),
+        PlainSessionKey::V5 { .. } => {
+            return Err(failure("unsupported session key version".into()))
+        }
     };
     let session_key = SessionKey {
-        algorithm: *sym_alg,
-        key: zeroize::Zeroizing::new(key.clone()),
+        algorithm,
+        key: zeroize::Zeroizing::new(key.as_ref().to_vec()),
     };
-    let decrypted = edata
-        .decrypt(plain_key)
-        .map_err(|error| failure(error.to_string()))?;
-    Ok((content(&decrypted)?, session_key))
+    let ring = TheRing {
+        session_keys: vec![plain_key],
+        ..TheRing::default()
+    };
+    Ok((content(decrypt(message, ring)?)?, session_key))
 }
 
 /// Decrypt with the session key of the message.
@@ -180,29 +224,43 @@ pub fn decrypt_with_session_key(
     armored_message: &str,
     session_key: &SessionKey,
 ) -> Result<Vec<u8>, CryptoError> {
-    use pgp::composed::PlainSessionKey;
-
-    let failure = |reason: String| CryptoError::Decrypt(reason);
-    let (message, _) = Message::from_armor_single(Cursor::new(armored_message.as_bytes()))
-        .map_err(|error| failure(format!("parse message: {error}")))?;
-    let Message::Encrypted { edata, .. } = message else {
-        return Err(failure("not an encrypted message".into()));
+    let message = parse_message(armored_message)?;
+    let ring = TheRing {
+        session_keys: vec![session_key.plain_for(&message)],
+        ..TheRing::default()
     };
-    let decrypted = edata
-        .decrypt(PlainSessionKey::V3_4 {
-            sym_alg: session_key.algorithm,
-            key: session_key.key.to_vec(),
-        })
-        .map_err(|error| failure(error.to_string()))?;
-    content(&decrypted)
+    content(decrypt(message, ring)?)
 }
 
-/// The literal content of a decrypted message, decompressed.
-fn content(message: &Message) -> Result<Vec<u8>, CryptoError> {
-    message
-        .get_content()
-        .map_err(|error| CryptoError::Decrypt(format!("decompress: {error}")))?
-        .ok_or_else(|| CryptoError::Decrypt("no literal content".into()))
+fn parse_message(armored_message: &str) -> Result<Message<'_>, CryptoError> {
+    Message::from_armor(armored_message.as_bytes())
+        .map(|(message, _)| message)
+        .map_err(|error| CryptoError::Decrypt(format!("parse message: {error}")))
+}
+
+/// The literal content of a decrypted message, decompressed (GnuPG, the Passbolt server,
+/// compresses by default). Text keeps the LF line endings it was written with, as OpenPGP.js
+/// reads it: the literal carries CR LF.
+fn content(mut message: Message<'_>) -> Result<Vec<u8>, CryptoError> {
+    if message.is_compressed() {
+        message = message
+            .decompress()
+            .map_err(|error| CryptoError::Decrypt(format!("decompress: {error}")))?;
+    }
+    let is_text = message
+        .literal_data_header()
+        .is_some_and(|header| matches!(header.mode(), DataMode::Utf8 | DataMode::Text));
+    let data = message
+        .as_data_vec()
+        .map_err(|error| CryptoError::Decrypt(format!("read: {error}")))?;
+    if !is_text {
+        return Ok(data);
+    }
+    Ok(
+        String::from_utf8(data).map_or_else(std::string::FromUtf8Error::into_bytes, |text| {
+            text.replace("\r\n", "\n").into_bytes()
+        }),
+    )
 }
 
 /// Encrypt `plaintext` for `recipients`, as a binary literal.
@@ -210,7 +268,7 @@ pub fn encrypt_message(
     plaintext: &[u8],
     recipients: &[&SignedPublicKey],
 ) -> Result<String, CryptoError> {
-    encrypt(&Message::new_literal_bytes("", plaintext), recipients)
+    encrypt(plaintext.to_vec(), DataMode::Binary, &[], recipients)
 }
 
 /// A key able to sign: a private key and its passphrase.
@@ -222,94 +280,125 @@ pub struct Signer<'a> {
 /// Sign `plaintext` with every signer, then encrypt it for `recipients`, as a UTF-8 text literal.
 ///
 /// Passbolt clients sign secrets with the user key, shared metadata with the metadata key too.
-/// Every signature covers the literal data, as `OpenPGP.js` and gopenpgp write and check them:
-/// one-pass signatures in a row, then the literal, then the signatures in reverse order.
+/// Every signature covers the literal data, as `OpenPGP.js` and gopenpgp write and check them.
 pub fn sign_and_encrypt(
     plaintext: &str,
     signers: &[Signer<'_>],
     recipients: &[&SignedPublicKey],
 ) -> Result<String, CryptoError> {
-    use pgp::crypto::hash::HashAlgorithm;
-
-    let literal = Message::new_literal("", plaintext);
-    let mut message = literal.clone();
-    for (index, signer) in signers.iter().enumerate() {
-        let signed = literal
-            .clone()
-            .sign(
-                rand::thread_rng(),
-                signer.key,
-                || signer.passphrase.to_string(),
-                HashAlgorithm::SHA2_256,
-            )
-            .map_err(|error| CryptoError::Encrypt(format!("sign: {error}")))?;
-        let Message::Signed {
-            mut one_pass_signature,
-            signature,
-            ..
-        } = signed
-        else {
-            return Err(CryptoError::Encrypt("sign: no signature".into()));
-        };
-        // Only the one-pass signature right before the literal is the last one.
-        if index > 0 {
-            if let Some(one_pass_signature) = one_pass_signature.as_mut() {
-                one_pass_signature.last = 0;
-            }
-        }
-        message = Message::Signed {
-            message: Some(Box::new(message)),
-            one_pass_signature,
-            signature,
-        };
-    }
-    encrypt(&message, recipients)
+    // UTF-8 literals are written with CR LF line endings.
+    let text = plaintext.replace("\r\n", "\n").replace('\n', "\r\n");
+    encrypt(text.into_bytes(), DataMode::Utf8, signers, recipients)
 }
 
-fn encrypt(message: &Message, recipients: &[&SignedPublicKey]) -> Result<String, CryptoError> {
-    use pgp::crypto::sym::SymmetricKeyAlgorithm;
-    use pgp::packet::{PublicKeyEncryptedSessionKey, SymEncryptedProtectedData};
-    use pgp::{Edata, Esk};
+/// One session key packet per recipient key, primary key or subkey, whichever the SEIPD
+/// version of `builder`.
+macro_rules! encrypt_to_each {
+    ($builder:ident, $keys:expr, $rng:expr) => {
+        for key in $keys {
+            match key {
+                EncryptionKey::Subkey(subkey) => $builder.encrypt_to_key($rng, *subkey),
+                EncryptionKey::Primary(primary_key) => $builder.encrypt_to_key($rng, *primary_key),
+            }
+            .map_err(|error| CryptoError::Encrypt(error.to_string()))?;
+        }
+    };
+}
 
-    const ALGORITHM: SymmetricKeyAlgorithm = SymmetricKeyAlgorithm::AES256;
-    let failure = |error: pgp::errors::Error| CryptoError::Encrypt(error.to_string());
-    let mut rng = rand::thread_rng();
-    let session_key = ALGORITHM.new_session_key(&mut rng);
-
-    // Recipients mix primary keys and subkeys: one session key packet each.
-    let esk = recipients
+fn encrypt(
+    data: Vec<u8>,
+    mode: DataMode,
+    signers: &[Signer<'_>],
+    recipients: &[&SignedPublicKey],
+) -> Result<String, CryptoError> {
+    let now = chrono::Utc::now();
+    let keys = recipients
         .iter()
-        .map(|recipient| {
-            let packet = match encryption_key(recipient, &chrono::Utc::now())? {
-                EncryptionKey::Subkey(subkey) => PublicKeyEncryptedSessionKey::from_session_key_v3(
-                    &mut rng,
-                    &session_key,
-                    ALGORITHM,
-                    subkey,
-                ),
-                EncryptionKey::Primary(primary_key) => {
-                    PublicKeyEncryptedSessionKey::from_session_key_v3(
-                        &mut rng,
-                        &session_key,
-                        ALGORITHM,
-                        primary_key,
-                    )
-                }
-            };
-            packet
-                .map(Esk::PublicKeyEncryptedSessionKey)
-                .map_err(failure)
-        })
+        .map(|recipient| encryption_key(recipient, &now))
         .collect::<Result<Vec<_>, _>>()?;
+    let mut rng = rand::thread_rng();
+    let builder = MessageBuilder::from_bytes("", data);
+    if let Some((algorithm, aead)) = aead_cipher_suite(recipients) {
+        let mut builder = builder.seipd_v2(&mut rng, algorithm, aead, AEAD_CHUNK_SIZE);
+        encrypt_to_each!(builder, &keys, &mut rng);
+        return sign_and_armor(builder, mode, signers);
+    }
+    let mut builder = builder.seipd_v1(&mut rng, SymmetricKeyAlgorithm::AES256);
+    encrypt_to_each!(builder, &keys, &mut rng);
+    sign_and_armor(builder, mode, signers)
+}
 
-    let data = message.to_bytes().map_err(failure)?;
-    let edata = Edata::SymEncryptedProtectedData(
-        SymEncryptedProtectedData::encrypt_seipdv1(&mut rng, ALGORITHM, &session_key, &data)
-            .map_err(failure)?,
-    );
-    Message::Encrypted { esk, edata }
-        .to_armored_string(ArmorOptions::default())
+fn sign_and_armor<'a, E: Encryption>(
+    mut builder: MessageBuilder<'a, DummyReader, E>,
+    mode: DataMode,
+    signers: &[Signer<'a>],
+) -> Result<String, CryptoError> {
+    builder
+        .data_mode(mode)
+        .map_err(|error| CryptoError::Encrypt(error.to_string()))?;
+    if mode == DataMode::Utf8 {
+        builder.sign_text();
+    }
+    for signer in signers {
+        builder.sign(
+            &signer.key.primary_key,
+            Password::from(signer.passphrase),
+            HashAlgorithm::Sha256,
+        );
+    }
+    builder
+        .to_armored_string(rand::thread_rng(), ArmorOptions::default())
         .map_err(|error| CryptoError::Encrypt(format!("armor: {error}")))
+}
+
+/// The chunk size OpenPGP.js writes SEIPD v2 with.
+const AEAD_CHUNK_SIZE: ChunkSize = ChunkSize::C256KiB;
+
+/// The SEIPD v2 cipher suite of a message for `recipients`, as `OpenPGP.js` and gopenpgp choose
+/// it: only when every key asks for SEIPD v2, the first suite they all prefer, else AES-128 OCB,
+/// which every SEIPD v2 reader supports. `None` writes SEIPD v1.
+fn aead_cipher_suite(
+    recipients: &[&SignedPublicKey],
+) -> Option<(SymmetricKeyAlgorithm, AeadAlgorithm)> {
+    use SymmetricKeyAlgorithm::{AES128, AES256};
+    const DESIRED: [(SymmetricKeyAlgorithm, AeadAlgorithm); 3] = [
+        (AES256, AeadAlgorithm::Gcm),
+        (AES256, AeadAlgorithm::Ocb),
+        (AES128, AeadAlgorithm::Gcm),
+    ];
+    let preferences = recipients
+        .iter()
+        .map(|recipient| primary_self_signature(recipient))
+        .collect::<Option<Vec<_>>>()?;
+    let seipd_v2 = !preferences.is_empty()
+        && preferences
+            .iter()
+            .all(|signature| signature.features().is_some_and(Features::seipd_v2));
+    if !seipd_v2 {
+        return None;
+    }
+    let preferred_by_all = DESIRED.into_iter().find(|suite| {
+        preferences
+            .iter()
+            .all(|signature| signature.preferred_aead_algs().contains(suite))
+    });
+    Some(preferred_by_all.unwrap_or((AES128, AeadAlgorithm::Ocb)))
+}
+
+/// The self-signature holding the preferences of `key`: the direct key signature of a v6 key,
+/// else the newest certification of its primary user ID (of any user ID if none is primary).
+fn primary_self_signature(key: &SignedPublicKey) -> Option<&pgp::packet::Signature> {
+    let newest = |signature: &&pgp::packet::Signature| {
+        signature.created().map(pgp::types::Timestamp::as_secs)
+    };
+    if key.primary_key.version() == KeyVersion::V6 {
+        return key.details.direct_signatures.iter().max_by_key(newest);
+    }
+    key.details
+        .users
+        .iter()
+        .flat_map(|user| &user.signatures)
+        .max_by_key(|signature| (signature.is_primary(), newest(signature)))
 }
 
 /// The key a message for `key` is encrypted with.
@@ -325,20 +414,39 @@ fn encryption_key<'a>(
     key: &'a SignedPublicKey,
     now: &chrono::DateTime<chrono::Utc>,
 ) -> Result<EncryptionKey<'a>, CryptoError> {
-    use pgp::packet::SignatureType;
+    use pgp::packet::{Signature, SignatureType, SubpacketData};
 
+    let now = now.timestamp();
     let fingerprint = hex::encode_upper(key.fingerprint().as_bytes());
     if !key.details.revocation_signatures.is_empty() {
         return Err(CryptoError::Encrypt(format!(
             "key {fingerprint} is revoked"
         )));
     }
-    if let Some(expires_at) = key.expires_at().filter(|expires_at| expires_at <= now) {
+    let self_signatures: Vec<&Signature> = key
+        .details
+        .users
+        .iter()
+        .flat_map(|user| &user.signatures)
+        .chain(&key.details.direct_signatures)
+        .collect();
+    // The longest validity its self-signatures give, from its creation.
+    let validity = self_signatures
+        .iter()
+        .filter_map(|signature| signature.key_expiration_time())
+        .map(|validity| i64::from(validity.as_secs()))
+        .max();
+    let created = i64::from(key.primary_key.created_at().as_secs());
+    if let Some(expires_at) = validity
+        .map(|validity| created + validity)
+        .filter(|expires_at| *expires_at <= now)
+    {
+        let date = chrono::DateTime::from_timestamp(expires_at, 0).unwrap_or_default();
         return Err(CryptoError::Encrypt(format!(
-            "key {fingerprint} expired on {expires_at}"
+            "key {fingerprint} expired on {date}"
         )));
     }
-    let flags_encryption = |signature: &pgp::packet::Signature| {
+    let flags_encryption = |signature: &Signature| {
         let flags = signature.key_flags();
         flags.encrypt_comms() || flags.encrypt_storage()
     };
@@ -349,39 +457,35 @@ fn encryption_key<'a>(
             let revoked = subkey
                 .signatures
                 .iter()
-                .any(|signature| signature.typ() == SignatureType::SubkeyRevocation);
+                .any(|signature| signature.typ() == Some(SignatureType::SubkeyRevocation));
             let binding = subkey
                 .signatures
                 .iter()
-                .filter(|signature| signature.typ() == SignatureType::SubkeyBinding)
-                .max_by_key(|signature| signature.created().copied());
+                .filter(|signature| signature.typ() == Some(SignatureType::SubkeyBinding))
+                .max_by_key(|signature| signature.created().map(pgp::types::Timestamp::as_secs));
+            let subkey_created = i64::from(subkey.key.created_at().as_secs());
             let valid_binding = binding.is_some_and(|binding| {
                 flags_encryption(binding)
                     && binding
                         .key_expiration_time()
-                        .is_none_or(|validity| *subkey.key.created_at() + *validity > *now)
+                        .is_none_or(|validity| subkey_created + i64::from(validity.as_secs()) > now)
             });
-            subkey.key.is_encryption_key() && !revoked && valid_binding
+            subkey.key.algorithm().can_encrypt() && !revoked && valid_binding
         })
-        .max_by_key(|subkey| *subkey.key.created_at());
+        .max_by_key(|subkey| subkey.key.created_at().as_secs());
     if let Some(subkey) = valid_subkey {
         return Ok(EncryptionKey::Subkey(&subkey.key));
     }
     // A key without key flags (older keys) may encrypt with whatever its algorithm allows.
-    let self_signatures: Vec<_> = key
-        .details
-        .users
-        .iter()
-        .flat_map(|user| &user.signatures)
-        .collect();
     let without_flags = self_signatures.iter().all(|signature| {
-        !signature
-            .config
-            .hashed_subpackets
-            .iter()
-            .any(|subpacket| matches!(subpacket.data, pgp::packet::SubpacketData::KeyFlags(_)))
+        signature.config().is_none_or(|config| {
+            !config
+                .hashed_subpackets
+                .iter()
+                .any(|subpacket| matches!(subpacket.data, SubpacketData::KeyFlags(_)))
+        })
     });
-    if key.primary_key.is_encryption_key()
+    if key.primary_key.algorithm().can_encrypt()
         && (without_flags
             || self_signatures
                 .iter()
@@ -407,6 +511,13 @@ mod tests {
 
     /// Fixture keypair without passphrase.
     const ERIN_PUBLIC: &str = include_str!("../tests/fixtures/keys/erin_public.asc");
+    const ERIN_PRIVATE: &str = include_str!("../tests/fixtures/keys/erin_private.asc");
+    /// Erin's key asking for SEIPD v2: see `tests/fixtures/keys/README.md`.
+    const ERIN_SEIPD_V2_PUBLIC: &str =
+        include_str!("../tests/fixtures/keys/erin_seipd_v2_public.asc");
+    /// Written by OpenPGP.js: see `tests/fixtures/messages/README.md`.
+    const SEIPD_V2_MESSAGE: &str = include_str!("../tests/fixtures/messages/erin_seipd_v2.asc");
+    const GNUPG_AEAD_MESSAGE: &str = include_str!("../tests/fixtures/messages/erin_gnupg_aead.asc");
     /// Passbolt server test keys: see `tests/fixtures/keys/README.md`.
     const EXPIRED_PUBLIC: &str = include_str!("../tests/fixtures/keys/expired_public.asc");
     const EXPIRED_PRIMARY_PUBLIC: &str =
@@ -525,19 +636,15 @@ mod tests {
 
     #[test]
     fn test_decrypt_compressed_message() {
-        use pgp::crypto::sym::SymmetricKeyAlgorithm;
         use pgp::types::CompressionAlgorithm;
         let (secret, public) = keypair(SERVER_PRIVATE, SERVER_PUBLIC);
-        let armored = Message::new_literal_bytes("", b"gpgauthv1.3.0")
-            .compress(CompressionAlgorithm::ZLIB)
-            .unwrap()
-            .encrypt_to_keys_seipdv1(
-                rand::thread_rng(),
-                SymmetricKeyAlgorithm::AES256,
-                &[&public],
-            )
-            .unwrap()
-            .to_armored_string(ArmorOptions::default())
+        let mut rng = rand::thread_rng();
+        let mut builder = MessageBuilder::from_bytes("", &b"gpgauthv1.3.0"[..])
+            .seipd_v1(&mut rng, SymmetricKeyAlgorithm::AES256);
+        builder.compression(CompressionAlgorithm::ZLIB);
+        builder.encrypt_to_key(&mut rng, &public).unwrap();
+        let armored = builder
+            .to_armored_string(&mut rng, ArmorOptions::default())
             .unwrap();
 
         assert_eq!(
@@ -556,41 +663,51 @@ mod tests {
         assert!(decrypt_message(&armored, &metadata_secret, "").is_err());
     }
 
-    /// Verify that every signature of `armored`, outermost first, is `signers`' over the literal
-    /// data, as other `OpenPGP` implementations check them.
+    /// Decrypt `armored`, checking it is a text literal signed by exactly `signers`, over the
+    /// literal data as other `OpenPGP` implementations check them.
     fn verified_text(
         armored: &str,
         secret: &SignedSecretKey,
         signers: &[&SignedPublicKey],
     ) -> String {
-        let (message, _) = Message::from_armor_single(Cursor::new(armored.as_bytes())).unwrap();
-        let (mut message, _) = message.decrypt(String::new, &[secret]).unwrap();
-        let mut signatures = Vec::new();
-        while let Message::Signed {
-            message: inner,
-            signature,
-            ..
-        } = message
-        {
-            signatures.push(signature);
-            message = *inner.unwrap();
-        }
-        let Message::Literal(literal) = message else {
-            panic!("no literal data")
+        use pgp::composed::VerificationResult;
+        use pgp::types::VerifyingKey;
+
+        let mut message = parse_message(armored)
+            .unwrap()
+            .decrypt(&Password::empty(), secret)
+            .unwrap();
+        let Message::Signed { reader, .. } = &message else {
+            panic!("not signed")
         };
-        assert!(!literal.is_binary(), "not a text literal");
-        assert_eq!(signatures.len(), signers.len(), "signature count");
-        for (signature, signer) in signatures.iter().zip(signers) {
-            signature
-                .verify(*signer, literal.data())
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "not signed by {}: {error}",
-                        hex::encode_upper(signer.fingerprint().as_bytes())
-                    )
-                });
+        assert_eq!(reader.num_signatures(), signers.len(), "signature count");
+        let text = message.as_data_string().unwrap();
+        assert!(
+            matches!(
+                message
+                    .literal_data_header()
+                    .map(pgp::packet::LiteralDataHeader::mode),
+                Some(DataMode::Utf8)
+            ),
+            "not a text literal"
+        );
+        let verifying: Vec<&dyn VerifyingKey> = signers
+            .iter()
+            .map(|signer| &signer.primary_key as &dyn VerifyingKey)
+            .collect();
+        for (result, signer) in message
+            .verify_nested(&verifying)
+            .unwrap()
+            .iter()
+            .zip(signers)
+        {
+            assert!(
+                matches!(result, VerificationResult::Valid(_)),
+                "not signed by {}",
+                hex::encode_upper(signer.fingerprint().as_bytes())
+            );
         }
-        literal.to_string().unwrap()
+        text.replace("\r\n", "\n")
     }
 
     #[test]
@@ -659,5 +776,94 @@ mod tests {
         let session_key = SessionKey::parse("00FF").unwrap();
 
         assert_eq!(session_key.to_passbolt_string(), "9:00FF");
+    }
+
+    #[rstest]
+    #[case::seipd_v2(SEIPD_V2_MESSAGE)]
+    #[case::gnupg_aead(GNUPG_AEAD_MESSAGE)]
+    fn test_aead_messages_are_decrypted(#[case] armored: &str) {
+        let erin = parse_private_key(ERIN_PRIVATE).unwrap();
+
+        let plaintext = decrypt_message(armored, &erin.key, "erin-passphrase").unwrap();
+
+        assert_eq!(plaintext, b"line one\nline two");
+    }
+
+    #[rstest]
+    #[case::seipd_v2(SEIPD_V2_MESSAGE, "9:")]
+    #[case::gnupg_aead(GNUPG_AEAD_MESSAGE, "7:")]
+    fn test_the_session_key_of_an_aead_message_decrypts_it_again(
+        #[case] armored: &str,
+        #[case] algorithm: &str,
+    ) {
+        let erin = parse_private_key(ERIN_PRIVATE).unwrap();
+
+        let (_, session_key) =
+            decrypt_message_keeping_session_key(armored, &erin.key, "erin-passphrase").unwrap();
+        let stored = SessionKey::parse(&session_key.to_passbolt_string()).unwrap();
+
+        assert!(
+            session_key.to_passbolt_string().starts_with(algorithm),
+            "{}",
+            session_key.to_passbolt_string()
+        );
+        assert_eq!(
+            decrypt_with_session_key(armored, &stored).unwrap(),
+            b"line one\nline two"
+        );
+    }
+
+    /// The SEIPD v2 cipher suite `armored` is written with, `None` for SEIPD v1.
+    fn cipher_suite_of(armored: &str) -> Option<(SymmetricKeyAlgorithm, AeadAlgorithm)> {
+        let message = parse_message(armored).unwrap();
+        let Message::Encrypted {
+            edata: Edata::SymEncryptedProtectedData { reader },
+            ..
+        } = &message
+        else {
+            panic!("not a SEIPD message");
+        };
+        match reader.config() {
+            ProtectedDataConfig::Seipd(SymEncryptedProtectedDataConfig::V2 {
+                sym_alg,
+                aead,
+                ..
+            }) => Some((*sym_alg, *aead)),
+            _ => None,
+        }
+    }
+
+    #[rstest]
+    #[case::asking_for_seipd_v2(&[ERIN_SEIPD_V2_PUBLIC], Some((SymmetricKeyAlgorithm::AES256, AeadAlgorithm::Gcm)))]
+    #[case::not_asking(&[ERIN_PUBLIC], None)]
+    #[case::not_all_asking(&[ERIN_SEIPD_V2_PUBLIC, SERVER_PUBLIC], None)]
+    fn test_seipd_v2_is_written_when_every_recipient_asks_for_it(
+        #[case] recipients: &[&str],
+        #[case] cipher_suite: Option<(SymmetricKeyAlgorithm, AeadAlgorithm)>,
+    ) {
+        let keys: Vec<SignedPublicKey> = recipients
+            .iter()
+            .map(|public| parse_public_key(public).unwrap())
+            .collect();
+
+        let armored = encrypt_message(b"secret", &keys.iter().collect::<Vec<_>>()).unwrap();
+
+        assert_eq!(cipher_suite_of(&armored), cipher_suite);
+    }
+
+    #[test]
+    fn test_a_seipd_v2_message_is_decrypted_with_its_session_key() {
+        let erin = parse_private_key(ERIN_PRIVATE).unwrap();
+        let recipient = parse_public_key(ERIN_SEIPD_V2_PUBLIC).unwrap();
+        let armored = encrypt_message(b"secret", &[&recipient]).unwrap();
+
+        let (plaintext, session_key) =
+            decrypt_message_keeping_session_key(&armored, &erin.key, "erin-passphrase").unwrap();
+
+        assert_eq!(plaintext, b"secret");
+        assert_eq!(
+            decrypt_with_session_key(&armored, &session_key).unwrap(),
+            b"secret"
+        );
     }
 }

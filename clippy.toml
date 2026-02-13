@@ -1,0 +1,2 @@
+# Names written as such in the documentation; ".." keeps the default list.
+doc-valid-idents = ["GnuPG", ".."]

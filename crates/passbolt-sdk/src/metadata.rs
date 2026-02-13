@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use pgp::{SignedPublicKey, SignedSecretKey};
+use pgp::composed::{SignedPublicKey, SignedSecretKey};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 
@@ -154,7 +154,7 @@ impl MetadataKeys {
     /// Fingerprint of the active key, the one new shared metadata is encrypted for.
     #[must_use]
     pub fn active_fingerprint(&self) -> Option<String> {
-        use pgp::types::PublicKeyTrait;
+        use pgp::types::KeyDetails;
 
         self.active
             .as_ref()
