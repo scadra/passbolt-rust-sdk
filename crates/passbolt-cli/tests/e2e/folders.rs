@@ -148,10 +148,10 @@ fn every_resource_of_a_large_folder_is_listed() {
 
     let mut listed_ids = ids(&listed);
     listed_ids.sort_unstable();
-    listed_ids.dedup();
-    assert_eq!(
-        listed_ids.len(),
-        resources.len(),
-        "missing or duplicated resources"
-    );
+    let mut created_ids: Vec<&str> = resources
+        .iter()
+        .map(|resource| resource.id.as_str())
+        .collect();
+    created_ids.sort_unstable();
+    assert_eq!(listed_ids, created_ids, "missing or duplicated resources");
 }
