@@ -19,6 +19,8 @@
 .env.e2e
 *.kdbx
 *.asc
+# The SDK test keys and messages are public by design.
+!crates/passbolt-sdk/tests/fixtures/**/*.asc
 *.gpg
 *.pem
 *.key
