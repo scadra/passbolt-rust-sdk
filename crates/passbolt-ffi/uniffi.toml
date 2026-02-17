@@ -1,0 +1,13 @@
+# Names of the generated packages, per language (scripts/sdk-bindings.sh).
+
+[bindings.kotlin]
+package_name = "com.passbolt.sdk"
+
+[bindings.java]
+package_name = "com.passbolt.sdk"
+
+[bindings.go]
+package_name = "passbolt"
+
+[bindings.csharp]
+namespace = "Passbolt.Sdk"
