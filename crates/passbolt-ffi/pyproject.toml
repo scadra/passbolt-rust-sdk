@@ -1,0 +1,14 @@
+# Python wheels: `maturin build --release`, bindings from the crate's own uniffi-bindgen.
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "passbolt-sdk"
+description = "Passbolt SDK — Python bindings of the Rust SDK"
+license = { text = "AGPL-3.0-or-later" }
+requires-python = ">=3.9"
+dynamic = ["version"]
+
+[tool.maturin]
+bindings = "uniffi"

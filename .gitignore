@@ -8,6 +8,7 @@
 ######################
 /crates/passbolt-wasm/pkg
 /crates/passbolt-ffi/bindings
+/crates/passbolt-ffi/dist
 /bindings
 *.wasm
 *.so
