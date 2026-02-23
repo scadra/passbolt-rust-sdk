@@ -1,0 +1,147 @@
+name: SDK and CLI builds
+
+# Builds the CLI for every desktop platform and the SDK for JS/TS, Python, Java, Go, .NET,
+# Ruby, iOS and Android. Each run uploads one `passbolt-<version>` payload with all of them.
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/sdk.yml
+      - packaging/**
+      - scripts/sdk-bindings.sh
+      - crates/passbolt-ffi/**
+      - crates/passbolt-wasm/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      sdk: ${{ steps.version.outputs.sdk }}
+      cli: ${{ steps.version.outputs.cli }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          version() {
+            cargo metadata --format-version 1 --no-deps \
+              | jq -r --arg name "$1" '.packages[] | select(.name == $name) | .version'
+          }
+          echo "sdk=$(version passbolt-ffi)" >> "$GITHUB_OUTPUT"
+          echo "cli=$(version passbolt-cli)" >> "$GITHUB_OUTPUT"
+
+  # The CLI, and the native library the SDK bindings load, for each desktop platform.
+  native:
+    name: Native (${{ matrix.target }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, ffi: true }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, ffi: true }
+          # Static binary for any Linux; no SDK library (musl cdylibs are not portable).
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-22.04, ffi: false }
+          - { target: x86_64-apple-darwin, os: macos-14, ffi: true }
+          - { target: aarch64-apple-darwin, os: macos-14, ffi: true }
+          - { target: x86_64-pc-windows-msvc, os: windows-2022, ffi: true }
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - if: endsWith(matrix.target, '-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: CLI
+        run: cargo build --release --locked -p passbolt-cli --target "$TARGET"
+      - name: SDK library
+        if: matrix.ffi
+        run: cargo build --release --locked -p passbolt-ffi --lib --target "$TARGET"
+      # Go links the static library: it also needs the system libraries Rust prints.
+      - name: SDK static library
+        if: matrix.ffi && runner.os != 'Windows'
+        run: |
+          cargo rustc --release --locked -p passbolt-ffi --lib --crate-type staticlib --target "$TARGET" \
+            -- --print native-static-libs 2> static.log || { cat static.log; exit 1; }
+          sed -n 's/.*native-static-libs: //p' static.log | tail -n 1 > native-static-libs.txt
+          test -s native-static-libs.txt
+      - name: Package
+        run: |
+          name="passbolt-cli-${{ needs.version.outputs.cli }}-$TARGET"
+          mkdir -p dist "$name"
+          exe=""
+          [[ "$TARGET" == *windows* ]] && exe=".exe"
+          cp "target/$TARGET/release/passbolt$exe" LICENSE README.md "$name/"
+          if [[ "$TARGET" == *windows* ]]; then
+            7z a "dist/$name.zip" "$name" > /dev/null
+          else
+            tar czf "dist/$name.tar.gz" "$name"
+          fi
+          if ${{ matrix.ffi }}; then
+            mkdir -p native
+            for file in libpassbolt_ffi.so libpassbolt_ffi.dylib passbolt_ffi.dll libpassbolt_ffi.a; do
+              if [[ -f "target/$TARGET/release/$file" ]]; then
+                cp "target/$TARGET/release/$file" native/
+              fi
+            done
+            if [[ -f native-static-libs.txt ]]; then
+              cp native-static-libs.txt native/
+            fi
+          fi
+      - name: Smoke test
+        if: "!contains(matrix.target, 'x86_64-apple')"
+        run: |
+          exe=""
+          [[ "$TARGET" == *windows* ]] && exe=".exe"
+          "target/$TARGET/release/passbolt$exe" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/*
+      - if: matrix.ffi
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.target }}
+          path: native/
+
+  # Everything in one artifact.
+  payload:
+    name: Payload
+    needs: [version, native]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: payload/cli
+          merge-multiple: true
+      - name: Checksums
+        working-directory: payload
+        run: find . -type f ! -name SHA256SUMS -printf '%P\n' | sort | xargs sha256sum > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: passbolt-${{ needs.version.outputs.sdk }}
+          path: payload/
