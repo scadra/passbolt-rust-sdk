@@ -127,16 +127,97 @@ jobs:
           name: native-${{ matrix.target }}
           path: native/
 
+  python:
+    name: Python (${{ matrix.target }}, ${{ matrix.os }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64, smoke: true }
+          - { os: ubuntu-22.04-arm, target: aarch64, smoke: true }
+          - { os: macos-14, target: x86_64, smoke: false }
+          - { os: macos-14, target: aarch64, smoke: true }
+          - { os: windows-2022, target: x64, smoke: true }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: crates/passbolt-ffi
+          target: ${{ matrix.target }}
+          manylinux: "2_28"
+          args: --release --locked --out dist
+      - name: Smoke test
+        if: matrix.smoke
+        shell: bash
+        run: |
+          python -m pip install --no-index --find-links crates/passbolt-ffi/dist passbolt-sdk
+          python packaging/smoke/smoke.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-python-${{ matrix.os }}-${{ matrix.target }}
+          path: crates/passbolt-ffi/dist/*.whl
+
+  js:
+    name: JavaScript / TypeScript
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The CLI must match the wasm-bindgen version of Cargo.lock.
+      - name: Install wasm-bindgen
+        run: |
+          version=$(cargo metadata --format-version 1 --locked \
+            | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version')
+          cargo install wasm-bindgen-cli --version "$version" --locked
+      - run: cargo build --release --locked -p passbolt-wasm --target wasm32-unknown-unknown
+      - name: Package
+        run: |
+          pkg=build/js
+          wasm=target/wasm32-unknown-unknown/release/passbolt_wasm.wasm
+          mkdir -p "$pkg" dist
+          cp packaging/js/package.json packaging/js/README.md LICENSE "$pkg/"
+          wasm-bindgen --target bundler --out-dir "$pkg/bundler" "$wasm"
+          wasm-bindgen --target nodejs --out-dir "$pkg/node" "$wasm"
+          npm pkg set --prefix "$pkg" version="${{ needs.version.outputs.sdk }}"
+          npm pack "./$pkg" --pack-destination dist
+      - name: Smoke test
+        run: |
+          mkdir -p build/smoke && cd build/smoke
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund ../../dist/*.tgz
+          cp ../../packaging/smoke/smoke.cjs . && node smoke.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-js
+          path: dist/*.tgz
+
   # Everything in one artifact.
   payload:
     name: Payload
-    needs: [version, native]
+    needs: [version, native, python, js]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           pattern: cli-*
           path: payload/cli
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sdk-*
+          path: payload/sdk
           merge-multiple: true
       - name: Checksums
         working-directory: payload
