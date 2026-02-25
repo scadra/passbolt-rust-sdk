@@ -25,6 +25,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Generators of the languages UniFFI does not ship, at the UniFFI version of Cargo.lock.
+  UNIFFI_BINDGEN_GO: v0.5.0+v0.29.5
+  UNIFFI_BINDGEN_CS: v0.10.0+v0.29.4
+  UNIFFI_BINDGEN_JAVA: 0.2.1
+  JNA: 5.14.0
 
 jobs:
   version:
@@ -127,6 +132,41 @@ jobs:
           name: native-${{ matrix.target }}
           path: native/
 
+  # Binding sources of every UniFFI language, read from the Linux library.
+  bindings:
+    name: Bindings sources
+    needs: native
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-x86_64-unknown-linux-gnu
+          path: native
+      - id: generators
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/uniffi-bindgen-go
+            ~/.cargo/bin/uniffi-bindgen-cs
+            ~/.cargo/bin/uniffi-bindgen-java
+          key: uniffi-generators-${{ env.UNIFFI_BINDGEN_GO }}-${{ env.UNIFFI_BINDGEN_CS }}-${{ env.UNIFFI_BINDGEN_JAVA }}
+      - name: Install the Go, C# and Java generators
+        if: steps.generators.outputs.cache-hit != 'true'
+        run: |
+          cargo install --locked uniffi-bindgen-go \
+            --git https://github.com/NordSecurity/uniffi-bindgen-go --tag "$UNIFFI_BINDGEN_GO"
+          cargo install --locked uniffi-bindgen-cs \
+            --git https://github.com/NordSecurity/uniffi-bindgen-cs --tag "$UNIFFI_BINDGEN_CS"
+          cargo install --locked uniffi-bindgen-java --version "$UNIFFI_BINDGEN_JAVA"
+      - run: bash scripts/sdk-bindings.sh native/libpassbolt_ffi.so bindings
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings
+          path: bindings/
+
   python:
     name: Python (${{ matrix.target }}, ${{ matrix.os }})
     needs: version
@@ -203,10 +243,96 @@ jobs:
           name: sdk-js
           path: dist/*.tgz
 
+  java:
+    name: Java
+    needs: [version, bindings]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings
+          path: bindings
+      - name: Package
+        run: |
+          curl -fsSLo jna.jar "https://repo1.maven.org/maven2/net/java/dev/jna/jna/$JNA/jna-$JNA.jar"
+          # JNA looks for the library under <os>-<arch>/ on the classpath.
+          declare -A prefix=(
+            [x86_64-unknown-linux-gnu]=linux-x86-64 [aarch64-unknown-linux-gnu]=linux-aarch64
+            [x86_64-apple-darwin]=darwin-x86-64 [aarch64-apple-darwin]=darwin-aarch64
+            [x86_64-pc-windows-msvc]=win32-x86-64
+          )
+          for target in "${!prefix[@]}"; do
+            mkdir -p "build/resources/${prefix[$target]}"
+            find "native/native-$target" \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) \
+              -exec cp {} "build/resources/${prefix[$target]}/" \;
+          done
+          name="passbolt-sdk-${{ needs.version.outputs.sdk }}"
+          mkdir -p build/classes dist
+          javac --release 21 -nowarn -cp jna.jar -d build/classes $(find bindings/java -name '*.java')
+          jar --create --file "dist/$name.jar" -C build/classes . -C build/resources .
+          jar --create --file "dist/$name-sources.jar" -C bindings/java .
+          cp jna.jar "dist/jna-$JNA.jar"
+      - name: Smoke test
+        run: |
+          javac -cp "dist/*" -d build/smoke packaging/smoke/Smoke.java
+          java -cp "dist/*:build/smoke" Smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-java
+          path: dist/*
+
+  dotnet:
+    name: .NET
+    needs: [version, bindings]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings
+          path: bindings
+      - name: Package
+        run: |
+          pkg=build/dotnet
+          mkdir -p "$pkg/generated"
+          cp packaging/dotnet/Passbolt.Sdk.csproj "$pkg/"
+          cp -r bindings/csharp/. "$pkg/generated/"
+          declare -A rid=(
+            [x86_64-unknown-linux-gnu]=linux-x64 [aarch64-unknown-linux-gnu]=linux-arm64
+            [x86_64-apple-darwin]=osx-x64 [aarch64-apple-darwin]=osx-arm64
+            [x86_64-pc-windows-msvc]=win-x64
+          )
+          for target in "${!rid[@]}"; do
+            mkdir -p "$pkg/runtimes/${rid[$target]}/native"
+            find "native/native-$target" \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) \
+              -exec cp {} "$pkg/runtimes/${rid[$target]}/native/" \;
+          done
+          dotnet pack "$pkg" -c Release -p:Version="${{ needs.version.outputs.sdk }}" -o dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-dotnet
+          path: dist/*.nupkg
+
   # Everything in one artifact.
   payload:
     name: Payload
-    needs: [version, native, python, js]
+    needs: [version, native, python, js, java, dotnet]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
