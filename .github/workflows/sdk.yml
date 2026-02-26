@@ -329,10 +329,122 @@ jobs:
           name: sdk-dotnet
           path: dist/*.nupkg
 
+  go:
+    name: Go
+    needs: [version, bindings]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings
+          path: bindings
+      # A module linking the static library of each platform; Windows is not covered (cgo
+      # uses MinGW, the library is built with MSVC).
+      - name: Package
+        run: |
+          pkg=build/go/passbolt-sdk-go
+          mkdir -p "$pkg" dist
+          find bindings/go \( -name '*.go' -o -name '*.h' \) -exec cp {} "$pkg/" \;
+          printf 'module github.com/passbolt/passbolt-sdk-go\n\ngo 1.21\n' > "$pkg/go.mod"
+          declare -A platform=(
+            [x86_64-unknown-linux-gnu]=linux_amd64 [aarch64-unknown-linux-gnu]=linux_arm64
+            [x86_64-apple-darwin]=darwin_amd64 [aarch64-apple-darwin]=darwin_arm64
+          )
+          for target in "${!platform[@]}"; do
+            p="${platform[$target]}"
+            mkdir -p "$pkg/lib/$p"
+            cp "native/native-$target/libpassbolt_ffi.a" "$pkg/lib/$p/"
+            {
+              echo "//go:build ${p%_*} && ${p#*_}"
+              echo
+              echo "package passbolt"
+              echo
+              echo "// #cgo LDFLAGS: -L\${SRCDIR}/lib/$p -lpassbolt_ffi $(cat "native/native-$target/native-static-libs.txt")"
+              echo 'import "C"'
+            } > "$pkg/link_$p.go"
+          done
+          cp LICENSE "$pkg/"
+          tar czf "dist/passbolt-sdk-go-${{ needs.version.outputs.sdk }}.tar.gz" -C build/go passbolt-sdk-go
+      - name: Smoke test
+        run: |
+          mkdir -p build/smoke && cd build/smoke
+          printf 'module smoke\n\ngo 1.21\n\nrequire github.com/passbolt/passbolt-sdk-go v0.0.0\n\nreplace github.com/passbolt/passbolt-sdk-go => ../go/passbolt-sdk-go\n' > go.mod
+          printf 'package main\n\nimport _ "github.com/passbolt/passbolt-sdk-go"\n\nfunc main() {}\n' > main.go
+          CGO_ENABLED=1 go build -o smoke . && ./smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-go
+          path: dist/*
+
+  ruby:
+    name: Ruby
+    needs: [version, bindings]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings
+          path: bindings
+      - name: Package
+        run: |
+          pkg=build/ruby
+          mkdir -p "$pkg/lib" dist
+          cp packaging/ruby/passbolt-sdk.gemspec LICENSE "$pkg/"
+          cp packaging/ruby/passbolt_sdk.rb "$pkg/lib/"
+          # Load the library shipped in the gem, not one from the system library path.
+          sed "s/ffi_lib 'passbolt_ffi'/ffi_lib PASSBOLT_FFI_LIBRARY/" bindings/ruby/passbolt_ffi.rb \
+            > "$pkg/lib/passbolt_ffi.rb"
+          grep -q "ffi_lib PASSBOLT_FFI_LIBRARY" "$pkg/lib/passbolt_ffi.rb"
+          # FFI::Platform::OS-ARCH, as lib/passbolt_sdk.rb looks it up.
+          declare -A platform=(
+            [x86_64-unknown-linux-gnu]=linux-x86_64 [aarch64-unknown-linux-gnu]=linux-aarch64
+            [x86_64-apple-darwin]=darwin-x86_64 [aarch64-apple-darwin]=darwin-aarch64
+            [x86_64-pc-windows-msvc]=windows-x86_64
+          )
+          for target in "${!platform[@]}"; do
+            mkdir -p "$pkg/lib/native/${platform[$target]}"
+            find "native/native-$target" \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) \
+              -exec cp {} "$pkg/lib/native/${platform[$target]}/" \;
+          done
+          (cd "$pkg" && SDK_VERSION="${{ needs.version.outputs.sdk }}" gem build passbolt-sdk.gemspec)
+          mv "$pkg"/*.gem dist/
+      - name: Smoke test
+        run: |
+          gem install --no-document dist/*.gem
+          ruby -e '
+            require "passbolt_sdk"
+            begin
+              PassboltFfi.get_key_fingerprint("not a key")
+            rescue StandardError => e
+              puts "ok: #{e.class}"
+            else
+              abort "expected a crypto error"
+            end'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-ruby
+          path: dist/*.gem
+
   # Everything in one artifact.
   payload:
     name: Payload
-    needs: [version, native, python, js, java, dotnet]
+    needs: [version, native, python, js, java, dotnet, go, ruby]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
