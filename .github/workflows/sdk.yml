@@ -29,6 +29,7 @@ env:
   UNIFFI_BINDGEN_GO: v0.5.0+v0.29.5
   UNIFFI_BINDGEN_CS: v0.10.0+v0.29.4
   UNIFFI_BINDGEN_JAVA: 0.2.1
+  CARGO_NDK: 4.1.2
   JNA: 5.14.0
 
 jobs:
@@ -441,10 +442,94 @@ jobs:
           name: sdk-ruby
           path: dist/*.gem
 
+  ios:
+    name: iOS
+    needs: [version, bindings]
+    runs-on: macos-14
+    env:
+      TARGETS: aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings
+          path: bindings
+      - name: Static libraries
+        run: |
+          for target in $TARGETS; do
+            cargo rustc --release --locked -p passbolt-ffi --lib --crate-type staticlib --target "$target"
+          done
+      - name: Package
+        run: |
+          pkg=build/PassboltSDK
+          mkdir -p build/headers build/simulator "$pkg/Sources/PassboltSDK" dist
+          cp bindings/swift/passbolt_ffiFFI.h build/headers/
+          cp bindings/swift/passbolt_ffiFFI.modulemap build/headers/module.modulemap
+          lipo -create \
+            target/aarch64-apple-ios-sim/release/libpassbolt_ffi.a \
+            target/x86_64-apple-ios/release/libpassbolt_ffi.a \
+            -output build/simulator/libpassbolt_ffi.a
+          xcodebuild -create-xcframework \
+            -library target/aarch64-apple-ios/release/libpassbolt_ffi.a -headers build/headers \
+            -library build/simulator/libpassbolt_ffi.a -headers build/headers \
+            -output "$pkg/passbolt_ffiFFI.xcframework"
+          cp bindings/swift/passbolt_ffi.swift "$pkg/Sources/PassboltSDK/"
+          cp packaging/swift/Package.swift LICENSE "$pkg/"
+          (cd build && zip -qry "../dist/PassboltSDK-ios-${{ needs.version.outputs.sdk }}.zip" PassboltSDK)
+      - name: Smoke test
+        working-directory: build/PassboltSDK
+        run: xcodebuild build -scheme PassboltSDK -destination 'generic/platform=iOS Simulator' -quiet
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-ios
+          path: dist/*
+
+  android:
+    name: Android
+    needs: [version, bindings]
+    runs-on: ubuntu-22.04
+    env:
+      # 16 KB pages, required by Android 15 devices.
+      CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS: -C link-arg=-Wl,-z,max-page-size=16384
+      CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS: -C link-arg=-Wl,-z,max-page-size=16384
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings
+          path: bindings
+      - run: cargo install --locked cargo-ndk --version "$CARGO_NDK"
+      - name: Native libraries
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: |
+          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 -o build/android/jniLibs \
+            build --release --locked -p passbolt-ffi --lib
+      # Kotlin sources and jniLibs/, for an Android module depending on net.java.dev.jna:jna (aar).
+      - name: Package
+        run: |
+          pkg=build/android
+          mkdir -p "$pkg/kotlin" dist
+          cp -r bindings/kotlin/. "$pkg/kotlin/"
+          cp LICENSE "$pkg/"
+          (cd build && zip -qr "../dist/passbolt-sdk-android-${{ needs.version.outputs.sdk }}.zip" android)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-android
+          path: dist/*
+
   # Everything in one artifact.
   payload:
     name: Payload
-    needs: [version, native, python, js, java, dotnet, go, ruby]
+    needs: [version, native, python, js, java, dotnet, go, ruby, ios, android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
