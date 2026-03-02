@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Passbolt SDK for .NET: the UniFFI C# bindings (generated/) and the native library of
+       each platform (runtimes/<rid>/native/, resolved by the .NET host). -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <!-- Generated code: its warnings are not ours to fix. -->
+    <NoWarn>$(NoWarn);CS1591;CS8632;CS0105</NoWarn>
+    <EnableDefaultNoneItems>false</EnableDefaultNoneItems>
+    <PackageId>Passbolt.Sdk</PackageId>
+    <Version>0.0.0</Version>
+    <Description>Passbolt SDK — .NET bindings of the Rust SDK</Description>
+    <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="runtimes/**/*" Pack="true" PackagePath="runtimes/%(RecursiveDir)" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,561 @@
+name: SDK and CLI builds
+
+# Builds the CLI for every desktop platform and the SDK for JS/TS, Python, Java, Go, .NET,
+# Ruby, iOS and Android. Each run uploads one `passbolt-<version>` payload with all of them;
+# a `v*` tag also attaches it to a GitHub release.
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/sdk.yml
+      - packaging/**
+      - scripts/sdk-bindings.sh
+      - crates/passbolt-ffi/**
+      - crates/passbolt-wasm/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Generators of the languages UniFFI does not ship, at the UniFFI version of Cargo.lock.
+  UNIFFI_BINDGEN_GO: v0.5.0+v0.29.5
+  UNIFFI_BINDGEN_CS: v0.10.0+v0.29.4
+  UNIFFI_BINDGEN_JAVA: 0.2.1
+  CARGO_NDK: 4.1.2
+  JNA: 5.14.0
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      sdk: ${{ steps.version.outputs.sdk }}
+      cli: ${{ steps.version.outputs.cli }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          version() {
+            cargo metadata --format-version 1 --no-deps \
+              | jq -r --arg name "$1" '.packages[] | select(.name == $name) | .version'
+          }
+          echo "sdk=$(version passbolt-ffi)" >> "$GITHUB_OUTPUT"
+          echo "cli=$(version passbolt-cli)" >> "$GITHUB_OUTPUT"
+
+  # The CLI, and the native library the SDK bindings load, for each desktop platform.
+  native:
+    name: Native (${{ matrix.target }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, ffi: true }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, ffi: true }
+          # Static binary for any Linux; no SDK library (musl cdylibs are not portable).
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-22.04, ffi: false }
+          - { target: x86_64-apple-darwin, os: macos-14, ffi: true }
+          - { target: aarch64-apple-darwin, os: macos-14, ffi: true }
+          - { target: x86_64-pc-windows-msvc, os: windows-2022, ffi: true }
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - if: endsWith(matrix.target, '-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: CLI
+        run: cargo build --release --locked -p passbolt-cli --target "$TARGET"
+      - name: SDK library
+        if: matrix.ffi
+        run: cargo build --release --locked -p passbolt-ffi --lib --target "$TARGET"
+      # Go links the static library: it also needs the system libraries Rust prints.
+      - name: SDK static library
+        if: matrix.ffi && runner.os != 'Windows'
+        run: |
+          cargo rustc --release --locked -p passbolt-ffi --lib --crate-type staticlib --target "$TARGET" \
+            -- --print native-static-libs 2> static.log || { cat static.log; exit 1; }
+          sed -n 's/.*native-static-libs: //p' static.log | tail -n 1 > native-static-libs.txt
+          test -s native-static-libs.txt
+      - name: Package
+        run: |
+          name="passbolt-cli-${{ needs.version.outputs.cli }}-$TARGET"
+          mkdir -p dist "$name"
+          exe=""
+          [[ "$TARGET" == *windows* ]] && exe=".exe"
+          cp "target/$TARGET/release/passbolt$exe" LICENSE README.md "$name/"
+          if [[ "$TARGET" == *windows* ]]; then
+            7z a "dist/$name.zip" "$name" > /dev/null
+          else
+            tar czf "dist/$name.tar.gz" "$name"
+          fi
+          if ${{ matrix.ffi }}; then
+            mkdir -p native
+            for file in libpassbolt_ffi.so libpassbolt_ffi.dylib passbolt_ffi.dll libpassbolt_ffi.a; do
+              if [[ -f "target/$TARGET/release/$file" ]]; then
+                cp "target/$TARGET/release/$file" native/
+              fi
+            done
+            if [[ -f native-static-libs.txt ]]; then
+              cp native-static-libs.txt native/
+            fi
+          fi
+      - name: Smoke test
+        if: "!contains(matrix.target, 'x86_64-apple')"
+        run: |
+          exe=""
+          [[ "$TARGET" == *windows* ]] && exe=".exe"
+          "target/$TARGET/release/passbolt$exe" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/*
+      - if: matrix.ffi
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.target }}
+          path: native/
+
+  # Binding sources of every UniFFI language, read from the Linux library.
+  bindings:
+    name: Bindings sources
+    needs: native
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-x86_64-unknown-linux-gnu
+          path: native
+      - id: generators
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/uniffi-bindgen-go
+            ~/.cargo/bin/uniffi-bindgen-cs
+            ~/.cargo/bin/uniffi-bindgen-java
+          key: uniffi-generators-${{ env.UNIFFI_BINDGEN_GO }}-${{ env.UNIFFI_BINDGEN_CS }}-${{ env.UNIFFI_BINDGEN_JAVA }}
+      - name: Install the Go, C# and Java generators
+        if: steps.generators.outputs.cache-hit != 'true'
+        run: |
+          cargo install --locked uniffi-bindgen-go \
+            --git https://github.com/NordSecurity/uniffi-bindgen-go --tag "$UNIFFI_BINDGEN_GO"
+          cargo install --locked uniffi-bindgen-cs \
+            --git https://github.com/NordSecurity/uniffi-bindgen-cs --tag "$UNIFFI_BINDGEN_CS"
+          cargo install --locked uniffi-bindgen-java --version "$UNIFFI_BINDGEN_JAVA"
+      - run: bash scripts/sdk-bindings.sh native/libpassbolt_ffi.so bindings
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings
+          path: bindings/
+
+  python:
+    name: Python (${{ matrix.target }}, ${{ matrix.os }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64, smoke: true }
+          - { os: ubuntu-22.04-arm, target: aarch64, smoke: true }
+          - { os: macos-14, target: x86_64, smoke: false }
+          - { os: macos-14, target: aarch64, smoke: true }
+          - { os: windows-2022, target: x64, smoke: true }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: crates/passbolt-ffi
+          target: ${{ matrix.target }}
+          manylinux: "2_28"
+          args: --release --locked --out dist
+      - name: Smoke test
+        if: matrix.smoke
+        shell: bash
+        run: |
+          python -m pip install --no-index --find-links crates/passbolt-ffi/dist passbolt-sdk
+          python packaging/smoke/smoke.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-python-${{ matrix.os }}-${{ matrix.target }}
+          path: crates/passbolt-ffi/dist/*.whl
+
+  js:
+    name: JavaScript / TypeScript
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The CLI must match the wasm-bindgen version of Cargo.lock.
+      - name: Install wasm-bindgen
+        run: |
+          version=$(cargo metadata --format-version 1 --locked \
+            | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version')
+          cargo install wasm-bindgen-cli --version "$version" --locked
+      - run: cargo build --release --locked -p passbolt-wasm --target wasm32-unknown-unknown
+      - name: Package
+        run: |
+          pkg=build/js
+          wasm=target/wasm32-unknown-unknown/release/passbolt_wasm.wasm
+          mkdir -p "$pkg" dist
+          cp packaging/js/package.json packaging/js/README.md LICENSE "$pkg/"
+          wasm-bindgen --target bundler --out-dir "$pkg/bundler" "$wasm"
+          wasm-bindgen --target nodejs --out-dir "$pkg/node" "$wasm"
+          npm pkg set --prefix "$pkg" version="${{ needs.version.outputs.sdk }}"
+          npm pack "./$pkg" --pack-destination dist
+      - name: Smoke test
+        run: |
+          mkdir -p build/smoke && cd build/smoke
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund ../../dist/*.tgz
+          cp ../../packaging/smoke/smoke.cjs . && node smoke.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-js
+          path: dist/*.tgz
+
+  java:
+    name: Java
+    needs: [version, bindings]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings
+          path: bindings
+      - name: Package
+        run: |
+          curl -fsSLo jna.jar "https://repo1.maven.org/maven2/net/java/dev/jna/jna/$JNA/jna-$JNA.jar"
+          # JNA looks for the library under <os>-<arch>/ on the classpath.
+          declare -A prefix=(
+            [x86_64-unknown-linux-gnu]=linux-x86-64 [aarch64-unknown-linux-gnu]=linux-aarch64
+            [x86_64-apple-darwin]=darwin-x86-64 [aarch64-apple-darwin]=darwin-aarch64
+            [x86_64-pc-windows-msvc]=win32-x86-64
+          )
+          for target in "${!prefix[@]}"; do
+            mkdir -p "build/resources/${prefix[$target]}"
+            find "native/native-$target" \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) \
+              -exec cp {} "build/resources/${prefix[$target]}/" \;
+          done
+          name="passbolt-sdk-${{ needs.version.outputs.sdk }}"
+          mkdir -p build/classes dist
+          javac --release 21 -nowarn -cp jna.jar -d build/classes $(find bindings/java -name '*.java')
+          jar --create --file "dist/$name.jar" -C build/classes . -C build/resources .
+          jar --create --file "dist/$name-sources.jar" -C bindings/java .
+          cp jna.jar "dist/jna-$JNA.jar"
+      - name: Smoke test
+        run: |
+          javac -cp "dist/*" -d build/smoke packaging/smoke/Smoke.java
+          java -cp "dist/*:build/smoke" Smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-java
+          path: dist/*
+
+  dotnet:
+    name: .NET
+    needs: [version, bindings]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings
+          path: bindings
+      - name: Package
+        run: |
+          pkg=build/dotnet
+          mkdir -p "$pkg/generated"
+          cp packaging/dotnet/Passbolt.Sdk.csproj "$pkg/"
+          cp -r bindings/csharp/. "$pkg/generated/"
+          declare -A rid=(
+            [x86_64-unknown-linux-gnu]=linux-x64 [aarch64-unknown-linux-gnu]=linux-arm64
+            [x86_64-apple-darwin]=osx-x64 [aarch64-apple-darwin]=osx-arm64
+            [x86_64-pc-windows-msvc]=win-x64
+          )
+          for target in "${!rid[@]}"; do
+            mkdir -p "$pkg/runtimes/${rid[$target]}/native"
+            find "native/native-$target" \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) \
+              -exec cp {} "$pkg/runtimes/${rid[$target]}/native/" \;
+          done
+          dotnet pack "$pkg" -c Release -p:Version="${{ needs.version.outputs.sdk }}" -o dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-dotnet
+          path: dist/*.nupkg
+
+  go:
+    name: Go
+    needs: [version, bindings]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings
+          path: bindings
+      # A module linking the static library of each platform; Windows is not covered (cgo
+      # uses MinGW, the library is built with MSVC).
+      - name: Package
+        run: |
+          pkg=build/go/passbolt-sdk-go
+          mkdir -p "$pkg" dist
+          find bindings/go \( -name '*.go' -o -name '*.h' \) -exec cp {} "$pkg/" \;
+          printf 'module github.com/passbolt/passbolt-sdk-go\n\ngo 1.21\n' > "$pkg/go.mod"
+          declare -A platform=(
+            [x86_64-unknown-linux-gnu]=linux_amd64 [aarch64-unknown-linux-gnu]=linux_arm64
+            [x86_64-apple-darwin]=darwin_amd64 [aarch64-apple-darwin]=darwin_arm64
+          )
+          for target in "${!platform[@]}"; do
+            p="${platform[$target]}"
+            mkdir -p "$pkg/lib/$p"
+            cp "native/native-$target/libpassbolt_ffi.a" "$pkg/lib/$p/"
+            {
+              echo "//go:build ${p%_*} && ${p#*_}"
+              echo
+              echo "package passbolt"
+              echo
+              echo "// #cgo LDFLAGS: -L\${SRCDIR}/lib/$p -lpassbolt_ffi $(cat "native/native-$target/native-static-libs.txt")"
+              echo 'import "C"'
+            } > "$pkg/link_$p.go"
+          done
+          cp LICENSE "$pkg/"
+          tar czf "dist/passbolt-sdk-go-${{ needs.version.outputs.sdk }}.tar.gz" -C build/go passbolt-sdk-go
+      - name: Smoke test
+        run: |
+          mkdir -p build/smoke && cd build/smoke
+          printf 'module smoke\n\ngo 1.21\n\nrequire github.com/passbolt/passbolt-sdk-go v0.0.0\n\nreplace github.com/passbolt/passbolt-sdk-go => ../go/passbolt-sdk-go\n' > go.mod
+          printf 'package main\n\nimport _ "github.com/passbolt/passbolt-sdk-go"\n\nfunc main() {}\n' > main.go
+          CGO_ENABLED=1 go build -o smoke . && ./smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-go
+          path: dist/*
+
+  ruby:
+    name: Ruby
+    needs: [version, bindings]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings
+          path: bindings
+      - name: Package
+        run: |
+          pkg=build/ruby
+          mkdir -p "$pkg/lib" dist
+          cp packaging/ruby/passbolt-sdk.gemspec LICENSE "$pkg/"
+          cp packaging/ruby/passbolt_sdk.rb "$pkg/lib/"
+          # Load the library shipped in the gem, not one from the system library path.
+          sed "s/ffi_lib 'passbolt_ffi'/ffi_lib PASSBOLT_FFI_LIBRARY/" bindings/ruby/passbolt_ffi.rb \
+            > "$pkg/lib/passbolt_ffi.rb"
+          grep -q "ffi_lib PASSBOLT_FFI_LIBRARY" "$pkg/lib/passbolt_ffi.rb"
+          # FFI::Platform::OS-ARCH, as lib/passbolt_sdk.rb looks it up.
+          declare -A platform=(
+            [x86_64-unknown-linux-gnu]=linux-x86_64 [aarch64-unknown-linux-gnu]=linux-aarch64
+            [x86_64-apple-darwin]=darwin-x86_64 [aarch64-apple-darwin]=darwin-aarch64
+            [x86_64-pc-windows-msvc]=windows-x86_64
+          )
+          for target in "${!platform[@]}"; do
+            mkdir -p "$pkg/lib/native/${platform[$target]}"
+            find "native/native-$target" \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) \
+              -exec cp {} "$pkg/lib/native/${platform[$target]}/" \;
+          done
+          (cd "$pkg" && SDK_VERSION="${{ needs.version.outputs.sdk }}" gem build passbolt-sdk.gemspec)
+          mv "$pkg"/*.gem dist/
+      - name: Smoke test
+        run: |
+          gem install --no-document dist/*.gem
+          ruby -e '
+            require "passbolt_sdk"
+            begin
+              PassboltFfi.get_key_fingerprint("not a key")
+            rescue StandardError => e
+              puts "ok: #{e.class}"
+            else
+              abort "expected a crypto error"
+            end'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-ruby
+          path: dist/*.gem
+
+  ios:
+    name: iOS
+    needs: [version, bindings]
+    runs-on: macos-14
+    env:
+      TARGETS: aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings
+          path: bindings
+      - name: Static libraries
+        run: |
+          for target in $TARGETS; do
+            cargo rustc --release --locked -p passbolt-ffi --lib --crate-type staticlib --target "$target"
+          done
+      - name: Package
+        run: |
+          pkg=build/PassboltSDK
+          mkdir -p build/headers build/simulator "$pkg/Sources/PassboltSDK" dist
+          cp bindings/swift/passbolt_ffiFFI.h build/headers/
+          cp bindings/swift/passbolt_ffiFFI.modulemap build/headers/module.modulemap
+          lipo -create \
+            target/aarch64-apple-ios-sim/release/libpassbolt_ffi.a \
+            target/x86_64-apple-ios/release/libpassbolt_ffi.a \
+            -output build/simulator/libpassbolt_ffi.a
+          xcodebuild -create-xcframework \
+            -library target/aarch64-apple-ios/release/libpassbolt_ffi.a -headers build/headers \
+            -library build/simulator/libpassbolt_ffi.a -headers build/headers \
+            -output "$pkg/passbolt_ffiFFI.xcframework"
+          cp bindings/swift/passbolt_ffi.swift "$pkg/Sources/PassboltSDK/"
+          cp packaging/swift/Package.swift LICENSE "$pkg/"
+          (cd build && zip -qry "../dist/PassboltSDK-ios-${{ needs.version.outputs.sdk }}.zip" PassboltSDK)
+      - name: Smoke test
+        working-directory: build/PassboltSDK
+        run: xcodebuild build -scheme PassboltSDK -destination 'generic/platform=iOS Simulator' -quiet
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-ios
+          path: dist/*
+
+  android:
+    name: Android
+    needs: [version, bindings]
+    runs-on: ubuntu-22.04
+    env:
+      # 16 KB pages, required by Android 15 devices.
+      CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS: -C link-arg=-Wl,-z,max-page-size=16384
+      CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS: -C link-arg=-Wl,-z,max-page-size=16384
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings
+          path: bindings
+      - run: cargo install --locked cargo-ndk --version "$CARGO_NDK"
+      - name: Native libraries
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: |
+          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 -o build/android/jniLibs \
+            build --release --locked -p passbolt-ffi --lib
+      # Kotlin sources and jniLibs/, for an Android module depending on net.java.dev.jna:jna (aar).
+      - name: Package
+        run: |
+          pkg=build/android
+          mkdir -p "$pkg/kotlin" dist
+          cp -r bindings/kotlin/. "$pkg/kotlin/"
+          cp LICENSE "$pkg/"
+          (cd build && zip -qr "../dist/passbolt-sdk-android-${{ needs.version.outputs.sdk }}.zip" android)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-android
+          path: dist/*
+
+  # Everything in one artifact; a tag also publishes it as a GitHub release.
+  payload:
+    name: Payload
+    needs: [version, native, python, js, java, dotnet, go, ruby, ios, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: payload/cli
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sdk-*
+          path: payload/sdk
+          merge-multiple: true
+      - name: Checksums
+        working-directory: payload
+        run: find . -type f ! -name SHA256SUMS -printf '%P\n' | sort | xargs sha256sum > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: passbolt-${{ needs.version.outputs.sdk }}
+          path: payload/
+      - name: GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes \
+            payload/SHA256SUMS payload/cli/* payload/sdk/*
