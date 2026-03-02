@@ -1,7 +1,8 @@
 name: SDK and CLI builds
 
 # Builds the CLI for every desktop platform and the SDK for JS/TS, Python, Java, Go, .NET,
-# Ruby, iOS and Android. Each run uploads one `passbolt-<version>` payload with all of them.
+# Ruby, iOS and Android. Each run uploads one `passbolt-<version>` payload with all of them;
+# a `v*` tag also attaches it to a GitHub release.
 
 on:
   push:
@@ -526,11 +527,13 @@ jobs:
           name: sdk-android
           path: dist/*
 
-  # Everything in one artifact.
+  # Everything in one artifact; a tag also publishes it as a GitHub release.
   payload:
     name: Payload
     needs: [version, native, python, js, java, dotnet, go, ruby, ios, android]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -549,3 +552,10 @@ jobs:
         with:
           name: passbolt-${{ needs.version.outputs.sdk }}
           path: payload/
+      - name: GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes \
+            payload/SHA256SUMS payload/cli/* payload/sdk/*

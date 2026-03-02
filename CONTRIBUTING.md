@@ -82,6 +82,11 @@ If you have any suggestions or want to get involved in other ways feel free to g
 * Every new `.rs` file must start with the Passbolt license header: run `bash scripts/license-headers.sh`
   (or `bash scripts/license-headers.sh --fix` to add it).
 * Never log or print secrets (passphrases, private keys, decrypted secrets), even in `--debug` mode.
+* `.github/workflows/sdk.yml` builds the CLI for each platform and the SDK packages (JS/TS, Python, Java,
+  Go, .NET, Ruby, iOS, Android) into one `passbolt-<version>` artifact; a `v*` tag makes it a GitHub
+  release. A change to `passbolt-ffi` or `passbolt-wasm` runs it on the pull request. To generate the
+  bindings locally: `bash scripts/sdk-bindings.sh target/release/libpassbolt_ffi.so bindings [language...]`
+  (Go, C# and Java need their generators, at the versions the workflow pins).
 
 #### Submitting Changes
 
