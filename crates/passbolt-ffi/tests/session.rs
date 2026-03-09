@@ -35,6 +35,9 @@ const METADATA_PRIVATE: &str =
 const ADA_ID: &str = "8b6c3a10-0000-4000-8000-00000000a0da";
 const RESOURCE_ID: &str = "7a5b2c30-0000-4000-8000-0000000000e1";
 const PASSWORD_AND_DESCRIPTION_ID: &str = "a28a04cd-6f53-518a-967c-9963bf9cec51";
+const FOLDER_ID: &str = "5f6e7d8c-0000-4000-8000-0000000000f1";
+
+const FOLDER: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/folder.json");
 
 /// A wiremock Passbolt and the runtime serving it: the client blocks on its own runtime.
 struct Passbolt {
@@ -131,7 +134,7 @@ impl Passbolt {
         PassboltClient::login(self.server.uri(), ADA_PRIVATE.into(), ADA_PASSPHRASE.into()).unwrap()
     }
 
-    fn requests(&self, http_method: &str, url_path: &str) -> Vec<Value> {
+    fn received(&self, http_method: &str, url_path: &str) -> Vec<Request> {
         self.runtime
             .block_on(self.server.received_requests())
             .unwrap_or_default()
@@ -139,7 +142,20 @@ impl Passbolt {
             .filter(|request| {
                 request.method.as_str() == http_method && request.url.path() == url_path
             })
+            .collect()
+    }
+
+    fn requests(&self, http_method: &str, url_path: &str) -> Vec<Value> {
+        self.received(http_method, url_path)
+            .into_iter()
             .map(|request| serde_json::from_slice(&request.body).unwrap_or(Value::Null))
+            .collect()
+    }
+
+    fn queries(&self, http_method: &str, url_path: &str) -> Vec<String> {
+        self.received(http_method, url_path)
+            .into_iter()
+            .map(|request| request.url.query().unwrap_or_default().to_string())
             .collect()
     }
 }
@@ -201,6 +217,10 @@ fn php_quotemeta_urlencode(text: &str) -> String {
             character => vec![character],
         })
         .collect()
+}
+
+fn fixture(json: &str) -> Value {
+    serde_json::from_str(json).unwrap()
 }
 
 fn resource_types() -> Value {
@@ -460,4 +480,48 @@ fn a_missing_resource_view_keeps_the_not_found_status() {
         ),
         "{error}"
     );
+}
+
+#[test]
+fn a_folder_is_created_at_the_root() {
+    let passbolt = Passbolt::new();
+    passbolt.on("POST", "/folders.json", &fixture(FOLDER));
+
+    let folder = passbolt.login().create_folder("Ops".into(), None).unwrap();
+
+    assert_eq!(folder.id, FOLDER_ID);
+    let created = &passbolt.requests("POST", "/folders.json")[0];
+    assert_eq!(created["name"], "Ops");
+    assert_eq!(created["folder_parent_id"], Value::Null);
+}
+
+#[test]
+fn a_folder_is_renamed() {
+    let passbolt = Passbolt::new();
+    let folder_path = format!("/folders/{FOLDER_ID}.json");
+    passbolt.on("PUT", &folder_path, &fixture(FOLDER));
+
+    passbolt
+        .login()
+        .rename_folder(FOLDER_ID.into(), "Infra".into())
+        .unwrap();
+
+    assert_eq!(
+        passbolt.requests("PUT", &folder_path),
+        [json!({"name": "Infra"})]
+    );
+}
+
+#[test]
+fn a_folder_is_deleted_with_its_content() {
+    let passbolt = Passbolt::new();
+    let folder_path = format!("/folders/{FOLDER_ID}.json");
+    passbolt.on("DELETE", &folder_path, &Value::Null);
+
+    passbolt
+        .login()
+        .delete_folder_with_content(FOLDER_ID.into())
+        .unwrap();
+
+    assert_eq!(passbolt.queries("DELETE", &folder_path), ["cascade=1"]);
 }

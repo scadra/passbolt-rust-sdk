@@ -487,11 +487,55 @@ impl PassboltClient {
         Ok(FfiFolder::from(folder))
     }
 
-    /// Delete a folder.
+    /// Create a folder, at the root or in `folder_parent_id`; in a parent folder it gets the
+    /// parent's permissions.
+    pub fn create_folder(
+        &self,
+        name: String,
+        folder_parent_id: Option<String>,
+    ) -> Result<FfiFolder, PassboltFfiError> {
+        let folder = RUNTIME
+            .block_on(passbolt_sdk::folder::create::create_folder(
+                &self.inner,
+                &name,
+                folder_parent_id.as_deref(),
+            ))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiFolder::from(folder))
+    }
+
+    /// Rename a folder.
+    pub fn rename_folder(&self, id: String, name: String) -> Result<FfiFolder, PassboltFfiError> {
+        let payload = passbolt_sdk::types::UpdateFolderPayload { name };
+        let folder = RUNTIME
+            .block_on(self.inner.update_folder(&id, &payload))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiFolder::from(folder))
+    }
+
+    /// Delete a folder; its content moves to the root.
     pub fn delete_folder(&self, id: String) -> Result<(), PassboltFfiError> {
         RUNTIME
             .block_on(self.inner.delete_folder(&id))
             .map_err(Into::into)
+    }
+
+    /// Delete a folder with its sub-folders and the resources the user may delete in them.
+    pub fn delete_folder_with_content(&self, id: String) -> Result<(), PassboltFfiError> {
+        RUNTIME
+            .block_on(self.inner.delete_folder_with_content(&id))
+            .map_err(Into::into)
+    }
+
+    /// Get permissions for a folder.
+    pub fn get_folder_permissions(
+        &self,
+        id: String,
+    ) -> Result<Vec<FfiPermission>, PassboltFfiError> {
+        let permissions = RUNTIME
+            .block_on(self.inner.get_folder_permissions(&id))
+            .map_err(PassboltFfiError::from)?;
+        Ok(permissions.into_iter().map(FfiPermission::from).collect())
     }
 
     /// Build a folder tree from the flat folder list.
