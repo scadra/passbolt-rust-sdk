@@ -35,9 +35,14 @@ const METADATA_PRIVATE: &str =
 const ADA_ID: &str = "8b6c3a10-0000-4000-8000-00000000a0da";
 const RESOURCE_ID: &str = "7a5b2c30-0000-4000-8000-0000000000e1";
 const PASSWORD_AND_DESCRIPTION_ID: &str = "a28a04cd-6f53-518a-967c-9963bf9cec51";
+const BETTY_ID: &str = "8b6c3a10-0000-4000-8000-000000000be7";
 const FOLDER_ID: &str = "5f6e7d8c-0000-4000-8000-0000000000f1";
+const GROUP_ID: &str = "9c7d4b20-0000-4000-8000-000000000960";
 
 const FOLDER: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/folder.json");
+const GROUP: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/group.json");
+const ROLES: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/roles.json");
+const USERS: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/users.json");
 
 /// A wiremock Passbolt and the runtime serving it: the client blocks on its own runtime.
 struct Passbolt {
@@ -524,4 +529,84 @@ fn a_folder_is_deleted_with_its_content() {
         .unwrap();
 
     assert_eq!(passbolt.queries("DELETE", &folder_path), ["cascade=1"]);
+}
+
+#[test]
+fn a_user_is_created_with_the_id_of_their_role() {
+    let passbolt = Passbolt::new();
+    passbolt.on("GET", "/roles.json", &fixture(ROLES));
+    passbolt.on("POST", "/users.json", &fixture(USERS)["betty"]);
+
+    passbolt
+        .login()
+        .create_user(
+            "betty@passbolt.test".into(),
+            "Betty".into(),
+            "Test".into(),
+            "user".into(),
+        )
+        .unwrap();
+
+    let created = &passbolt.requests("POST", "/users.json")[0];
+    assert_eq!(created["username"], "betty@passbolt.test");
+    assert_eq!(created["role_id"], "a58de6d3-f52c-5080-b79b-a601a647ac85");
+    assert_eq!(
+        created["profile"],
+        json!({"first_name": "Betty", "last_name": "Test"})
+    );
+}
+
+#[test]
+fn a_group_is_created_with_its_managers_and_members() {
+    let passbolt = Passbolt::new();
+    passbolt.on("POST", "/groups.json", &fixture(GROUP));
+
+    passbolt
+        .login()
+        .create_group("Ops".into(), vec![BETTY_ID.into()], vec![ADA_ID.into()])
+        .unwrap();
+
+    let memberships: Vec<(Value, Value)> = passbolt.requests("POST", "/groups.json")[0]
+        ["groups_users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|membership| {
+            (
+                membership["user_id"].clone(),
+                membership["is_admin"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        memberships,
+        [
+            (json!(ADA_ID), json!(true)),
+            (json!(BETTY_ID), json!(false))
+        ]
+    );
+}
+
+#[test]
+fn a_group_is_renamed() {
+    let passbolt = Passbolt::new();
+    let group_path = format!("/groups/{GROUP_ID}.json");
+    passbolt.on("GET", &group_path, &fixture(GROUP));
+    passbolt.on("PUT", &group_path, &fixture(GROUP));
+
+    passbolt
+        .login()
+        .update_group(
+            GROUP_ID.into(),
+            Some("Infra".into()),
+            vec![],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+
+    assert_eq!(
+        passbolt.requests("PUT", &group_path),
+        [json!({"name": "Infra"})]
+    );
 }

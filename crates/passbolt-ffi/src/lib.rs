@@ -598,6 +598,46 @@ impl PassboltClient {
         Ok(FfiUserDeleteDryRun::from(result))
     }
 
+    /// Create a user with the role named `role` (`user` or `admin`).
+    pub fn create_user(
+        &self,
+        username: String,
+        first_name: String,
+        last_name: String,
+        role: String,
+    ) -> Result<FfiUser, PassboltFfiError> {
+        let user = RUNTIME
+            .block_on(passbolt_sdk::user::create::create_user(
+                &self.inner,
+                &username,
+                &first_name,
+                &last_name,
+                &role,
+            ))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiUser::from(user))
+    }
+
+    /// Update a user's names or role; `None` keeps the value.
+    pub fn update_user(
+        &self,
+        id: String,
+        first_name: Option<String>,
+        last_name: Option<String>,
+        role: Option<String>,
+    ) -> Result<FfiUser, PassboltFfiError> {
+        let user = RUNTIME
+            .block_on(passbolt_sdk::user::update::update_user(
+                &self.inner,
+                &id,
+                first_name.as_deref(),
+                last_name.as_deref(),
+                role.as_deref(),
+            ))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiUser::from(user))
+    }
+
     // ── Groups ──────────────────────────────────────────────────────────
 
     /// List all groups.
@@ -632,6 +672,47 @@ impl PassboltClient {
             .block_on(self.inner.delete_group_dry_run(&id))
             .map_err(PassboltFfiError::from)?;
         Ok(FfiGroupDeleteDryRun::from(result))
+    }
+
+    /// Create a group; a manager is also a member.
+    pub fn create_group(
+        &self,
+        name: String,
+        member_ids: Vec<String>,
+        manager_ids: Vec<String>,
+    ) -> Result<FfiGroup, PassboltFfiError> {
+        let group = RUNTIME
+            .block_on(passbolt_sdk::group::create::create_group(
+                &self.inner,
+                &name,
+                &member_ids,
+                &manager_ids,
+            ))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiGroup::from(group))
+    }
+
+    /// Rename a group and change its members; new members get the secrets of the group's
+    /// resources.
+    pub fn update_group(
+        &self,
+        id: String,
+        name: Option<String>,
+        add_member_ids: Vec<String>,
+        add_manager_ids: Vec<String>,
+        remove_member_ids: Vec<String>,
+    ) -> Result<FfiGroup, PassboltFfiError> {
+        let group = RUNTIME
+            .block_on(passbolt_sdk::group::update::update_group(
+                &self.inner,
+                &id,
+                name.as_deref(),
+                &add_member_ids,
+                &add_manager_ids,
+                &remove_member_ids,
+            ))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiGroup::from(group))
     }
 
     // ── Tags ────────────────────────────────────────────────────────────
