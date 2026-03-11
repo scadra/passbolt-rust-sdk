@@ -44,9 +44,10 @@ use passbolt_sdk::{MfaProvider, PassboltSdk};
 
 use crate::mfa::{totp_provider, NON_INTERACTIVE_TOTP};
 use crate::types::{
-    FfiAro, FfiComment, FfiFavorite, FfiFolder, FfiFolderQuery, FfiFolderTreeNode, FfiGroup,
-    FfiGroupDeleteDryRun, FfiPasswordExpirySettings, FfiPermission, FfiResource, FfiResourceQuery,
-    FfiSecretData, FfiTag, FfiUser, FfiUserDeleteDryRun, FfiUserQuery,
+    FfiAro, FfiComment, FfiDeleteBlockers, FfiFavorite, FfiFolder, FfiFolderQuery,
+    FfiFolderTreeNode, FfiGroup, FfiGroupDeleteDryRun, FfiPasswordExpirySettings, FfiPermission,
+    FfiResource, FfiResourceQuery, FfiSecretData, FfiTag, FfiUser, FfiUserDeleteDryRun,
+    FfiUserQuery,
 };
 
 type Client = PassboltSdk<NativeHttpClient>;
@@ -638,6 +639,33 @@ impl PassboltClient {
         Ok(FfiUser::from(user))
     }
 
+    /// What blocks deleting the user: what they alone own or manage.
+    pub fn user_delete_blockers(&self, id: String) -> Result<FfiDeleteBlockers, PassboltFfiError> {
+        let blockers = RUNTIME
+            .block_on(self.inner.user_delete_blockers(&id))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiDeleteBlockers::from(blockers))
+    }
+
+    /// Delete a user, giving what they alone own or manage to `successor_id`, a user or a
+    /// group that already has access to it.
+    pub fn delete_user_with_transfer(
+        &self,
+        id: String,
+        successor_id: String,
+    ) -> Result<(), PassboltFfiError> {
+        RUNTIME
+            .block_on(async {
+                let blockers = self.inner.user_delete_blockers(&id).await?;
+                if blockers.is_empty() {
+                    return self.inner.delete_user(&id).await;
+                }
+                let transfer = blockers.transfer_to(&successor_id)?;
+                self.inner.delete_user_with_transfer(&id, &transfer).await
+            })
+            .map_err(Into::into)
+    }
+
     // ── Groups ──────────────────────────────────────────────────────────
 
     /// List all groups.
@@ -713,6 +741,33 @@ impl PassboltClient {
             ))
             .map_err(PassboltFfiError::from)?;
         Ok(FfiGroup::from(group))
+    }
+
+    /// What blocks deleting the group: what it alone owns.
+    pub fn group_delete_blockers(&self, id: String) -> Result<FfiDeleteBlockers, PassboltFfiError> {
+        let blockers = RUNTIME
+            .block_on(self.inner.group_delete_blockers(&id))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiDeleteBlockers::from(blockers))
+    }
+
+    /// Delete a group, giving what it alone owns to `successor_id`, a user or a group that
+    /// already has access to it.
+    pub fn delete_group_with_transfer(
+        &self,
+        id: String,
+        successor_id: String,
+    ) -> Result<(), PassboltFfiError> {
+        RUNTIME
+            .block_on(async {
+                let blockers = self.inner.group_delete_blockers(&id).await?;
+                if blockers.is_empty() {
+                    return self.inner.delete_group(&id).await;
+                }
+                let transfer = blockers.transfer_to(&successor_id)?;
+                self.inner.delete_group_with_transfer(&id, &transfer).await
+            })
+            .map_err(Into::into)
     }
 
     // ── Tags ────────────────────────────────────────────────────────────

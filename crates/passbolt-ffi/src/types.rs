@@ -481,6 +481,82 @@ impl From<types::GroupDeleteDryRun> for FfiGroupDeleteDryRun {
     }
 }
 
+/// A shared resource or folder only the deleted user or group owns, with its permissions.
+#[derive(uniffi::Record)]
+pub struct FfiOwnedItem {
+    pub id: String,
+    pub permissions: Vec<FfiPermission>,
+}
+
+impl From<passbolt_sdk::transfer::OwnedItem> for FfiOwnedItem {
+    fn from(item: passbolt_sdk::transfer::OwnedItem) -> Self {
+        Self {
+            id: item.id,
+            permissions: item
+                .permissions
+                .into_iter()
+                .map(FfiPermission::from)
+                .collect(),
+        }
+    }
+}
+
+/// A group with other members that only the deleted user manages, with its memberships.
+#[derive(uniffi::Record)]
+pub struct FfiManagedGroup {
+    pub id: String,
+    pub name: String,
+    pub groups_users: Vec<FfiGroupUser>,
+}
+
+impl From<passbolt_sdk::transfer::ManagedGroup> for FfiManagedGroup {
+    fn from(group: passbolt_sdk::transfer::ManagedGroup) -> Self {
+        Self {
+            id: group.id,
+            name: group.name,
+            groups_users: group
+                .groups_users
+                .into_iter()
+                .map(FfiGroupUser::from)
+                .collect(),
+        }
+    }
+}
+
+/// What blocks deleting a user or a group: each item needs a new owner, each group a new
+/// manager.
+#[derive(uniffi::Record)]
+pub struct FfiDeleteBlockers {
+    pub resources: Vec<FfiOwnedItem>,
+    pub folders: Vec<FfiOwnedItem>,
+    pub groups: Vec<FfiManagedGroup>,
+    /// Groups the deleted user is the only member of: deleted with them.
+    pub groups_to_delete: Vec<String>,
+}
+
+impl From<passbolt_sdk::transfer::DeleteBlockers> for FfiDeleteBlockers {
+    fn from(blockers: passbolt_sdk::transfer::DeleteBlockers) -> Self {
+        Self {
+            resources: blockers
+                .resources
+                .into_iter()
+                .map(FfiOwnedItem::from)
+                .collect(),
+            folders: blockers
+                .folders
+                .into_iter()
+                .map(FfiOwnedItem::from)
+                .collect(),
+            groups: blockers
+                .groups
+                .into_iter()
+                .map(FfiManagedGroup::from)
+                .collect(),
+            groups_to_delete: blockers.groups_to_delete,
+        }
+    }
+}
+
 // ── Query types (FFI → SDK) ────────────────────────────────────────────────
 
 #[derive(uniffi::Record)]

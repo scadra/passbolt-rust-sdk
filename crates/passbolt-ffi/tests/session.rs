@@ -36,6 +36,7 @@ const ADA_ID: &str = "8b6c3a10-0000-4000-8000-00000000a0da";
 const RESOURCE_ID: &str = "7a5b2c30-0000-4000-8000-0000000000e1";
 const PASSWORD_AND_DESCRIPTION_ID: &str = "a28a04cd-6f53-518a-967c-9963bf9cec51";
 const BETTY_ID: &str = "8b6c3a10-0000-4000-8000-000000000be7";
+const CAROL_ID: &str = "8b6c3a10-0000-4000-8000-0000000ca201";
 const FOLDER_ID: &str = "5f6e7d8c-0000-4000-8000-0000000000f1";
 const GROUP_ID: &str = "9c7d4b20-0000-4000-8000-000000000960";
 
@@ -43,6 +44,8 @@ const FOLDER: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/folder
 const GROUP: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/group.json");
 const ROLES: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/roles.json");
 const USERS: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/users.json");
+const USER_DELETE_DRY_RUN_ERRORS: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/data/user_delete_dry_run_errors.json");
 
 /// A wiremock Passbolt and the runtime serving it: the client blocks on its own runtime.
 struct Passbolt {
@@ -137,6 +140,17 @@ impl Passbolt {
 
     fn login(&self) -> Arc<PassboltClient> {
         PassboltClient::login(self.server.uri(), ADA_PRIVATE.into(), ADA_PASSPHRASE.into()).unwrap()
+    }
+
+    /// An error answer, as the server sends it: an `error` header and the failure in `body`.
+    fn on_error(&self, http_method: &str, url_path: &str, status: u16, body: &Value) {
+        let mock = Mock::given(method(http_method))
+            .and(path(url_path))
+            .respond_with(ResponseTemplate::new(status).set_body_json(json!({
+                "header": {"status": "error", "message": "The operation failed."},
+                "body": body
+            })));
+        self.runtime.block_on(mock.mount(&self.server));
     }
 
     fn received(&self, http_method: &str, url_path: &str) -> Vec<Request> {
@@ -554,6 +568,100 @@ fn a_user_is_created_with_the_id_of_their_role() {
         created["profile"],
         json!({"first_name": "Betty", "last_name": "Test"})
     );
+}
+
+#[test]
+fn the_delete_blockers_of_a_user_are_listed() {
+    let passbolt = Passbolt::new();
+    passbolt.on_error(
+        "DELETE",
+        &format!("/users/{BETTY_ID}/dry-run.json"),
+        400,
+        &fixture(USER_DELETE_DRY_RUN_ERRORS),
+    );
+
+    let blockers = passbolt
+        .login()
+        .user_delete_blockers(BETTY_ID.into())
+        .unwrap();
+
+    assert_eq!(blockers.resources.len(), 2);
+    assert_eq!(blockers.groups[0].name, "Ops");
+    assert_eq!(
+        blockers.groups_to_delete,
+        ["9c7d4b20-0000-4000-8000-000000000961"]
+    );
+}
+
+#[test]
+fn a_user_without_blockers_is_deleted_without_transfer() {
+    let passbolt = Passbolt::new();
+    let user_path = format!("/users/{BETTY_ID}.json");
+    passbolt.on(
+        "DELETE",
+        &format!("/users/{BETTY_ID}/dry-run.json"),
+        &Value::Null,
+    );
+    passbolt.on("DELETE", &user_path, &Value::Null);
+
+    passbolt
+        .login()
+        .delete_user_with_transfer(BETTY_ID.into(), CAROL_ID.into())
+        .unwrap();
+
+    assert_eq!(passbolt.requests("DELETE", &user_path), [Value::Null]);
+}
+
+#[test]
+fn a_blocked_user_gives_what_they_own_to_their_successor() {
+    let passbolt = Passbolt::new();
+    let user_path = format!("/users/{BETTY_ID}.json");
+    passbolt.on_error(
+        "DELETE",
+        &format!("/users/{BETTY_ID}/dry-run.json"),
+        400,
+        &fixture(USER_DELETE_DRY_RUN_ERRORS),
+    );
+    passbolt.on("DELETE", &user_path, &Value::Null);
+
+    passbolt
+        .login()
+        .delete_user_with_transfer(BETTY_ID.into(), CAROL_ID.into())
+        .unwrap();
+
+    assert_eq!(
+        passbolt.requests("DELETE", &user_path),
+        [json!({"transfer": {
+            "owners": [
+                {"id": "3e4f5a60-0000-4000-8000-0000000000a2", "aco_foreign_key": RESOURCE_ID},
+                {"id": "3e4f5a60-0000-4000-8000-0000000000b2", "aco_foreign_key": "7a5b2c30-0000-4000-8000-0000000000e2"}
+            ],
+            "managers": [{"id": "6d8e9f10-0000-4000-8000-0000000000c2", "group_id": GROUP_ID}]
+        }})]
+    );
+}
+
+#[test]
+fn a_successor_without_access_is_refused_before_the_deletion() {
+    let passbolt = Passbolt::new();
+    let user_path = format!("/users/{BETTY_ID}.json");
+    passbolt.on_error(
+        "DELETE",
+        &format!("/users/{BETTY_ID}/dry-run.json"),
+        400,
+        &fixture(USER_DELETE_DRY_RUN_ERRORS),
+    );
+
+    let error = passbolt
+        .login()
+        .delete_user_with_transfer(BETTY_ID.into(), ADA_ID.into())
+        .unwrap_err();
+
+    assert!(
+        matches!(error, PassboltFfiError::InvalidArgument { .. }),
+        "{error}"
+    );
+    assert_eq!(passbolt.requests("DELETE", &user_path), Vec::<Value>::new());
 }
 
 #[test]
