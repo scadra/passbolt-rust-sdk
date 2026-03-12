@@ -44,6 +44,9 @@ const FOLDER: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/folder
 const GROUP: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/group.json");
 const ROLES: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/roles.json");
 const USERS: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/users.json");
+const TAG: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/tag.json");
+const RESOURCE_TYPES: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/data/resource_types.json");
 const USER_DELETE_DRY_RUN_ERRORS: &str =
     include_str!("../../passbolt-sdk/tests/fixtures/data/user_delete_dry_run_errors.json");
 
@@ -717,4 +720,35 @@ fn a_group_is_renamed() {
         passbolt.requests("PUT", &group_path),
         [json!({"name": "Infra"})]
     );
+}
+
+#[test]
+fn the_tags_of_a_resource_are_replaced() {
+    let passbolt = Passbolt::new();
+    let tags_path = format!("/tags/{RESOURCE_ID}.json");
+    passbolt.on("POST", &tags_path, &json!([fixture(TAG)]));
+
+    let tags = passbolt
+        .login()
+        .set_resource_tags(RESOURCE_ID.into(), vec!["prod".into()])
+        .unwrap();
+
+    assert_eq!(tags[0].slug, "prod");
+    assert_eq!(
+        passbolt.requests("POST", &tags_path),
+        [json!({"tags": ["prod"]})]
+    );
+}
+
+#[test]
+fn the_resource_types_are_listed_with_their_schema() {
+    let passbolt = Passbolt::new();
+    passbolt.on("GET", "/resource-types.json", &fixture(RESOURCE_TYPES));
+
+    let resource_types = passbolt.login().list_resource_types().unwrap();
+
+    assert_eq!(resource_types[0].slug, "password-string");
+    let definition: Value =
+        serde_json::from_str(resource_types[0].definition.as_deref().unwrap()).unwrap();
+    assert_eq!(definition["resource"]["required"], json!(["name"]));
 }

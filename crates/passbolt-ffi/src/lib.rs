@@ -46,8 +46,8 @@ use crate::mfa::{totp_provider, NON_INTERACTIVE_TOTP};
 use crate::types::{
     FfiAro, FfiComment, FfiDeleteBlockers, FfiFavorite, FfiFolder, FfiFolderQuery,
     FfiFolderTreeNode, FfiGroup, FfiGroupDeleteDryRun, FfiPasswordExpirySettings, FfiPermission,
-    FfiResource, FfiResourceQuery, FfiSecretData, FfiTag, FfiUser, FfiUserDeleteDryRun,
-    FfiUserQuery,
+    FfiResource, FfiResourceQuery, FfiResourceType, FfiSecretData, FfiTag, FfiUser,
+    FfiUserDeleteDryRun, FfiUserQuery,
 };
 
 type Client = PassboltSdk<NativeHttpClient>;
@@ -792,6 +792,26 @@ impl PassboltClient {
         Ok(tags.into_iter().map(FfiTag::from).collect())
     }
 
+    /// Replace all the tags of a resource; returns its tags.
+    pub fn set_resource_tags(
+        &self,
+        resource_id: String,
+        slugs: Vec<String>,
+    ) -> Result<Vec<FfiTag>, PassboltFfiError> {
+        let tags = RUNTIME
+            .block_on(self.inner.update_resource_tags(&resource_id, &slugs))
+            .map_err(PassboltFfiError::from)?;
+        Ok(tags.into_iter().map(FfiTag::from).collect())
+    }
+
+    /// Rename a tag.
+    pub fn rename_tag(&self, id: String, slug: String) -> Result<FfiTag, PassboltFfiError> {
+        let tag = RUNTIME
+            .block_on(self.inner.update_tag(&id, &slug))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiTag::from(tag))
+    }
+
     /// Delete a tag.
     pub fn delete_tag(&self, id: String) -> Result<(), PassboltFfiError> {
         RUNTIME
@@ -869,6 +889,16 @@ impl PassboltClient {
             .block_on(self.inner.get_password_expiry_settings())
             .map_err(PassboltFfiError::from)?;
         Ok(FfiPasswordExpirySettings::from(settings))
+    }
+
+    // ── Resource types ──────────────────────────────────────────────────
+
+    /// The resource types of the server.
+    pub fn list_resource_types(&self) -> Result<Vec<FfiResourceType>, PassboltFfiError> {
+        let resource_types = RUNTIME
+            .block_on(self.inner.resource_types())
+            .map_err(PassboltFfiError::from)?;
+        Ok(resource_types.iter().map(FfiResourceType::from).collect())
     }
 
     // ── HIBP ────────────────────────────────────────────────────────────

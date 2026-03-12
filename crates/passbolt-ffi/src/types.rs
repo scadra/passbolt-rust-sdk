@@ -557,6 +557,29 @@ impl From<passbolt_sdk::transfer::DeleteBlockers> for FfiDeleteBlockers {
     }
 }
 
+/// A resource type of the server; `definition` is its JSON Schema, as JSON.
+#[derive(uniffi::Record)]
+pub struct FfiResourceType {
+    pub id: String,
+    pub slug: String,
+    pub name: Option<String>,
+    pub definition: Option<String>,
+}
+
+impl From<&types::ResourceType> for FfiResourceType {
+    fn from(resource_type: &types::ResourceType) -> Self {
+        Self {
+            id: resource_type.id.clone(),
+            slug: resource_type.slug.clone(),
+            name: resource_type.name.clone(),
+            definition: resource_type
+                .definition
+                .as_ref()
+                .map(serde_json::Value::to_string),
+        }
+    }
+}
+
 // ── Query types (FFI → SDK) ────────────────────────────────────────────────
 
 #[derive(uniffi::Record)]
