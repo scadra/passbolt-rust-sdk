@@ -481,6 +481,18 @@ impl From<types::GroupDeleteDryRun> for FfiGroupDeleteDryRun {
     }
 }
 
+impl From<FfiPasswordExpirySettings> for types::PasswordExpirySettings {
+    fn from(settings: FfiPasswordExpirySettings) -> Self {
+        Self {
+            id: settings.id,
+            default_expiry_period_days: settings.default_expiry_period_days,
+            policy_override: settings.policy_override,
+            automatic_expiry: settings.automatic_expiry,
+            automatic_update: settings.automatic_update,
+        }
+    }
+}
+
 /// A shared resource or folder only the deleted user or group owns, with its permissions.
 #[derive(uniffi::Record)]
 pub struct FfiOwnedItem {
@@ -576,6 +588,87 @@ impl From<&types::ResourceType> for FfiResourceType {
                 .definition
                 .as_ref()
                 .map(serde_json::Value::to_string),
+        }
+    }
+}
+
+/// Which metadata versions the organization creates and allows (admin settings).
+#[derive(uniffi::Record)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct FfiMetadataTypesSettings {
+    pub default_resource_types: Option<String>,
+    pub default_folder_type: Option<String>,
+    pub default_tag_type: Option<String>,
+    pub default_comment_type: Option<String>,
+    pub allow_creation_of_v5_resources: Option<bool>,
+    pub allow_creation_of_v5_folders: Option<bool>,
+    pub allow_creation_of_v5_tags: Option<bool>,
+    pub allow_creation_of_v5_comments: Option<bool>,
+    pub allow_creation_of_v4_resources: Option<bool>,
+    pub allow_creation_of_v4_folders: Option<bool>,
+    pub allow_creation_of_v4_tags: Option<bool>,
+    pub allow_creation_of_v4_comments: Option<bool>,
+}
+
+impl From<types::MetadataTypesSettings> for FfiMetadataTypesSettings {
+    fn from(settings: types::MetadataTypesSettings) -> Self {
+        Self {
+            default_resource_types: settings.default_resource_types,
+            default_folder_type: settings.default_folder_type,
+            default_tag_type: settings.default_tag_type,
+            default_comment_type: settings.default_comment_type,
+            allow_creation_of_v5_resources: settings.allow_creation_of_v5_resources,
+            allow_creation_of_v5_folders: settings.allow_creation_of_v5_folders,
+            allow_creation_of_v5_tags: settings.allow_creation_of_v5_tags,
+            allow_creation_of_v5_comments: settings.allow_creation_of_v5_comments,
+            allow_creation_of_v4_resources: settings.allow_creation_of_v4_resources,
+            allow_creation_of_v4_folders: settings.allow_creation_of_v4_folders,
+            allow_creation_of_v4_tags: settings.allow_creation_of_v4_tags,
+            allow_creation_of_v4_comments: settings.allow_creation_of_v4_comments,
+        }
+    }
+}
+
+impl From<FfiMetadataTypesSettings> for types::MetadataTypesSettings {
+    fn from(settings: FfiMetadataTypesSettings) -> Self {
+        Self {
+            default_resource_types: settings.default_resource_types,
+            default_folder_type: settings.default_folder_type,
+            default_tag_type: settings.default_tag_type,
+            default_comment_type: settings.default_comment_type,
+            allow_creation_of_v5_resources: settings.allow_creation_of_v5_resources,
+            allow_creation_of_v5_folders: settings.allow_creation_of_v5_folders,
+            allow_creation_of_v5_tags: settings.allow_creation_of_v5_tags,
+            allow_creation_of_v5_comments: settings.allow_creation_of_v5_comments,
+            allow_creation_of_v4_resources: settings.allow_creation_of_v4_resources,
+            allow_creation_of_v4_folders: settings.allow_creation_of_v4_folders,
+            allow_creation_of_v4_tags: settings.allow_creation_of_v4_tags,
+            allow_creation_of_v4_comments: settings.allow_creation_of_v4_comments,
+        }
+    }
+}
+
+/// How metadata keys are used in the organization (admin settings).
+#[derive(uniffi::Record)]
+pub struct FfiMetadataKeysSettings {
+    pub allow_usage_of_personal_keys: Option<bool>,
+    pub zero_knowledge_key_share: Option<bool>,
+}
+
+impl From<types::MetadataKeysSettings> for FfiMetadataKeysSettings {
+    fn from(settings: types::MetadataKeysSettings) -> Self {
+        Self {
+            allow_usage_of_personal_keys: settings.allow_usage_of_personal_keys,
+            zero_knowledge_key_share: settings.zero_knowledge_key_share,
+        }
+    }
+}
+
+impl From<FfiMetadataKeysSettings> for types::MetadataKeysSettings {
+    fn from(settings: FfiMetadataKeysSettings) -> Self {
+        Self {
+            allow_usage_of_personal_keys: settings.allow_usage_of_personal_keys,
+            zero_knowledge_key_share: settings.zero_knowledge_key_share,
         }
     }
 }

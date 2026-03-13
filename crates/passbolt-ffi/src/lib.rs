@@ -33,6 +33,7 @@ mod mfa;
 mod types;
 
 pub use error::PassboltFfiError;
+pub use types::{FfiMetadataKeysSettings, FfiMetadataTypesSettings, FfiPasswordExpirySettings};
 
 uniffi::setup_scaffolding!();
 
@@ -45,9 +46,9 @@ use passbolt_sdk::{MfaProvider, PassboltSdk};
 use crate::mfa::{totp_provider, NON_INTERACTIVE_TOTP};
 use crate::types::{
     FfiAro, FfiComment, FfiDeleteBlockers, FfiFavorite, FfiFolder, FfiFolderQuery,
-    FfiFolderTreeNode, FfiGroup, FfiGroupDeleteDryRun, FfiPasswordExpirySettings, FfiPermission,
-    FfiResource, FfiResourceQuery, FfiResourceType, FfiSecretData, FfiTag, FfiUser,
-    FfiUserDeleteDryRun, FfiUserQuery,
+    FfiFolderTreeNode, FfiGroup, FfiGroupDeleteDryRun, FfiPermission, FfiResource,
+    FfiResourceQuery, FfiResourceType, FfiSecretData, FfiTag, FfiUser, FfiUserDeleteDryRun,
+    FfiUserQuery,
 };
 
 type Client = PassboltSdk<NativeHttpClient>;
@@ -891,7 +892,25 @@ impl PassboltClient {
         Ok(FfiPasswordExpirySettings::from(settings))
     }
 
-    // ── Resource types ──────────────────────────────────────────────────
+    /// Create or update the password expiry settings (admin).
+    pub fn save_password_expiry_settings(
+        &self,
+        settings: FfiPasswordExpirySettings,
+    ) -> Result<FfiPasswordExpirySettings, PassboltFfiError> {
+        let saved = RUNTIME
+            .block_on(self.inner.save_password_expiry_settings(&settings.into()))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiPasswordExpirySettings::from(saved))
+    }
+
+    /// Delete the password expiry settings (admin): the defaults apply again.
+    pub fn delete_password_expiry_settings(&self, id: String) -> Result<(), PassboltFfiError> {
+        RUNTIME
+            .block_on(self.inner.delete_password_expiry_settings(&id))
+            .map_err(Into::into)
+    }
+
+    // ── Resource types and metadata settings ────────────────────────────
 
     /// The resource types of the server.
     pub fn list_resource_types(&self) -> Result<Vec<FfiResourceType>, PassboltFfiError> {
@@ -899,6 +918,46 @@ impl PassboltClient {
             .block_on(self.inner.resource_types())
             .map_err(PassboltFfiError::from)?;
         Ok(resource_types.iter().map(FfiResourceType::from).collect())
+    }
+
+    /// Which metadata versions the organization creates and allows.
+    pub fn get_metadata_types_settings(
+        &self,
+    ) -> Result<FfiMetadataTypesSettings, PassboltFfiError> {
+        let settings = RUNTIME
+            .block_on(self.inner.get_metadata_types_settings())
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiMetadataTypesSettings::from(settings))
+    }
+
+    /// Save the metadata types settings (admin).
+    pub fn save_metadata_types_settings(
+        &self,
+        settings: FfiMetadataTypesSettings,
+    ) -> Result<FfiMetadataTypesSettings, PassboltFfiError> {
+        let saved = RUNTIME
+            .block_on(self.inner.save_metadata_types_settings(&settings.into()))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiMetadataTypesSettings::from(saved))
+    }
+
+    /// How metadata keys are used in the organization.
+    pub fn get_metadata_keys_settings(&self) -> Result<FfiMetadataKeysSettings, PassboltFfiError> {
+        let settings = RUNTIME
+            .block_on(self.inner.get_metadata_keys_settings())
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiMetadataKeysSettings::from(settings))
+    }
+
+    /// Save the metadata keys settings (admin).
+    pub fn save_metadata_keys_settings(
+        &self,
+        settings: FfiMetadataKeysSettings,
+    ) -> Result<FfiMetadataKeysSettings, PassboltFfiError> {
+        let saved = RUNTIME
+            .block_on(self.inner.save_metadata_keys_settings(&settings.into()))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiMetadataKeysSettings::from(saved))
     }
 
     // ── HIBP ────────────────────────────────────────────────────────────

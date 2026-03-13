@@ -14,7 +14,10 @@
 
 use std::sync::Arc;
 
-use passbolt_ffi::{fetch_server_key, FfiLoginOptions, PassboltClient, PassboltFfiError};
+use passbolt_ffi::{
+    fetch_server_key, FfiLoginOptions, FfiMetadataKeysSettings, FfiPasswordExpirySettings,
+    PassboltClient, PassboltFfiError,
+};
 use passbolt_sdk::crypto;
 use serde_json::{json, Value};
 use wiremock::matchers::{body_string_contains, method, path};
@@ -45,6 +48,10 @@ const GROUP: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/group.j
 const ROLES: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/roles.json");
 const USERS: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/users.json");
 const TAG: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/tag.json");
+const PASSWORD_EXPIRY_SETTINGS: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/data/password_expiry_settings.json");
+const METADATA_KEYS_SETTINGS: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/data/metadata_keys_settings.json");
 const RESOURCE_TYPES: &str =
     include_str!("../../passbolt-sdk/tests/fixtures/data/resource_types.json");
 const USER_DELETE_DRY_RUN_ERRORS: &str =
@@ -741,6 +748,32 @@ fn the_tags_of_a_resource_are_replaced() {
 }
 
 #[test]
+fn the_password_expiry_settings_are_saved() {
+    let passbolt = Passbolt::new();
+    passbolt.on(
+        "POST",
+        "/password-expiry/settings.json",
+        &fixture(PASSWORD_EXPIRY_SETTINGS),
+    );
+
+    let saved = passbolt
+        .login()
+        .save_password_expiry_settings(FfiPasswordExpirySettings {
+            id: None,
+            default_expiry_period_days: Some(90),
+            policy_override: Some(false),
+            automatic_expiry: Some(true),
+            automatic_update: Some(true),
+        })
+        .unwrap();
+
+    assert_eq!(saved.default_expiry_period_days, Some(90));
+    let sent = &passbolt.requests("POST", "/password-expiry/settings.json")[0];
+    assert_eq!(sent["default_expiry_period"], 90);
+    assert_eq!(sent["automatic_expiry"], true);
+}
+
+#[test]
 fn the_resource_types_are_listed_with_their_schema() {
     let passbolt = Passbolt::new();
     passbolt.on("GET", "/resource-types.json", &fixture(RESOURCE_TYPES));
@@ -751,4 +784,27 @@ fn the_resource_types_are_listed_with_their_schema() {
     let definition: Value =
         serde_json::from_str(resource_types[0].definition.as_deref().unwrap()).unwrap();
     assert_eq!(definition["resource"]["required"], json!(["name"]));
+}
+
+#[test]
+fn the_metadata_keys_settings_are_saved() {
+    let passbolt = Passbolt::new();
+    passbolt.on(
+        "POST",
+        "/metadata/keys/settings.json",
+        &fixture(METADATA_KEYS_SETTINGS),
+    );
+
+    passbolt
+        .login()
+        .save_metadata_keys_settings(FfiMetadataKeysSettings {
+            allow_usage_of_personal_keys: Some(false),
+            zero_knowledge_key_share: Some(false),
+        })
+        .unwrap();
+
+    assert_eq!(
+        passbolt.requests("POST", "/metadata/keys/settings.json"),
+        [json!({"allow_usage_of_personal_keys": false, "zero_knowledge_key_share": false})]
+    );
 }
