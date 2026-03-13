@@ -14,7 +14,10 @@
 
 use std::sync::Arc;
 
-use passbolt_ffi::{fetch_server_key, FfiLoginOptions, PassboltClient, PassboltFfiError};
+use passbolt_ffi::{
+    fetch_server_key, FfiLoginOptions, FfiMetadataKeysSettings, FfiPasswordExpirySettings,
+    PassboltClient, PassboltFfiError,
+};
 use passbolt_sdk::crypto;
 use serde_json::{json, Value};
 use wiremock::matchers::{body_string_contains, method, path};
@@ -35,6 +38,24 @@ const METADATA_PRIVATE: &str =
 const ADA_ID: &str = "8b6c3a10-0000-4000-8000-00000000a0da";
 const RESOURCE_ID: &str = "7a5b2c30-0000-4000-8000-0000000000e1";
 const PASSWORD_AND_DESCRIPTION_ID: &str = "a28a04cd-6f53-518a-967c-9963bf9cec51";
+const BETTY_ID: &str = "8b6c3a10-0000-4000-8000-000000000be7";
+const CAROL_ID: &str = "8b6c3a10-0000-4000-8000-0000000ca201";
+const FOLDER_ID: &str = "5f6e7d8c-0000-4000-8000-0000000000f1";
+const GROUP_ID: &str = "9c7d4b20-0000-4000-8000-000000000960";
+
+const FOLDER: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/folder.json");
+const GROUP: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/group.json");
+const ROLES: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/roles.json");
+const USERS: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/users.json");
+const TAG: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/tag.json");
+const PASSWORD_EXPIRY_SETTINGS: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/data/password_expiry_settings.json");
+const METADATA_KEYS_SETTINGS: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/data/metadata_keys_settings.json");
+const RESOURCE_TYPES: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/data/resource_types.json");
+const USER_DELETE_DRY_RUN_ERRORS: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/data/user_delete_dry_run_errors.json");
 
 /// A wiremock Passbolt and the runtime serving it: the client blocks on its own runtime.
 struct Passbolt {
@@ -131,7 +152,18 @@ impl Passbolt {
         PassboltClient::login(self.server.uri(), ADA_PRIVATE.into(), ADA_PASSPHRASE.into()).unwrap()
     }
 
-    fn requests(&self, http_method: &str, url_path: &str) -> Vec<Value> {
+    /// An error answer, as the server sends it: an `error` header and the failure in `body`.
+    fn on_error(&self, http_method: &str, url_path: &str, status: u16, body: &Value) {
+        let mock = Mock::given(method(http_method))
+            .and(path(url_path))
+            .respond_with(ResponseTemplate::new(status).set_body_json(json!({
+                "header": {"status": "error", "message": "The operation failed."},
+                "body": body
+            })));
+        self.runtime.block_on(mock.mount(&self.server));
+    }
+
+    fn received(&self, http_method: &str, url_path: &str) -> Vec<Request> {
         self.runtime
             .block_on(self.server.received_requests())
             .unwrap_or_default()
@@ -139,7 +171,20 @@ impl Passbolt {
             .filter(|request| {
                 request.method.as_str() == http_method && request.url.path() == url_path
             })
+            .collect()
+    }
+
+    fn requests(&self, http_method: &str, url_path: &str) -> Vec<Value> {
+        self.received(http_method, url_path)
+            .into_iter()
             .map(|request| serde_json::from_slice(&request.body).unwrap_or(Value::Null))
+            .collect()
+    }
+
+    fn queries(&self, http_method: &str, url_path: &str) -> Vec<String> {
+        self.received(http_method, url_path)
+            .into_iter()
+            .map(|request| request.url.query().unwrap_or_default().to_string())
             .collect()
     }
 }
@@ -201,6 +246,10 @@ fn php_quotemeta_urlencode(text: &str) -> String {
             character => vec![character],
         })
         .collect()
+}
+
+fn fixture(json: &str) -> Value {
+    serde_json::from_str(json).unwrap()
 }
 
 fn resource_types() -> Value {
@@ -459,5 +508,303 @@ fn a_missing_resource_view_keeps_the_not_found_status() {
             PassboltFfiError::Api { status: 404, .. } | PassboltFfiError::NotFound { .. }
         ),
         "{error}"
+    );
+}
+
+#[test]
+fn a_folder_is_created_at_the_root() {
+    let passbolt = Passbolt::new();
+    passbolt.on("POST", "/folders.json", &fixture(FOLDER));
+
+    let folder = passbolt.login().create_folder("Ops".into(), None).unwrap();
+
+    assert_eq!(folder.id, FOLDER_ID);
+    let created = &passbolt.requests("POST", "/folders.json")[0];
+    assert_eq!(created["name"], "Ops");
+    assert_eq!(created["folder_parent_id"], Value::Null);
+}
+
+#[test]
+fn a_folder_is_renamed() {
+    let passbolt = Passbolt::new();
+    let folder_path = format!("/folders/{FOLDER_ID}.json");
+    passbolt.on("PUT", &folder_path, &fixture(FOLDER));
+
+    passbolt
+        .login()
+        .rename_folder(FOLDER_ID.into(), "Infra".into())
+        .unwrap();
+
+    assert_eq!(
+        passbolt.requests("PUT", &folder_path),
+        [json!({"name": "Infra"})]
+    );
+}
+
+#[test]
+fn a_folder_is_deleted_with_its_content() {
+    let passbolt = Passbolt::new();
+    let folder_path = format!("/folders/{FOLDER_ID}.json");
+    passbolt.on("DELETE", &folder_path, &Value::Null);
+
+    passbolt
+        .login()
+        .delete_folder_with_content(FOLDER_ID.into())
+        .unwrap();
+
+    assert_eq!(passbolt.queries("DELETE", &folder_path), ["cascade=1"]);
+}
+
+#[test]
+fn a_user_is_created_with_the_id_of_their_role() {
+    let passbolt = Passbolt::new();
+    passbolt.on("GET", "/roles.json", &fixture(ROLES));
+    passbolt.on("POST", "/users.json", &fixture(USERS)["betty"]);
+
+    passbolt
+        .login()
+        .create_user(
+            "betty@passbolt.test".into(),
+            "Betty".into(),
+            "Test".into(),
+            "user".into(),
+        )
+        .unwrap();
+
+    let created = &passbolt.requests("POST", "/users.json")[0];
+    assert_eq!(created["username"], "betty@passbolt.test");
+    assert_eq!(created["role_id"], "a58de6d3-f52c-5080-b79b-a601a647ac85");
+    assert_eq!(
+        created["profile"],
+        json!({"first_name": "Betty", "last_name": "Test"})
+    );
+}
+
+#[test]
+fn the_delete_blockers_of_a_user_are_listed() {
+    let passbolt = Passbolt::new();
+    passbolt.on_error(
+        "DELETE",
+        &format!("/users/{BETTY_ID}/dry-run.json"),
+        400,
+        &fixture(USER_DELETE_DRY_RUN_ERRORS),
+    );
+
+    let blockers = passbolt
+        .login()
+        .user_delete_blockers(BETTY_ID.into())
+        .unwrap();
+
+    assert_eq!(blockers.resources.len(), 2);
+    assert_eq!(blockers.groups[0].name, "Ops");
+    assert_eq!(
+        blockers.groups_to_delete,
+        ["9c7d4b20-0000-4000-8000-000000000961"]
+    );
+}
+
+#[test]
+fn a_user_without_blockers_is_deleted_without_transfer() {
+    let passbolt = Passbolt::new();
+    let user_path = format!("/users/{BETTY_ID}.json");
+    passbolt.on(
+        "DELETE",
+        &format!("/users/{BETTY_ID}/dry-run.json"),
+        &Value::Null,
+    );
+    passbolt.on("DELETE", &user_path, &Value::Null);
+
+    passbolt
+        .login()
+        .delete_user_with_transfer(BETTY_ID.into(), CAROL_ID.into())
+        .unwrap();
+
+    assert_eq!(passbolt.requests("DELETE", &user_path), [Value::Null]);
+}
+
+#[test]
+fn a_blocked_user_gives_what_they_own_to_their_successor() {
+    let passbolt = Passbolt::new();
+    let user_path = format!("/users/{BETTY_ID}.json");
+    passbolt.on_error(
+        "DELETE",
+        &format!("/users/{BETTY_ID}/dry-run.json"),
+        400,
+        &fixture(USER_DELETE_DRY_RUN_ERRORS),
+    );
+    passbolt.on("DELETE", &user_path, &Value::Null);
+
+    passbolt
+        .login()
+        .delete_user_with_transfer(BETTY_ID.into(), CAROL_ID.into())
+        .unwrap();
+
+    assert_eq!(
+        passbolt.requests("DELETE", &user_path),
+        [json!({"transfer": {
+            "owners": [
+                {"id": "3e4f5a60-0000-4000-8000-0000000000a2", "aco_foreign_key": RESOURCE_ID},
+                {"id": "3e4f5a60-0000-4000-8000-0000000000b2", "aco_foreign_key": "7a5b2c30-0000-4000-8000-0000000000e2"}
+            ],
+            "managers": [{"id": "6d8e9f10-0000-4000-8000-0000000000c2", "group_id": GROUP_ID}]
+        }})]
+    );
+}
+
+#[test]
+fn a_successor_without_access_is_refused_before_the_deletion() {
+    let passbolt = Passbolt::new();
+    let user_path = format!("/users/{BETTY_ID}.json");
+    passbolt.on_error(
+        "DELETE",
+        &format!("/users/{BETTY_ID}/dry-run.json"),
+        400,
+        &fixture(USER_DELETE_DRY_RUN_ERRORS),
+    );
+
+    let error = passbolt
+        .login()
+        .delete_user_with_transfer(BETTY_ID.into(), ADA_ID.into())
+        .unwrap_err();
+
+    assert!(
+        matches!(error, PassboltFfiError::InvalidArgument { .. }),
+        "{error}"
+    );
+    assert_eq!(passbolt.requests("DELETE", &user_path), Vec::<Value>::new());
+}
+
+#[test]
+fn a_group_is_created_with_its_managers_and_members() {
+    let passbolt = Passbolt::new();
+    passbolt.on("POST", "/groups.json", &fixture(GROUP));
+
+    passbolt
+        .login()
+        .create_group("Ops".into(), vec![BETTY_ID.into()], vec![ADA_ID.into()])
+        .unwrap();
+
+    let memberships: Vec<(Value, Value)> = passbolt.requests("POST", "/groups.json")[0]
+        ["groups_users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|membership| {
+            (
+                membership["user_id"].clone(),
+                membership["is_admin"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        memberships,
+        [
+            (json!(ADA_ID), json!(true)),
+            (json!(BETTY_ID), json!(false))
+        ]
+    );
+}
+
+#[test]
+fn a_group_is_renamed() {
+    let passbolt = Passbolt::new();
+    let group_path = format!("/groups/{GROUP_ID}.json");
+    passbolt.on("GET", &group_path, &fixture(GROUP));
+    passbolt.on("PUT", &group_path, &fixture(GROUP));
+
+    passbolt
+        .login()
+        .update_group(
+            GROUP_ID.into(),
+            Some("Infra".into()),
+            vec![],
+            vec![],
+            vec![],
+        )
+        .unwrap();
+
+    assert_eq!(
+        passbolt.requests("PUT", &group_path),
+        [json!({"name": "Infra"})]
+    );
+}
+
+#[test]
+fn the_tags_of_a_resource_are_replaced() {
+    let passbolt = Passbolt::new();
+    let tags_path = format!("/tags/{RESOURCE_ID}.json");
+    passbolt.on("POST", &tags_path, &json!([fixture(TAG)]));
+
+    let tags = passbolt
+        .login()
+        .set_resource_tags(RESOURCE_ID.into(), vec!["prod".into()])
+        .unwrap();
+
+    assert_eq!(tags[0].slug, "prod");
+    assert_eq!(
+        passbolt.requests("POST", &tags_path),
+        [json!({"tags": ["prod"]})]
+    );
+}
+
+#[test]
+fn the_password_expiry_settings_are_saved() {
+    let passbolt = Passbolt::new();
+    passbolt.on(
+        "POST",
+        "/password-expiry/settings.json",
+        &fixture(PASSWORD_EXPIRY_SETTINGS),
+    );
+
+    let saved = passbolt
+        .login()
+        .save_password_expiry_settings(FfiPasswordExpirySettings {
+            id: None,
+            default_expiry_period_days: Some(90),
+            policy_override: Some(false),
+            automatic_expiry: Some(true),
+            automatic_update: Some(true),
+        })
+        .unwrap();
+
+    assert_eq!(saved.default_expiry_period_days, Some(90));
+    let sent = &passbolt.requests("POST", "/password-expiry/settings.json")[0];
+    assert_eq!(sent["default_expiry_period"], 90);
+    assert_eq!(sent["automatic_expiry"], true);
+}
+
+#[test]
+fn the_resource_types_are_listed_with_their_schema() {
+    let passbolt = Passbolt::new();
+    passbolt.on("GET", "/resource-types.json", &fixture(RESOURCE_TYPES));
+
+    let resource_types = passbolt.login().list_resource_types().unwrap();
+
+    assert_eq!(resource_types[0].slug, "password-string");
+    let definition: Value =
+        serde_json::from_str(resource_types[0].definition.as_deref().unwrap()).unwrap();
+    assert_eq!(definition["resource"]["required"], json!(["name"]));
+}
+
+#[test]
+fn the_metadata_keys_settings_are_saved() {
+    let passbolt = Passbolt::new();
+    passbolt.on(
+        "POST",
+        "/metadata/keys/settings.json",
+        &fixture(METADATA_KEYS_SETTINGS),
+    );
+
+    passbolt
+        .login()
+        .save_metadata_keys_settings(FfiMetadataKeysSettings {
+            allow_usage_of_personal_keys: Some(false),
+            zero_knowledge_key_share: Some(false),
+        })
+        .unwrap();
+
+    assert_eq!(
+        passbolt.requests("POST", "/metadata/keys/settings.json"),
+        [json!({"allow_usage_of_personal_keys": false, "zero_knowledge_key_share": false})]
     );
 }

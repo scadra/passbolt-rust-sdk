@@ -33,6 +33,7 @@ mod mfa;
 mod types;
 
 pub use error::PassboltFfiError;
+pub use types::{FfiMetadataKeysSettings, FfiMetadataTypesSettings, FfiPasswordExpirySettings};
 
 uniffi::setup_scaffolding!();
 
@@ -44,9 +45,10 @@ use passbolt_sdk::{MfaProvider, PassboltSdk};
 
 use crate::mfa::{totp_provider, NON_INTERACTIVE_TOTP};
 use crate::types::{
-    FfiAro, FfiComment, FfiFavorite, FfiFolder, FfiFolderQuery, FfiFolderTreeNode, FfiGroup,
-    FfiGroupDeleteDryRun, FfiPasswordExpirySettings, FfiPermission, FfiResource, FfiResourceQuery,
-    FfiSecretData, FfiTag, FfiUser, FfiUserDeleteDryRun, FfiUserQuery,
+    FfiAro, FfiComment, FfiDeleteBlockers, FfiFavorite, FfiFolder, FfiFolderQuery,
+    FfiFolderTreeNode, FfiGroup, FfiGroupDeleteDryRun, FfiPermission, FfiResource,
+    FfiResourceQuery, FfiResourceType, FfiSecretData, FfiTag, FfiUser, FfiUserDeleteDryRun,
+    FfiUserQuery,
 };
 
 type Client = PassboltSdk<NativeHttpClient>;
@@ -487,11 +489,55 @@ impl PassboltClient {
         Ok(FfiFolder::from(folder))
     }
 
-    /// Delete a folder.
+    /// Create a folder, at the root or in `folder_parent_id`; in a parent folder it gets the
+    /// parent's permissions.
+    pub fn create_folder(
+        &self,
+        name: String,
+        folder_parent_id: Option<String>,
+    ) -> Result<FfiFolder, PassboltFfiError> {
+        let folder = RUNTIME
+            .block_on(passbolt_sdk::folder::create::create_folder(
+                &self.inner,
+                &name,
+                folder_parent_id.as_deref(),
+            ))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiFolder::from(folder))
+    }
+
+    /// Rename a folder.
+    pub fn rename_folder(&self, id: String, name: String) -> Result<FfiFolder, PassboltFfiError> {
+        let payload = passbolt_sdk::types::UpdateFolderPayload { name };
+        let folder = RUNTIME
+            .block_on(self.inner.update_folder(&id, &payload))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiFolder::from(folder))
+    }
+
+    /// Delete a folder; its content moves to the root.
     pub fn delete_folder(&self, id: String) -> Result<(), PassboltFfiError> {
         RUNTIME
             .block_on(self.inner.delete_folder(&id))
             .map_err(Into::into)
+    }
+
+    /// Delete a folder with its sub-folders and the resources the user may delete in them.
+    pub fn delete_folder_with_content(&self, id: String) -> Result<(), PassboltFfiError> {
+        RUNTIME
+            .block_on(self.inner.delete_folder_with_content(&id))
+            .map_err(Into::into)
+    }
+
+    /// Get permissions for a folder.
+    pub fn get_folder_permissions(
+        &self,
+        id: String,
+    ) -> Result<Vec<FfiPermission>, PassboltFfiError> {
+        let permissions = RUNTIME
+            .block_on(self.inner.get_folder_permissions(&id))
+            .map_err(PassboltFfiError::from)?;
+        Ok(permissions.into_iter().map(FfiPermission::from).collect())
     }
 
     /// Build a folder tree from the flat folder list.
@@ -554,6 +600,73 @@ impl PassboltClient {
         Ok(FfiUserDeleteDryRun::from(result))
     }
 
+    /// Create a user with the role named `role` (`user` or `admin`).
+    pub fn create_user(
+        &self,
+        username: String,
+        first_name: String,
+        last_name: String,
+        role: String,
+    ) -> Result<FfiUser, PassboltFfiError> {
+        let user = RUNTIME
+            .block_on(passbolt_sdk::user::create::create_user(
+                &self.inner,
+                &username,
+                &first_name,
+                &last_name,
+                &role,
+            ))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiUser::from(user))
+    }
+
+    /// Update a user's names or role; `None` keeps the value.
+    pub fn update_user(
+        &self,
+        id: String,
+        first_name: Option<String>,
+        last_name: Option<String>,
+        role: Option<String>,
+    ) -> Result<FfiUser, PassboltFfiError> {
+        let user = RUNTIME
+            .block_on(passbolt_sdk::user::update::update_user(
+                &self.inner,
+                &id,
+                first_name.as_deref(),
+                last_name.as_deref(),
+                role.as_deref(),
+            ))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiUser::from(user))
+    }
+
+    /// What blocks deleting the user: what they alone own or manage.
+    pub fn user_delete_blockers(&self, id: String) -> Result<FfiDeleteBlockers, PassboltFfiError> {
+        let blockers = RUNTIME
+            .block_on(self.inner.user_delete_blockers(&id))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiDeleteBlockers::from(blockers))
+    }
+
+    /// Delete a user, giving what they alone own or manage to `successor_id`, a user or a
+    /// group that already has access to it.
+    pub fn delete_user_with_transfer(
+        &self,
+        id: String,
+        successor_id: String,
+    ) -> Result<(), PassboltFfiError> {
+        RUNTIME
+            .block_on(async {
+                let blockers = self.inner.user_delete_blockers(&id).await?;
+                if blockers.is_empty() {
+                    return self.inner.delete_user(&id).await;
+                }
+                let transfer = blockers.transfer_to(&successor_id)?;
+                self.inner.delete_user_with_transfer(&id, &transfer).await
+            })
+            .map_err(Into::into)
+    }
+
     // ── Groups ──────────────────────────────────────────────────────────
 
     /// List all groups.
@@ -590,6 +703,74 @@ impl PassboltClient {
         Ok(FfiGroupDeleteDryRun::from(result))
     }
 
+    /// Create a group; a manager is also a member.
+    pub fn create_group(
+        &self,
+        name: String,
+        member_ids: Vec<String>,
+        manager_ids: Vec<String>,
+    ) -> Result<FfiGroup, PassboltFfiError> {
+        let group = RUNTIME
+            .block_on(passbolt_sdk::group::create::create_group(
+                &self.inner,
+                &name,
+                &member_ids,
+                &manager_ids,
+            ))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiGroup::from(group))
+    }
+
+    /// Rename a group and change its members; new members get the secrets of the group's
+    /// resources.
+    pub fn update_group(
+        &self,
+        id: String,
+        name: Option<String>,
+        add_member_ids: Vec<String>,
+        add_manager_ids: Vec<String>,
+        remove_member_ids: Vec<String>,
+    ) -> Result<FfiGroup, PassboltFfiError> {
+        let group = RUNTIME
+            .block_on(passbolt_sdk::group::update::update_group(
+                &self.inner,
+                &id,
+                name.as_deref(),
+                &add_member_ids,
+                &add_manager_ids,
+                &remove_member_ids,
+            ))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiGroup::from(group))
+    }
+
+    /// What blocks deleting the group: what it alone owns.
+    pub fn group_delete_blockers(&self, id: String) -> Result<FfiDeleteBlockers, PassboltFfiError> {
+        let blockers = RUNTIME
+            .block_on(self.inner.group_delete_blockers(&id))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiDeleteBlockers::from(blockers))
+    }
+
+    /// Delete a group, giving what it alone owns to `successor_id`, a user or a group that
+    /// already has access to it.
+    pub fn delete_group_with_transfer(
+        &self,
+        id: String,
+        successor_id: String,
+    ) -> Result<(), PassboltFfiError> {
+        RUNTIME
+            .block_on(async {
+                let blockers = self.inner.group_delete_blockers(&id).await?;
+                if blockers.is_empty() {
+                    return self.inner.delete_group(&id).await;
+                }
+                let transfer = blockers.transfer_to(&successor_id)?;
+                self.inner.delete_group_with_transfer(&id, &transfer).await
+            })
+            .map_err(Into::into)
+    }
+
     // ── Tags ────────────────────────────────────────────────────────────
 
     /// List all tags.
@@ -610,6 +791,26 @@ impl PassboltClient {
             .block_on(self.inner.add_tag_to_resource(&resource_id, &slug))
             .map_err(PassboltFfiError::from)?;
         Ok(tags.into_iter().map(FfiTag::from).collect())
+    }
+
+    /// Replace all the tags of a resource; returns its tags.
+    pub fn set_resource_tags(
+        &self,
+        resource_id: String,
+        slugs: Vec<String>,
+    ) -> Result<Vec<FfiTag>, PassboltFfiError> {
+        let tags = RUNTIME
+            .block_on(self.inner.update_resource_tags(&resource_id, &slugs))
+            .map_err(PassboltFfiError::from)?;
+        Ok(tags.into_iter().map(FfiTag::from).collect())
+    }
+
+    /// Rename a tag.
+    pub fn rename_tag(&self, id: String, slug: String) -> Result<FfiTag, PassboltFfiError> {
+        let tag = RUNTIME
+            .block_on(self.inner.update_tag(&id, &slug))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiTag::from(tag))
     }
 
     /// Delete a tag.
@@ -689,6 +890,74 @@ impl PassboltClient {
             .block_on(self.inner.get_password_expiry_settings())
             .map_err(PassboltFfiError::from)?;
         Ok(FfiPasswordExpirySettings::from(settings))
+    }
+
+    /// Create or update the password expiry settings (admin).
+    pub fn save_password_expiry_settings(
+        &self,
+        settings: FfiPasswordExpirySettings,
+    ) -> Result<FfiPasswordExpirySettings, PassboltFfiError> {
+        let saved = RUNTIME
+            .block_on(self.inner.save_password_expiry_settings(&settings.into()))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiPasswordExpirySettings::from(saved))
+    }
+
+    /// Delete the password expiry settings (admin): the defaults apply again.
+    pub fn delete_password_expiry_settings(&self, id: String) -> Result<(), PassboltFfiError> {
+        RUNTIME
+            .block_on(self.inner.delete_password_expiry_settings(&id))
+            .map_err(Into::into)
+    }
+
+    // ── Resource types and metadata settings ────────────────────────────
+
+    /// The resource types of the server.
+    pub fn list_resource_types(&self) -> Result<Vec<FfiResourceType>, PassboltFfiError> {
+        let resource_types = RUNTIME
+            .block_on(self.inner.resource_types())
+            .map_err(PassboltFfiError::from)?;
+        Ok(resource_types.iter().map(FfiResourceType::from).collect())
+    }
+
+    /// Which metadata versions the organization creates and allows.
+    pub fn get_metadata_types_settings(
+        &self,
+    ) -> Result<FfiMetadataTypesSettings, PassboltFfiError> {
+        let settings = RUNTIME
+            .block_on(self.inner.get_metadata_types_settings())
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiMetadataTypesSettings::from(settings))
+    }
+
+    /// Save the metadata types settings (admin).
+    pub fn save_metadata_types_settings(
+        &self,
+        settings: FfiMetadataTypesSettings,
+    ) -> Result<FfiMetadataTypesSettings, PassboltFfiError> {
+        let saved = RUNTIME
+            .block_on(self.inner.save_metadata_types_settings(&settings.into()))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiMetadataTypesSettings::from(saved))
+    }
+
+    /// How metadata keys are used in the organization.
+    pub fn get_metadata_keys_settings(&self) -> Result<FfiMetadataKeysSettings, PassboltFfiError> {
+        let settings = RUNTIME
+            .block_on(self.inner.get_metadata_keys_settings())
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiMetadataKeysSettings::from(settings))
+    }
+
+    /// Save the metadata keys settings (admin).
+    pub fn save_metadata_keys_settings(
+        &self,
+        settings: FfiMetadataKeysSettings,
+    ) -> Result<FfiMetadataKeysSettings, PassboltFfiError> {
+        let saved = RUNTIME
+            .block_on(self.inner.save_metadata_keys_settings(&settings.into()))
+            .map_err(PassboltFfiError::from)?;
+        Ok(FfiMetadataKeysSettings::from(saved))
     }
 
     // ── HIBP ────────────────────────────────────────────────────────────

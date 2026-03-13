@@ -481,6 +481,198 @@ impl From<types::GroupDeleteDryRun> for FfiGroupDeleteDryRun {
     }
 }
 
+impl From<FfiPasswordExpirySettings> for types::PasswordExpirySettings {
+    fn from(settings: FfiPasswordExpirySettings) -> Self {
+        Self {
+            id: settings.id,
+            default_expiry_period_days: settings.default_expiry_period_days,
+            policy_override: settings.policy_override,
+            automatic_expiry: settings.automatic_expiry,
+            automatic_update: settings.automatic_update,
+        }
+    }
+}
+
+/// A shared resource or folder only the deleted user or group owns, with its permissions.
+#[derive(uniffi::Record)]
+pub struct FfiOwnedItem {
+    pub id: String,
+    pub permissions: Vec<FfiPermission>,
+}
+
+impl From<passbolt_sdk::transfer::OwnedItem> for FfiOwnedItem {
+    fn from(item: passbolt_sdk::transfer::OwnedItem) -> Self {
+        Self {
+            id: item.id,
+            permissions: item
+                .permissions
+                .into_iter()
+                .map(FfiPermission::from)
+                .collect(),
+        }
+    }
+}
+
+/// A group with other members that only the deleted user manages, with its memberships.
+#[derive(uniffi::Record)]
+pub struct FfiManagedGroup {
+    pub id: String,
+    pub name: String,
+    pub groups_users: Vec<FfiGroupUser>,
+}
+
+impl From<passbolt_sdk::transfer::ManagedGroup> for FfiManagedGroup {
+    fn from(group: passbolt_sdk::transfer::ManagedGroup) -> Self {
+        Self {
+            id: group.id,
+            name: group.name,
+            groups_users: group
+                .groups_users
+                .into_iter()
+                .map(FfiGroupUser::from)
+                .collect(),
+        }
+    }
+}
+
+/// What blocks deleting a user or a group: each item needs a new owner, each group a new
+/// manager.
+#[derive(uniffi::Record)]
+pub struct FfiDeleteBlockers {
+    pub resources: Vec<FfiOwnedItem>,
+    pub folders: Vec<FfiOwnedItem>,
+    pub groups: Vec<FfiManagedGroup>,
+    /// Groups the deleted user is the only member of: deleted with them.
+    pub groups_to_delete: Vec<String>,
+}
+
+impl From<passbolt_sdk::transfer::DeleteBlockers> for FfiDeleteBlockers {
+    fn from(blockers: passbolt_sdk::transfer::DeleteBlockers) -> Self {
+        Self {
+            resources: blockers
+                .resources
+                .into_iter()
+                .map(FfiOwnedItem::from)
+                .collect(),
+            folders: blockers
+                .folders
+                .into_iter()
+                .map(FfiOwnedItem::from)
+                .collect(),
+            groups: blockers
+                .groups
+                .into_iter()
+                .map(FfiManagedGroup::from)
+                .collect(),
+            groups_to_delete: blockers.groups_to_delete,
+        }
+    }
+}
+
+/// A resource type of the server; `definition` is its JSON Schema, as JSON.
+#[derive(uniffi::Record)]
+pub struct FfiResourceType {
+    pub id: String,
+    pub slug: String,
+    pub name: Option<String>,
+    pub definition: Option<String>,
+}
+
+impl From<&types::ResourceType> for FfiResourceType {
+    fn from(resource_type: &types::ResourceType) -> Self {
+        Self {
+            id: resource_type.id.clone(),
+            slug: resource_type.slug.clone(),
+            name: resource_type.name.clone(),
+            definition: resource_type
+                .definition
+                .as_ref()
+                .map(serde_json::Value::to_string),
+        }
+    }
+}
+
+/// Which metadata versions the organization creates and allows (admin settings).
+#[derive(uniffi::Record)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct FfiMetadataTypesSettings {
+    pub default_resource_types: Option<String>,
+    pub default_folder_type: Option<String>,
+    pub default_tag_type: Option<String>,
+    pub default_comment_type: Option<String>,
+    pub allow_creation_of_v5_resources: Option<bool>,
+    pub allow_creation_of_v5_folders: Option<bool>,
+    pub allow_creation_of_v5_tags: Option<bool>,
+    pub allow_creation_of_v5_comments: Option<bool>,
+    pub allow_creation_of_v4_resources: Option<bool>,
+    pub allow_creation_of_v4_folders: Option<bool>,
+    pub allow_creation_of_v4_tags: Option<bool>,
+    pub allow_creation_of_v4_comments: Option<bool>,
+}
+
+impl From<types::MetadataTypesSettings> for FfiMetadataTypesSettings {
+    fn from(settings: types::MetadataTypesSettings) -> Self {
+        Self {
+            default_resource_types: settings.default_resource_types,
+            default_folder_type: settings.default_folder_type,
+            default_tag_type: settings.default_tag_type,
+            default_comment_type: settings.default_comment_type,
+            allow_creation_of_v5_resources: settings.allow_creation_of_v5_resources,
+            allow_creation_of_v5_folders: settings.allow_creation_of_v5_folders,
+            allow_creation_of_v5_tags: settings.allow_creation_of_v5_tags,
+            allow_creation_of_v5_comments: settings.allow_creation_of_v5_comments,
+            allow_creation_of_v4_resources: settings.allow_creation_of_v4_resources,
+            allow_creation_of_v4_folders: settings.allow_creation_of_v4_folders,
+            allow_creation_of_v4_tags: settings.allow_creation_of_v4_tags,
+            allow_creation_of_v4_comments: settings.allow_creation_of_v4_comments,
+        }
+    }
+}
+
+impl From<FfiMetadataTypesSettings> for types::MetadataTypesSettings {
+    fn from(settings: FfiMetadataTypesSettings) -> Self {
+        Self {
+            default_resource_types: settings.default_resource_types,
+            default_folder_type: settings.default_folder_type,
+            default_tag_type: settings.default_tag_type,
+            default_comment_type: settings.default_comment_type,
+            allow_creation_of_v5_resources: settings.allow_creation_of_v5_resources,
+            allow_creation_of_v5_folders: settings.allow_creation_of_v5_folders,
+            allow_creation_of_v5_tags: settings.allow_creation_of_v5_tags,
+            allow_creation_of_v5_comments: settings.allow_creation_of_v5_comments,
+            allow_creation_of_v4_resources: settings.allow_creation_of_v4_resources,
+            allow_creation_of_v4_folders: settings.allow_creation_of_v4_folders,
+            allow_creation_of_v4_tags: settings.allow_creation_of_v4_tags,
+            allow_creation_of_v4_comments: settings.allow_creation_of_v4_comments,
+        }
+    }
+}
+
+/// How metadata keys are used in the organization (admin settings).
+#[derive(uniffi::Record)]
+pub struct FfiMetadataKeysSettings {
+    pub allow_usage_of_personal_keys: Option<bool>,
+    pub zero_knowledge_key_share: Option<bool>,
+}
+
+impl From<types::MetadataKeysSettings> for FfiMetadataKeysSettings {
+    fn from(settings: types::MetadataKeysSettings) -> Self {
+        Self {
+            allow_usage_of_personal_keys: settings.allow_usage_of_personal_keys,
+            zero_knowledge_key_share: settings.zero_knowledge_key_share,
+        }
+    }
+}
+
+impl From<FfiMetadataKeysSettings> for types::MetadataKeysSettings {
+    fn from(settings: FfiMetadataKeysSettings) -> Self {
+        Self {
+            allow_usage_of_personal_keys: settings.allow_usage_of_personal_keys,
+            zero_knowledge_key_share: settings.zero_knowledge_key_share,
+        }
+    }
+}
+
 // ── Query types (FFI → SDK) ────────────────────────────────────────────────
 
 #[derive(uniffi::Record)]

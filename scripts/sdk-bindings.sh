@@ -19,7 +19,7 @@ languages=("$@")
 # The UniFFI version of Cargo.lock: the bindings must match the library's scaffolding.
 # Debug build: only reads the library's metadata, no need to wait for LTO.
 cargo build --locked -p passbolt-ffi --bin uniffi-bindgen
-bindgen=target/debug/uniffi-bindgen
+bindgen="${CARGO_TARGET_DIR:-target}/debug/uniffi-bindgen"
 
 for language in "${languages[@]}"; do
   dir="$out/$language"
