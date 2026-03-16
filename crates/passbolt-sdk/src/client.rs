@@ -1258,11 +1258,12 @@ impl<H: HttpClient> PassboltSdk<H> {
         if let Some(search) = options.search {
             params.push(("filter[search]", search));
         }
-        if let Some(group_id) = options.group_id {
-            params.push(("filter[has-groups]", group_id));
+        // The server reads comma-separated values as a list.
+        if !options.group_ids.is_empty() {
+            params.push(("filter[has-groups]", options.group_ids.join(",")));
         }
-        if let Some(resource_id) = options.resource_id {
-            params.push(("filter[has-access]", resource_id));
+        if !options.resource_ids.is_empty() {
+            params.push(("filter[has-access]", options.resource_ids.join(",")));
         }
         if options.admin_only {
             params.push(("filter[is-admin]", "1".into()));
@@ -1310,11 +1311,11 @@ impl<H: HttpClient> PassboltSdk<H> {
     pub async fn get_groups(&self, options: GroupQuery) -> Result<Vec<Group>, PassboltError> {
         let mut params: Vec<(&str, String)> = vec![("contain[groups_users]", "1".into())];
 
-        if let Some(user_id) = options.user_id {
-            params.push(("filter[has-users]", user_id));
+        if !options.user_ids.is_empty() {
+            params.push(("filter[has-users]", options.user_ids.join(",")));
         }
-        if let Some(manager_id) = options.manager_id {
-            params.push(("filter[has-managers]", manager_id));
+        if !options.manager_ids.is_empty() {
+            params.push(("filter[has-managers]", options.manager_ids.join(",")));
         }
 
         self.get_paginated("/groups.json", &params, &options.pagination)
@@ -1871,15 +1872,17 @@ pub struct FolderQuery {
 #[derive(Debug, Default)]
 pub struct UserQuery {
     pub search: Option<String>,
-    pub group_id: Option<String>,
-    pub resource_id: Option<String>,
+    /// Users in any of these groups.
+    pub group_ids: Vec<String>,
+    /// Users with access to this resource; the server takes one.
+    pub resource_ids: Vec<String>,
     pub admin_only: bool,
     pub pagination: PaginationParams,
 }
 
 #[derive(Debug, Default)]
 pub struct GroupQuery {
-    pub user_id: Option<String>,
-    pub manager_id: Option<String>,
+    pub user_ids: Vec<String>,
+    pub manager_ids: Vec<String>,
     pub pagination: PaginationParams,
 }

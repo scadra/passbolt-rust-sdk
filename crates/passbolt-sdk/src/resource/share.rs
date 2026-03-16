@@ -33,60 +33,72 @@ pub async fn share_resource<H: HttpClient>(
     group_ids: &[String],
     permission_type: i32,
 ) -> Result<(), PassboltError> {
-    change_permissions(client, id, user_ids, group_ids, permission_type).await?;
-    Ok(())
-}
-
-/// The work of [`share_resource`]; `false` when the permissions are already as asked.
-async fn change_permissions<H: HttpClient>(
-    client: &PassboltSdk<H>,
-    id: &str,
-    user_ids: &[String],
-    group_ids: &[String],
-    permission_type: i32,
-) -> Result<bool, PassboltError> {
     let existing = client.get_resource_permissions(id).await?;
+    let permissions = requested_changes(&existing, user_ids, group_ids, permission_type)?;
+    if permissions.is_empty() {
+        return Ok(());
+    }
     if permission_type == -1 {
-        let permissions = revoke_changes(&existing, user_ids, group_ids)?;
         let payload = SharePayload {
             permissions,
             secrets: None,
         };
         client.share_resource(id, &payload).await?;
-        return Ok(true);
+        return Ok(());
     }
-
-    let permissions = merge_changes(&existing, aros(user_ids, group_ids), permission_type);
-    if permissions.is_empty() {
-        return Ok(false);
-    }
-    apply_changes(client, id, permissions).await?;
-    Ok(true)
+    apply_changes(client, id, permissions).await
 }
 
-/// The removal of each permission of `user_ids` and `group_ids`; one without any access is
-/// refused before anything changes, so that a typo does not pass for a revocation.
-pub(crate) fn revoke_changes(
+/// The changes asked by `share`, refused as go-passbolt refuses them: the same user or group
+/// twice, a permission it already has, a revocation of a permission it does not have.
+pub(crate) fn requested_changes(
     existing: &[Permission],
     user_ids: &[String],
     group_ids: &[String],
+    permission_type: i32,
 ) -> Result<Vec<ShareChange>, PassboltError> {
-    let without_access: Vec<String> = aros(user_ids, group_ids)
-        .filter(|(aro, aro_foreign_key)| {
-            !existing.iter().any(|permission| {
-                permission.aro.as_deref() == Some(*aro)
-                    && permission.aro_foreign_key.as_deref() == Some(*aro_foreign_key)
-            })
-        })
-        .map(|(aro, aro_foreign_key)| format!("{} {aro_foreign_key}", aro.to_lowercase()))
-        .collect();
-    if !without_access.is_empty() {
-        return Err(PassboltError::InvalidArgument(format!(
-            "No permission to revoke for {}",
-            without_access.join(", ")
-        )));
+    let requested: Vec<(&str, &str)> = aros(user_ids, group_ids).collect();
+    for (index, aro) in requested.iter().enumerate() {
+        if let Some(other) = requested[index + 1..].iter().position(|other| other == aro) {
+            return Err(PassboltError::InvalidArgument(format!(
+                "change {index} and {} are Both About the same ARO {} ID: {}, there can only be \
+                 once change per ARO",
+                index + 1 + other,
+                aro.0,
+                aro.1
+            )));
+        }
     }
-    Ok(build_revoke_changes(existing, user_ids, group_ids))
+    let current = |(aro, aro_foreign_key): (&str, &str)| {
+        existing.iter().find(|permission| {
+            permission.aro.as_deref() == Some(aro)
+                && permission.aro_foreign_key.as_deref() == Some(aro_foreign_key)
+        })
+    };
+    for &(aro, aro_foreign_key) in &requested {
+        match current((aro, aro_foreign_key)) {
+            None if permission_type == -1 => {
+                return Err(PassboltError::InvalidArgument(format!(
+                    "permission for {aro} {aro_foreign_key} Cannot be Deleted as No Matching \
+                     Permission Exists"
+                )))
+            }
+            Some(permission) if permission.permission_type == Some(permission_type) => {
+                return Err(PassboltError::InvalidArgument(format!(
+                    "permission for {aro} {aro_foreign_key} is already Type {permission_type}"
+                )))
+            }
+            _ => {}
+        }
+    }
+    if permission_type == -1 {
+        return Ok(build_revoke_changes(existing, user_ids, group_ids));
+    }
+    Ok(merge_changes(
+        existing,
+        requested.into_iter(),
+        permission_type,
+    ))
 }
 
 /// `(aro, id)` of the users then the groups.

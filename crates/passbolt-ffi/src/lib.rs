@@ -721,8 +721,9 @@ impl PassboltClient {
         Ok(FfiGroup::from(group))
     }
 
-    /// Rename a group and change its members; new members get the secrets of the group's
-    /// resources.
+    /// Rename a group and change its members: the removed ones first, then the added ones,
+    /// who get the secrets of the group's resources. Giving a user the role they have, or
+    /// removing a non-member, is an error.
     pub fn update_group(
         &self,
         id: String,
@@ -731,17 +732,30 @@ impl PassboltClient {
         add_manager_ids: Vec<String>,
         remove_member_ids: Vec<String>,
     ) -> Result<FfiGroup, PassboltFfiError> {
-        let group = RUNTIME
-            .block_on(passbolt_sdk::group::update::update_group(
-                &self.inner,
-                &id,
-                name.as_deref(),
-                &add_member_ids,
-                &add_manager_ids,
-                &remove_member_ids,
-            ))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiGroup::from(group))
+        use passbolt_sdk::group::update::update_group;
+
+        let update = |name: Option<&str>, members: &[String], managers: &[String], delete| {
+            RUNTIME
+                .block_on(update_group(
+                    &self.inner,
+                    &id,
+                    name,
+                    members,
+                    managers,
+                    delete,
+                ))
+                .map_err(PassboltFfiError::from)
+        };
+        let adds = !add_member_ids.is_empty() || !add_manager_ids.is_empty();
+        if remove_member_ids.is_empty() {
+            return update(name.as_deref(), &add_member_ids, &add_manager_ids, false)
+                .map(FfiGroup::from);
+        }
+        let group = update(name.as_deref(), &remove_member_ids, &[], true)?;
+        if !adds {
+            return Ok(FfiGroup::from(group));
+        }
+        update(None, &add_member_ids, &add_manager_ids, false).map(FfiGroup::from)
     }
 
     /// What blocks deleting the group: what it alone owns.

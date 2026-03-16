@@ -122,18 +122,23 @@ pub enum Commands {
     Verify(crate::cli::verify::VerifyArgs),
 
     /// Create resources, folders, users, groups
+    #[command(visible_alias = "new")]
     Create(CreateArgs),
 
     /// Get a resource, folder, user, group or permissions
+    #[command(visible_alias = "read")]
     Get(GetArgs),
 
     /// List resources, folders, users, groups
+    #[command(visible_aliases = ["index", "ls", "filter", "search"])]
     List(ListArgs),
 
     /// Update resources, folders, users, groups
+    #[command(visible_alias = "change")]
     Update(UpdateArgs),
 
     /// Delete resources, folders, users, groups
+    #[command(visible_alias = "remove")]
     Delete(DeleteArgs),
 
     /// Share resources and folders
@@ -184,9 +189,9 @@ pub enum CreateEntity {
         /// Default: from the fields given and the server's default version
         #[arg(short = 't', long = "type")]
         resource_type: Option<String>,
-        /// Resource name
+        /// Resource name; required unless given by --field name=… (or --type / --secret-field)
         #[arg(short = 'n', long)]
-        name: String,
+        name: Option<String>,
         /// Username / login
         #[arg(short = 'u', long)]
         username: Option<String>,
@@ -205,15 +210,15 @@ pub enum CreateEntity {
         /// PIN code, for v5-pin-code (4 to 12 digits)
         #[arg(long)]
         pin_code: Option<String>,
-        /// Field of the v5 metadata (or v4 resource) as key=value, the value read as JSON if it is
-        /// JSON: --field 'icon={"type":"keepass-icon-set","value":42}'
+        /// Field of the v5 metadata (or v4 resource) as key=value, a value starting with [ or {
+        /// read as JSON: --field 'icon={"type":"keepass-icon-set","value":42}'
         #[arg(long = "field")]
         field: Vec<String>,
-        /// Secret field as key=value, the value read as JSON if it is JSON
+        /// Secret field as key=value, a value starting with [ or { read as JSON
         #[arg(long = "secret-field")]
         secret_field: Vec<String>,
         /// Parent folder ID
-        #[arg(short = 'f', long)]
+        #[arg(short = 'f', long, alias = "folderParentID")]
         folder_parent_id: Option<String>,
         /// Expiry (RFC3339, duration "7d"/"48h", or "none")
         #[arg(long)]
@@ -235,7 +240,7 @@ pub enum CreateEntity {
     Folder {
         #[arg(short = 'n', long)]
         name: String,
-        #[arg(short = 'f', long)]
+        #[arg(short = 'f', long, alias = "folderParentID")]
         folder_parent_id: Option<String>,
     },
     /// Invite / create a user
@@ -272,26 +277,12 @@ pub struct GetArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum GetEntity {
-    Resource {
-        #[arg(long)]
-        id: String,
-    },
-    ResourcePermissions {
-        #[arg(long)]
-        id: String,
-        #[arg(short = 'c', long)]
-        column: Vec<String>,
-    },
-    Folder {
-        #[arg(long)]
-        id: String,
-    },
-    FolderPermissions {
-        #[arg(long)]
-        id: String,
-        #[arg(short = 'c', long)]
-        column: Vec<String>,
-    },
+    Resource(GetWithPermissions),
+    #[command(hide = true)]
+    ResourcePermissions(PermissionArgs),
+    Folder(GetWithPermissions),
+    #[command(hide = true)]
+    FolderPermissions(PermissionArgs),
     User {
         #[arg(long)]
         id: String,
@@ -309,16 +300,48 @@ pub enum GetEntity {
     },
 }
 
+/// `get resource --id X` or `get resource permission --id X`.
+#[derive(clap::Args, Debug)]
+#[command(subcommand_negates_reqs = true)]
+pub struct GetWithPermissions {
+    #[arg(long, required = true)]
+    pub id: Option<String>,
+    #[command(subcommand)]
+    pub permission: Option<PermissionCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PermissionCommand {
+    /// Get the permissions
+    #[command(visible_alias = "permissions")]
+    Permission(PermissionArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct PermissionArgs {
+    #[arg(long)]
+    pub id: String,
+    /// Columns: `ID`, `Aco`, `AcoForeignKey`, `Aro`, `AroForeignKey`, `Type`,
+    /// `CreatedTimestamp`, `ModifiedTimestamp`
+    #[arg(short = 'c', long)]
+    pub column: Vec<String>,
+}
+
 // ── List ──────────────────────────────────────────────────────────────────────
 
 #[derive(clap::Args, Debug)]
 pub struct ListArgs {
+    /// Field conditions: field=value, field!=value, field~=contains, field^=prefix,
+    /// field$=suffix
+    #[arg(long, global = true)]
+    pub filter: Vec<String>,
     #[command(subcommand)]
     pub entity: ListEntity,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum ListEntity {
+    #[command(visible_alias = "resources")]
     Resource {
         #[arg(long)]
         favorite: bool,
@@ -336,10 +359,8 @@ pub enum ListEntity {
         /// Columns to display
         #[arg(short = 'c', long)]
         column: Vec<String>,
-        /// Field filter expressions (field=value, field~=contains, ...)
-        #[arg(long)]
-        filter: Vec<String>,
     },
+    #[command(visible_alias = "folders")]
     Folder {
         #[arg(short = 's', long)]
         search: Option<String>,
@@ -351,32 +372,33 @@ pub enum ListEntity {
         group: Vec<String>,
         #[arg(short = 'c', long)]
         column: Vec<String>,
-        #[arg(long)]
-        filter: Vec<String>,
     },
+    #[command(visible_alias = "users")]
     User {
+        /// Users in one of these groups — may be repeated
         #[arg(short = 'g', long)]
-        group: Option<String>,
+        group: Vec<String>,
+        /// Users with access to this resource
         #[arg(short = 'r', long)]
-        resource: Option<String>,
+        resource: Vec<String>,
         #[arg(short = 's', long)]
         search: Option<String>,
-        #[arg(long)]
+        /// Only administrators
+        #[arg(short = 'a', long)]
         admin: bool,
         #[arg(short = 'c', long)]
         column: Vec<String>,
-        #[arg(long)]
-        filter: Vec<String>,
     },
+    #[command(visible_alias = "groups")]
     Group {
+        /// Groups with one of these members — may be repeated
         #[arg(short = 'u', long)]
-        user: Option<String>,
+        user: Vec<String>,
+        /// Groups with one of these managers — may be repeated
         #[arg(short = 'm', long)]
-        manager: Option<String>,
+        manager: Vec<String>,
         #[arg(short = 'c', long)]
         column: Vec<String>,
-        #[arg(long)]
-        filter: Vec<String>,
     },
 }
 
@@ -458,15 +480,15 @@ pub enum UpdateEntity {
         id: String,
         #[arg(short = 'n', long)]
         name: Option<String>,
-        /// Add member user IDs
+        /// Members: added, or made members if they manage it
         #[arg(short = 'u', long)]
         user: Vec<String>,
-        /// Add manager user IDs
+        /// Managers: added, or made managers if they are members
         #[arg(short = 'm', long)]
         manager: Vec<String>,
-        /// Remove member user IDs
+        /// Remove the given users and managers instead
         #[arg(short = 'd', long)]
-        delete: Vec<String>,
+        delete: bool,
     },
 }
 
@@ -474,19 +496,17 @@ pub enum UpdateEntity {
 
 #[derive(clap::Args, Debug)]
 pub struct DeleteArgs {
+    /// ID of what to delete
+    #[arg(long, global = true)]
+    pub id: Option<String>,
     #[command(subcommand)]
     pub entity: DeleteEntity,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum DeleteEntity {
-    Resource {
-        #[arg(long)]
-        id: String,
-    },
+    Resource,
     Folder {
-        #[arg(long)]
-        id: String,
         /// Also delete its sub-folders and the resources in them; without it, they move to the
         /// root
         #[arg(long)]
@@ -495,8 +515,6 @@ pub enum DeleteEntity {
     /// Delete a user (administrators); what they alone own or manage blocks it until given to
     /// someone with --transfer-to
     User {
-        #[arg(long)]
-        id: String,
         /// Only list what blocks the deletion
         #[arg(long, conflicts_with = "transfer_to")]
         dry_run: bool,
@@ -507,8 +525,6 @@ pub enum DeleteEntity {
     },
     /// Delete a group; what it alone owns blocks it until given to someone with --transfer-to
     Group {
-        #[arg(long)]
-        id: String,
         /// Only list what blocks the deletion
         #[arg(long, conflicts_with = "transfer_to")]
         dry_run: bool,
@@ -529,7 +545,6 @@ pub struct ShareArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ShareEntity {
-    #[command(group(clap::ArgGroup::new("recipients").args(["user", "group"]).multiple(true).required(true)))]
     Resource {
         #[arg(long)]
         id: String,
@@ -549,7 +564,6 @@ pub enum ShareEntity {
         #[arg(short = 'g', long)]
         group: Vec<String>,
     },
-    #[command(group(clap::ArgGroup::new("recipients").args(["user", "group"]).multiple(true).required(true)))]
     Folder {
         #[arg(long)]
         id: String,
@@ -586,7 +600,7 @@ pub enum MoveEntity {
         #[arg(long)]
         id: String,
         /// Target folder ID (empty = root)
-        #[arg(short = 'f', long)]
+        #[arg(short = 'f', long, alias = "folderParentID")]
         folder_parent_id: Option<String>,
         /// Also change its permissions as the browser extension does: drop those it got from the
         /// folder it leaves, add the target folder's, the higher level winning (owners only)
@@ -597,7 +611,7 @@ pub enum MoveEntity {
         #[arg(long)]
         id: String,
         /// Target folder ID (empty = root)
-        #[arg(short = 'f', long)]
+        #[arg(short = 'f', long, alias = "folderParentID")]
         folder_parent_id: Option<String>,
         /// Also change its permissions as for a resource, then copy that change onto the content
         /// the user owns (owners only)

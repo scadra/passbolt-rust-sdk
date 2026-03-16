@@ -388,7 +388,7 @@ async fn encrypt_for_users_with_access<H: HttpClient>(
     let plaintext = document::secret_plaintext(secret)?;
     let users = client
         .get_users(UserQuery {
-            resource_id: Some(resource_id.to_string()),
+            resource_ids: vec![resource_id.to_string()],
             ..UserQuery::default()
         })
         .await?;

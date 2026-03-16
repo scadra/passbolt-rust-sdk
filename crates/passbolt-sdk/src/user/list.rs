@@ -20,15 +20,15 @@ use crate::user::filter::filter_users;
 pub async fn list_users<H: HttpClient>(
     client: &PassboltSdk<H>,
     search: Option<String>,
-    group_id: Option<String>,
-    resource_id: Option<String>,
+    group_ids: Vec<String>,
+    resource_ids: Vec<String>,
     admin_only: bool,
     filters: &[Filter],
 ) -> Result<Vec<User>, PassboltError> {
     let query = UserQuery {
         search,
-        group_id,
-        resource_id,
+        group_ids,
+        resource_ids,
         admin_only,
         ..Default::default()
     };

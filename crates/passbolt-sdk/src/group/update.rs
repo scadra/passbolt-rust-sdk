@@ -26,22 +26,20 @@ use crate::types::{
 /// Update a group, as go-passbolt does: existing memberships change by their id, and new
 /// members get the secrets of the group's resources, from the update dry-run.
 ///
-/// Adding a member with the role they have is a no-op; removing a non-member is an error.
+/// `members` and `managers` get that role, or lose their membership with `delete`. An empty
+/// name keeps the current one. Giving a user the role they have, or removing a non-member, is
+/// an error.
 pub async fn update_group<H: HttpClient>(
     client: &PassboltSdk<H>,
     id: &str,
     name: Option<&str>,
-    add_members: &[String],
-    add_managers: &[String],
-    remove_members: &[String],
+    members: &[String],
+    managers: &[String],
+    delete: bool,
 ) -> Result<Group, PassboltError> {
+    let name = name.filter(|name| !name.is_empty());
     let group = client.get_group(id).await?;
-    let changes = membership_changes(
-        &group.groups_users,
-        add_members,
-        add_managers,
-        remove_members,
-    )?;
+    let changes = membership_changes(&group.groups_users, members, managers, delete)?;
     if changes.is_empty() && name.is_none() {
         return Ok(group);
     }
@@ -60,48 +58,48 @@ pub async fn update_group<H: HttpClient>(
 
 fn membership_changes(
     memberships: &[GroupUser],
-    add_members: &[String],
-    add_managers: &[String],
-    remove_members: &[String],
+    members: &[String],
+    managers: &[String],
+    delete: bool,
 ) -> Result<Vec<GroupMembershipChange>, PassboltError> {
     let membership_of = |user_id: &str| {
         memberships
             .iter()
             .find(|membership| membership.user_id.as_deref() == Some(user_id))
     };
-    let mut changes = Vec::new();
-    // A manager is also a member: added once, as a manager.
-    let additions = add_managers.iter().map(|user_id| (user_id, true)).chain(
-        add_members
+    // A user given as both member and manager is added once, as a manager.
+    let operations = managers.iter().map(|user_id| (user_id, true)).chain(
+        members
             .iter()
-            .filter(|user_id| !add_managers.contains(user_id))
+            .filter(|user_id| delete || !managers.contains(user_id))
             .map(|user_id| (user_id, false)),
     );
-    for (user_id, is_admin) in additions {
-        match membership_of(user_id) {
-            // Adding a member who is already one, manager included, changes nothing.
-            Some(membership) if membership.is_admin == Some(is_admin) || !is_admin => {}
-            Some(membership) => changes.push(GroupMembershipChange {
-                id: membership.id.clone(),
-                is_admin: Some(is_admin),
-                ..GroupMembershipChange::default()
-            }),
-            None => changes.push(GroupMembershipChange {
+    let mut changes = Vec::new();
+    for (user_id, is_admin) in operations {
+        let change = match membership_of(user_id) {
+            None if delete => {
+                return Err(PassboltError::InvalidArgument(format!(
+                    "cannot Delete User {user_id} as it has no membership"
+                )))
+            }
+            None => GroupMembershipChange {
                 user_id: Some(user_id.clone()),
                 is_admin: Some(is_admin),
                 ..GroupMembershipChange::default()
-            }),
-        }
-    }
-    for user_id in remove_members {
-        let membership = membership_of(user_id).ok_or_else(|| {
-            PassboltError::InvalidArgument(format!("User {user_id} is not a member of the group"))
-        })?;
-        changes.push(GroupMembershipChange {
-            id: membership.id.clone(),
-            delete: Some(true),
-            ..GroupMembershipChange::default()
-        });
+            },
+            Some(membership) if !delete && membership.is_admin == Some(is_admin) => {
+                return Err(PassboltError::InvalidArgument(format!(
+                    "membership for User {user_id} already Exists with Same Role"
+                )))
+            }
+            Some(membership) => GroupMembershipChange {
+                id: membership.id.clone(),
+                is_admin: (!delete).then_some(is_admin),
+                delete: delete.then_some(true),
+                ..GroupMembershipChange::default()
+            },
+        };
+        changes.push(change);
     }
     Ok(changes)
 }

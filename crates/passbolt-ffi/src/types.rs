@@ -718,7 +718,7 @@ impl From<FfiUserQuery> for passbolt_sdk::UserQuery {
     fn from(q: FfiUserQuery) -> Self {
         Self {
             search: q.search,
-            group_id: q.group_id,
+            group_ids: q.group_id.into_iter().collect(),
             admin_only: q.admin_only,
             ..Default::default()
         }
@@ -1226,9 +1226,9 @@ mod tests {
         });
 
         assert_eq!(query.search.as_deref(), Some("ada"));
-        assert_eq!(query.group_id.as_deref(), Some("group-1"));
+        assert_eq!(query.group_ids, ["group-1"]);
         assert!(query.admin_only);
-        assert_eq!(query.resource_id, None);
+        assert_eq!(query.resource_ids, Vec::<String>::new());
         assert_eq!(query.pagination.page, None);
     }
 }

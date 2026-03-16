@@ -53,7 +53,7 @@ async fn updated_betty_body(first_name: Option<&str>, last_name: Option<&str>) -
 async fn renaming_a_group_sends_no_membership() {
     let (fake, client) = logged_in_accepting_group_update().await;
 
-    update_group(&client, GROUP_ID, Some("Platform"), &[], &[], &[])
+    update_group(&client, GROUP_ID, Some("Platform"), &[], &[], false)
         .await
         .unwrap();
 
@@ -61,6 +61,17 @@ async fn renaming_a_group_sends_no_membership() {
         fake.body_of("PUT", &group_path()),
         json!({ "name": "Platform" })
     );
+}
+
+#[tokio::test]
+async fn an_empty_group_name_keeps_the_current_one() {
+    let (fake, client) = logged_in_accepting_group_update().await;
+
+    update_group(&client, GROUP_ID, Some(""), &[CAROL_ID.into()], &[], false)
+        .await
+        .unwrap();
+
+    assert!(fake.body_of("PUT", &group_path()).get("name").is_none());
 }
 
 #[tokio::test]
@@ -73,7 +84,7 @@ async fn added_managers_come_first_and_are_not_repeated_as_members() {
         None,
         &[CAROL_ID.into(), ERIN_ID.into()],
         &[ERIN_ID.into()],
-        &[],
+        false,
     )
     .await
     .unwrap();
