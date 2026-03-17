@@ -147,6 +147,19 @@ fn apply_cli_overrides(cli: &Cli, config: &mut Config) -> Result<()> {
     Ok(())
 }
 
+fn parse_expiry_opt(expiry: Option<&String>) -> Result<Option<serde_json::Value>> {
+    expiry
+        .map(String::as_str)
+        .map(passbolt_sdk::resource::expiry::parse_expiry)
+        .transpose()
+        .map_err(Into::into)
+}
+
+/// `None` for an empty value: go-passbolt-cli leaves a field unchanged when given empty.
+fn given(value: Option<&String>) -> Option<String> {
+    value.filter(|value| !value.is_empty()).cloned()
+}
+
 fn parse_filters(expressions: &[String]) -> Result<Vec<passbolt_sdk::filter::Filter>> {
     expressions
         .iter()
@@ -155,16 +168,29 @@ fn parse_filters(expressions: &[String]) -> Result<Vec<passbolt_sdk::filter::Fil
         .map_err(Into::into)
 }
 
-/// The id of `delete`, which may come before or after the entity.
+/// A filter matching nothing is an error, as in go-passbolt-cli.
+fn found<T>(items: Vec<T>, noun: &str, filter: &[String]) -> Result<Vec<T>> {
+    if items.is_empty() && !filter.is_empty() {
+        anyhow::bail!("no such {noun} found with filter {}", filter.join(" "));
+    }
+    Ok(items)
+}
+
+/// The secret-only fields a legacy filter reads.
+fn filters_need_secrets(filters: &[passbolt_sdk::filter::Filter]) -> bool {
+    filters.iter().any(|filter| {
+        matches!(
+            filter.field.as_str(),
+            "password" | "description" | "note" | "secret"
+        )
+    })
+}
+
+/// The id of `delete`, which go-passbolt-cli reads before or after the entity.
 fn delete_id(id: Option<&String>) -> Result<&str> {
     id.map(String::as_str)
         .filter(|id| !id.is_empty())
         .ok_or_else(|| anyhow::anyhow!("no ID provided"))
-}
-
-/// `None` for an empty value: an empty field leaves it unchanged.
-fn given(value: Option<&String>) -> Option<String> {
-    value.filter(|value| !value.is_empty()).cloned()
 }
 
 async fn print_permissions(
@@ -177,22 +203,18 @@ async fn print_permissions(
         passbolt_sdk::resource::get::get_resource_permissions(client, &args.id).await
     } else {
         client.get_folder_permissions(&args.id).await
-    }?;
-    util::columns::print(
+    }
+    .with_context(|| format!("listing Permission for {entity} {}", args.id))?;
+    if json_output {
+        let shapes: Vec<_> = permissions.iter().map(util::shapes::permission).collect();
+        return output::print_json(&shapes);
+    }
+    util::columns::print_named(
         &permissions,
-        &util::columns::PERMISSION_COLUMNS,
+        &util::columns::PERMISSIONS,
         &args.column,
         &util::columns::PERMISSION_DEFAULTS,
-        json_output,
     )
-}
-
-fn parse_expiry_opt(expiry: Option<&String>) -> Result<Option<serde_json::Value>> {
-    expiry
-        .map(String::as_str)
-        .map(passbolt_sdk::resource::expiry::parse_expiry)
-        .transpose()
-        .map_err(Into::into)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -202,6 +224,9 @@ async fn dispatch(
     json_output: bool,
     workers: usize,
 ) -> Result<()> {
+    use util::columns::{FOLDERS, GROUPS, RESOURCES, USERS};
+    use util::shapes;
+
     match command {
         // ── Create ──────────────────────────────────────────────────────────
         Commands::Create(args) => match &args.entity {
@@ -230,10 +255,10 @@ async fn dispatch(
 
                 let from_fields =
                     resource_type.is_some() || !field.is_empty() || !secret_field.is_empty();
-                if given(name.as_ref()).is_none() && !from_fields {
+                let name = given(name.as_ref());
+                if name.is_none() && !from_fields {
                     anyhow::bail!("required flag \"name\" not set");
                 }
-
                 let totp = totp_key.as_ref().map(|key| passbolt_sdk::types::TotpData {
                     secret_key: Some(key.clone()),
                     algorithm: totp_algo.clone(),
@@ -253,7 +278,7 @@ async fn dispatch(
                 );
                 let resolved_password = match given(password.as_ref()) {
                     Some(provided_password) => Some(provided_password),
-                    // Asked only in a terminal: a script gets an error instead of a prompt.
+                    // Asked only in a terminal: a script gets go-passbolt-cli's error.
                     None if needs_password && std::io::stdin().is_terminal() => {
                         Some(read_password("Password: ")?.expose_secret().to_string())
                     }
@@ -263,7 +288,7 @@ async fn dispatch(
 
                 let new_resource = NewResource {
                     resource_type: resource_type.clone(),
-                    name: given(name.as_ref()).unwrap_or_default(),
+                    name: name.unwrap_or_default(),
                     username: given(username.as_ref()),
                     uris: uri.iter().filter(|uri| !uri.is_empty()).cloned().collect(),
                     description: given(description.as_ref()),
@@ -279,13 +304,10 @@ async fn dispatch(
                     ..NewResource::default()
                 };
                 let resource =
-                    passbolt_sdk::resource::create::create_resource(client, &new_resource).await?;
-
-                if json_output {
-                    output::print_json(&resource)?;
-                } else {
-                    println!("Created resource: {} ({})", new_resource.name, resource.id);
-                }
+                    passbolt_sdk::resource::create::create_resource(client, &new_resource)
+                        .await
+                        .context("creating resource")?;
+                print_created(json_output, "ResourceID", &resource.id)?;
             }
 
             CreateEntity::Folder {
@@ -297,12 +319,9 @@ async fn dispatch(
                     name,
                     given(folder_parent_id.as_ref()).as_deref(),
                 )
-                .await?;
-                if json_output {
-                    output::print_json(&folder)?;
-                } else {
-                    println!("Created folder: {} ({})", folder.name, folder.id);
-                }
+                .await
+                .context("creating Folder")?;
+                print_created(json_output, "FolderID", &folder.id)?;
             }
 
             CreateEntity::User {
@@ -314,16 +333,9 @@ async fn dispatch(
                 let user = passbolt_sdk::user::create::create_user(
                     client, username, firstname, lastname, role,
                 )
-                .await?;
-                if json_output {
-                    output::print_json(&user)?;
-                } else {
-                    println!(
-                        "Created user: {} ({})",
-                        user.username.as_deref().unwrap_or(""),
-                        user.id
-                    );
-                }
+                .await
+                .context("creating User")?;
+                print_created(json_output, "UserID", &user.id)?;
             }
 
             CreateEntity::Group {
@@ -334,13 +346,10 @@ async fn dispatch(
                 if manager.is_empty() {
                     anyhow::bail!("required flag(s) \"manager\" not set");
                 }
-                let group =
-                    passbolt_sdk::group::create::create_group(client, name, user, manager).await?;
-                if json_output {
-                    output::print_json(&group)?;
-                } else {
-                    println!("Created group: {} ({})", group.name, group.id);
-                }
+                let group = passbolt_sdk::group::create::create_group(client, name, user, manager)
+                    .await
+                    .context("creating Group")?;
+                print_created(json_output, "GroupID", &group.id)?;
             }
         },
 
@@ -351,9 +360,11 @@ async fn dispatch(
                     return print_permissions(client, "Resource", permission, json_output).await;
                 }
                 let id = get.id.as_deref().unwrap_or_default();
-                let view = passbolt_sdk::resource::get::get_resource_view(client, id).await?;
+                let view = passbolt_sdk::resource::get::get_resource_view(client, id)
+                    .await
+                    .context("getting resource")?;
                 if json_output {
-                    output::print_json(&view)?;
+                    output::print_json(&shapes::got_resource(&view))?;
                 } else {
                     let rows = util::resources::detail_rows(&view);
                     let pairs: Vec<(&str, &str)> = rows
@@ -373,17 +384,16 @@ async fn dispatch(
                     return print_permissions(client, "Folder", permission, json_output).await;
                 }
                 let id = get.id.as_deref().unwrap_or_default();
-                let folder = client.get_folder(id).await?;
+                let folder = client.get_folder(id).await.context("getting Folder")?;
                 if json_output {
-                    output::print_json(&folder)?;
+                    output::print_json(&shapes::got_folder(&folder))?;
                 } else {
                     output::print_kv(&[
-                        ("ID", &folder.id),
-                        ("Name", &folder.name),
                         (
-                            "Parent",
-                            folder.folder_parent_id.as_deref().unwrap_or("(root)"),
+                            "FolderParentID",
+                            folder.folder_parent_id.as_deref().unwrap_or_default(),
                         ),
+                        ("Name", &folder.name),
                     ]);
                 }
             }
@@ -393,32 +403,30 @@ async fn dispatch(
             }
 
             GetEntity::User { id } => {
-                let user = client.get_user(id).await?;
+                let user = client.get_user(id).await.context("getting User")?;
                 if json_output {
-                    output::print_json(&user)?;
+                    output::print_json(&shapes::got_user(&user))?;
                 } else {
                     output::print_kv(&[
-                        ("ID", &user.id),
-                        ("Username", user.username.as_deref().unwrap_or("")),
-                        ("First Name", user.first_name()),
-                        ("Last Name", user.last_name()),
+                        ("Username", user.username.as_deref().unwrap_or_default()),
+                        ("FirstName", user.first_name()),
+                        ("LastName", user.last_name()),
                         ("Role", user.role_name()),
                     ]);
                 }
             }
 
             GetEntity::Group { id, column } => {
-                let group = client.get_group(id).await?;
+                let group = client.get_group(id).await.context("getting Group")?;
                 if json_output {
-                    output::print_json(&group)?;
+                    output::print_json(&shapes::got_group(&group))?;
                 } else {
-                    output::print_kv(&[("ID", &group.id), ("Name", &group.name)]);
-                    util::columns::print(
+                    output::print_kv(&[("Name", &group.name)]);
+                    util::columns::print_named(
                         &group.groups_users,
-                        &util::columns::GROUP_MEMBER_COLUMNS,
+                        &util::columns::GROUP_MEMBERS,
                         column,
                         &util::columns::GROUP_MEMBER_DEFAULTS,
-                        false,
                     )?;
                 }
             }
@@ -435,7 +443,8 @@ async fn dispatch(
 
         // ── List ────────────────────────────────────────────────────────────
         Commands::List(args) => {
-            let filters = parse_filters(&args.filter)?;
+            let filter = &args.filter;
+            let filters = parse_filters(filter)?;
             match &args.entity {
                 ListEntity::Resource {
                     favorite,
@@ -445,23 +454,9 @@ async fn dispatch(
                     search,
                     column,
                 } => {
-                    use util::resources::{
-                        column_name, column_text, needs_secrets, DEFAULT_COLUMNS,
-                    };
-
-                    let columns: Vec<&str> = if column.is_empty() && !json_output {
-                        DEFAULT_COLUMNS.to_vec()
-                    } else {
-                        column
-                            .iter()
-                            .map(|column| column_name(column))
-                            .collect::<Result<_>>()?
-                    };
-                    let filter_names: Vec<&str> =
-                        filters.iter().map(|filter| filter.field.as_str()).collect();
-                    let secret_workers = (needs_secrets(&columns) || needs_secrets(&filter_names))
-                        .then_some(workers);
-
+                    let selected = RESOURCES.select(column)?;
+                    let needs_secrets = selected.iter().any(|column| column.secret)
+                        || filters_need_secrets(&filters);
                     let query = passbolt_sdk::ResourceQuery {
                         favorites_only: *favorite,
                         owned_by_me: *own,
@@ -474,44 +469,21 @@ async fn dispatch(
                         client,
                         query,
                         &filters,
-                        secret_workers,
+                        needs_secrets.then_some(workers),
                     )
-                    .await?;
-                    for view in &views {
-                        if let Some(error) = &view.error {
-                            eprintln!(
-                                "Warning: resource {} could not be decrypted: {error}",
-                                view.id
-                            );
-                        }
-                    }
-
-                    if json_output {
-                        if columns.is_empty() {
-                            output::print_json(&views)?;
-                        } else {
-                            output::print_json(&util::resources::select_columns(
-                                &views, &columns,
-                            )?)?;
-                        }
-                    } else {
-                        let rows = views
-                            .iter()
-                            .map(|view| {
-                                columns
-                                    .iter()
-                                    .map(|name| column_text(view, name))
-                                    .collect::<Result<Vec<_>>>()
+                    .await
+                    .context("listing Resource")?;
+                    let views: Vec<_> = views
+                        .into_iter()
+                        .filter(|view| {
+                            view.error.as_ref().is_none_or(|error| {
+                                eprintln!("Warning: resource {} skipped: {error}", view.id);
+                                false
                             })
-                            .collect::<Result<Vec<_>>>()?;
-                        let headers: Vec<&str> = column.iter().map(String::as_str).collect();
-                        let headers = if headers.is_empty() {
-                            columns.clone()
-                        } else {
-                            headers
-                        };
-                        output::print_table(&headers, rows);
-                    }
+                        })
+                        .collect();
+                    let views = found(views, RESOURCES.noun, filter)?;
+                    RESOURCES.print(&views, column, shapes::listed_resource, json_output)?;
                 }
 
                 ListEntity::Folder {
@@ -527,15 +499,10 @@ async fn dispatch(
                         folder.clone(),
                         &filters,
                     )
-                    .await?;
-
-                    util::columns::print(
-                        &folders,
-                        &util::columns::FOLDER_COLUMNS,
-                        column,
-                        &util::columns::FOLDER_DEFAULTS,
-                        json_output,
-                    )?;
+                    .await
+                    .context("listing Folder")?;
+                    let folders = found(folders, FOLDERS.noun, filter)?;
+                    FOLDERS.print(&folders, column, shapes::listed_folder, json_output)?;
                 }
 
                 ListEntity::User {
@@ -553,15 +520,10 @@ async fn dispatch(
                         *admin,
                         &filters,
                     )
-                    .await?;
-
-                    util::columns::print(
-                        &users,
-                        &util::columns::USER_COLUMNS,
-                        column,
-                        &util::columns::USER_DEFAULTS,
-                        json_output,
-                    )?;
+                    .await
+                    .context("listing User")?;
+                    let users = found(users, USERS.noun, filter)?;
+                    USERS.print(&users, column, shapes::listed_user, json_output)?;
                 }
 
                 ListEntity::Group {
@@ -575,15 +537,10 @@ async fn dispatch(
                         manager.clone(),
                         &filters,
                     )
-                    .await?;
-
-                    util::columns::print(
-                        &groups,
-                        &util::columns::GROUP_COLUMNS,
-                        column,
-                        &util::columns::GROUP_DEFAULTS,
-                        json_output,
-                    )?;
+                    .await
+                    .context("listing Group")?;
+                    let groups = found(groups, GROUPS.noun, filter)?;
+                    GROUPS.print(&groups, column, shapes::listed_group, json_output)?;
                 }
             }
         }
@@ -614,10 +571,11 @@ async fn dispatch(
                     || totp_algo.is_some()
                     || totp_digits.is_some()
                     || totp_period.is_some();
+                let uris: Vec<String> = uri.iter().filter(|uri| !uri.is_empty()).cloned().collect();
                 let changes = ResourceChanges {
                     name: given(name.as_ref()),
                     username: given(username.as_ref()),
-                    uris: (!uri.is_empty()).then(|| uri.clone()),
+                    uris: (!uris.is_empty()).then_some(uris),
                     description: given(description.as_ref()),
                     note: given(note.as_ref()),
                     password: given(password.as_ref()),
@@ -635,24 +593,19 @@ async fn dispatch(
                     metadata_fields: util::resources::parse_fields(field)?,
                     secret_fields: util::resources::parse_fields(secret_field)?,
                 };
-                let resource =
-                    passbolt_sdk::resource::update::update_resource(client, id, &changes).await?;
-
-                if json_output {
-                    output::print_json(&resource)?;
-                } else {
-                    println!("Updated resource: {}", resource.id);
-                }
+                passbolt_sdk::resource::update::update_resource(client, id, &changes)
+                    .await
+                    .context("updating resource")?;
+                output::print_done(json_output, "updated", id)?;
             }
 
             UpdateEntity::Folder { id, name } => {
                 let payload = passbolt_sdk::types::UpdateFolderPayload { name: name.clone() };
-                let folder = client.update_folder(id, &payload).await?;
-                if json_output {
-                    output::print_json(&folder)?;
-                } else {
-                    println!("Updated folder: {} ({})", folder.name, folder.id);
-                }
+                client
+                    .update_folder(id, &payload)
+                    .await
+                    .context("updating Folder")?;
+                output::print_done(json_output, "updated", id)?;
             }
 
             UpdateEntity::User {
@@ -661,19 +614,16 @@ async fn dispatch(
                 lastname,
                 role,
             } => {
-                let user = passbolt_sdk::user::update::update_user(
+                passbolt_sdk::user::update::update_user(
                     client,
                     id,
                     given(firstname.as_ref()).as_deref(),
                     given(lastname.as_ref()).as_deref(),
                     given(role.as_ref()).as_deref(),
                 )
-                .await?;
-                if json_output {
-                    output::print_json(&user)?;
-                } else {
-                    println!("Updated user: {}", user.id);
-                }
+                .await
+                .context("updating User")?;
+                output::print_done(json_output, "updated", id)?;
             }
 
             UpdateEntity::Group {
@@ -683,7 +633,7 @@ async fn dispatch(
                 manager,
                 delete,
             } => {
-                let group = passbolt_sdk::group::update::update_group(
+                passbolt_sdk::group::update::update_group(
                     client,
                     id,
                     name.as_deref(),
@@ -691,70 +641,69 @@ async fn dispatch(
                     manager,
                     *delete,
                 )
-                .await?;
-                if json_output {
-                    output::print_json(&group)?;
-                } else {
-                    println!("Updated group: {} ({})", group.name, group.id);
-                }
+                .await
+                .context("updating Group")?;
+                output::print_done(json_output, "updated", id)?;
             }
         },
 
         // ── Delete ──────────────────────────────────────────────────────────
-        Commands::Delete(args) => match &args.entity {
-            DeleteEntity::Resource => {
-                let id = delete_id(args.id.as_ref())?;
-                client.delete_resource(id).await?;
-                output::print_done(json_output, "deleted", "resource", id)?;
-            }
-            DeleteEntity::Folder { cascade } => {
-                let id = delete_id(args.id.as_ref())?;
-                if *cascade {
-                    client.delete_folder_with_content(id).await?;
-                } else {
-                    client.delete_folder(id).await?;
+        Commands::Delete(args) => {
+            let id = delete_id(args.id.as_ref())?;
+            match &args.entity {
+                DeleteEntity::Resource => {
+                    client
+                        .delete_resource(id)
+                        .await
+                        .with_context(|| format!("deleting Resource {id}"))?;
                 }
-                output::print_done(json_output, "deleted", "folder", id)?;
-            }
-            DeleteEntity::User {
-                dry_run,
-                transfer_to,
-            } => {
-                let id = delete_id(args.id.as_ref())?;
-                let blockers = client.user_delete_blockers(id).await?;
-                if *dry_run {
-                    return print_blockers(json_output, "user", &blockers);
-                }
-                match transfer_to {
-                    _ if blockers.is_empty() => client.delete_user(id).await?,
-                    Some(successor) => {
-                        let transfer = blockers.transfer_to(successor)?;
-                        client.delete_user_with_transfer(id, &transfer).await?;
+                DeleteEntity::Folder { cascade } => {
+                    if *cascade {
+                        client.delete_folder_with_content(id).await
+                    } else {
+                        client.delete_folder(id).await
                     }
-                    None => refuse_blocked_delete("user", &blockers)?,
+                    .with_context(|| format!("deleting Folder {id}"))?;
                 }
-                output::print_done(json_output, "deleted", "user", id)?;
-            }
-            DeleteEntity::Group {
-                dry_run,
-                transfer_to,
-            } => {
-                let id = delete_id(args.id.as_ref())?;
-                let blockers = client.group_delete_blockers(id).await?;
-                if *dry_run {
-                    return print_blockers(json_output, "group", &blockers);
-                }
-                match transfer_to {
-                    _ if blockers.is_empty() => client.delete_group(id).await?,
-                    Some(successor) => {
-                        let transfer = blockers.transfer_to(successor)?;
-                        client.delete_group_with_transfer(id, &transfer).await?;
+                DeleteEntity::User {
+                    dry_run,
+                    transfer_to,
+                } => {
+                    let blockers = client.user_delete_blockers(id).await?;
+                    if *dry_run {
+                        return print_blockers(json_output, "user", &blockers);
                     }
-                    None => refuse_blocked_delete("group", &blockers)?,
+                    match transfer_to {
+                        _ if blockers.is_empty() => client.delete_user(id).await,
+                        Some(successor) => {
+                            let transfer = blockers.transfer_to(successor)?;
+                            client.delete_user_with_transfer(id, &transfer).await
+                        }
+                        None => return refuse_blocked_delete("user", &blockers),
+                    }
+                    .with_context(|| format!("deleting User {id}"))?;
                 }
-                output::print_done(json_output, "deleted", "group", id)?;
+                DeleteEntity::Group {
+                    dry_run,
+                    transfer_to,
+                } => {
+                    let blockers = client.group_delete_blockers(id).await?;
+                    if *dry_run {
+                        return print_blockers(json_output, "group", &blockers);
+                    }
+                    match transfer_to {
+                        _ if blockers.is_empty() => client.delete_group(id).await,
+                        Some(successor) => {
+                            let transfer = blockers.transfer_to(successor)?;
+                            client.delete_group_with_transfer(id, &transfer).await
+                        }
+                        None => return refuse_blocked_delete("group", &blockers),
+                    }
+                    .with_context(|| format!("deleting Group {id}"))?;
+                }
             }
-        },
+            output::print_done(json_output, "deleted", id)?;
+        }
 
         // ── Share ───────────────────────────────────────────────────────────
         Commands::Share(args) => match &args.entity {
@@ -765,8 +714,9 @@ async fn dispatch(
                 group,
             } => {
                 passbolt_sdk::resource::share::share_resource(client, id, user, group, *r#type)
-                    .await?;
-                output::print_done(json_output, "shared", "resource", id)?;
+                    .await
+                    .context("sharing Resource")?;
+                output::print_done(json_output, "shared", id)?;
             }
             ShareEntity::Folder {
                 id,
@@ -783,8 +733,9 @@ async fn dispatch(
                     *r#type,
                     *with_content,
                 )
-                .await?;
-                output::print_done(json_output, "shared", "folder", id)?;
+                .await
+                .context("sharing Folder")?;
+                output::print_done(json_output, "shared", id)?;
             }
         },
 
@@ -803,11 +754,12 @@ async fn dispatch(
                         id,
                         folder_parent_id,
                     )
-                    .await?;
+                    .await
                 } else {
-                    client.move_resource(id, folder_parent_id).await?;
+                    client.move_resource(id, folder_parent_id).await
                 }
-                output::print_done(json_output, "moved", "resource", id)?;
+                .context("moving Resource")?;
+                output::print_done(json_output, "moved", id)?;
             }
             MoveEntity::Folder {
                 id,
@@ -821,11 +773,12 @@ async fn dispatch(
                         id,
                         folder_parent_id,
                     )
-                    .await?;
+                    .await
                 } else {
-                    client.move_folder(id, folder_parent_id).await?;
+                    client.move_folder(id, folder_parent_id).await
                 }
-                output::print_done(json_output, "moved", "folder", id)?;
+                .context("moving Folder")?;
+                output::print_done(json_output, "moved", id)?;
             }
         },
 
@@ -858,6 +811,15 @@ async fn dispatch(
         }
     }
 
+    Ok(())
+}
+
+/// What `create` prints: `ResourceID: <id>`, or `{"id": <id>}` with `--json`.
+fn print_created(json_output: bool, label: &str, id: &str) -> Result<()> {
+    if json_output {
+        return output::print_json(&serde_json::json!({ "id": id }));
+    }
+    println!("{label}: {id}");
     Ok(())
 }
 

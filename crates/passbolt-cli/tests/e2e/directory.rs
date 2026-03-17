@@ -40,14 +40,15 @@ fn create_user(first_name: &str) -> (String, Cleanup) {
 /// `(user_id, is_admin)` of each member.
 fn members(group_id: &str) -> Vec<(String, bool)> {
     let group = run_json_as(ADMIN, &["get", "group", "--id", group_id]);
-    group["groups_users"]
+    group["users"]
         .as_array()
-        .unwrap()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
         .iter()
         .map(|membership: &Value| {
             (
-                membership["user_id"].as_str().unwrap().to_string(),
-                membership["is_admin"] == true,
+                membership["id"].as_str().unwrap().to_string(),
+                membership["is_group_manager"] == true,
             )
         })
         .collect()
@@ -60,7 +61,7 @@ fn created_user_reads_back() {
     let fetched = run_json_as(ADMIN, &["get", "user", "--id", &user.id]);
 
     assert_eq!(fetched["username"], username.as_str());
-    assert_eq!(fetched["profile"]["first_name"], "Edith");
+    assert_eq!(fetched["first_name"], "Edith");
 }
 
 #[test]
@@ -86,7 +87,7 @@ fn renamed_user_reads_back() {
     );
 
     assert_eq!(
-        run_json_as(ADMIN, &["get", "user", "--id", &user.id])["profile"]["first_name"],
+        run_json_as(ADMIN, &["get", "user", "--id", &user.id])["first_name"],
         "Frances"
     );
 }
@@ -101,7 +102,7 @@ fn promoted_user_becomes_admin() {
     );
 
     assert_eq!(
-        run_json_as(ADMIN, &["get", "user", "--id", &user.id])["role"]["name"],
+        run_json_as(ADMIN, &["get", "user", "--id", &user.id])["role"],
         "admin"
     );
 }
@@ -149,7 +150,9 @@ fn removed_member_leaves_the_group() {
 
     run_as(
         ADMIN,
-        &["update", "group", "--id", &group.id, "--delete", &member],
+        &[
+            "update", "group", "--id", &group.id, "--delete", "--user", &member,
+        ],
     );
 
     assert_eq!(members(&group.id), [(manager, true)]);
@@ -268,10 +271,12 @@ fn group_table_shows_the_manager() {
 
     let shown = run_text_as(ADMIN, &["get", "group", "--id", &group.id]);
 
-    assert!(
-        shown.contains(&admin_id()) && shown.contains("Manager"),
-        "{shown}"
-    );
+    let manager_row = shown
+        .lines()
+        .find(|line| line.starts_with(&admin_id()))
+        .unwrap_or_else(|| panic!("no manager row: {shown}"));
+    assert!(shown.contains("IsGroupManager"), "{shown}");
+    assert!(manager_row.trim_end().ends_with("true"), "{shown}");
 }
 
 #[test]

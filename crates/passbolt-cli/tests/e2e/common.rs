@@ -148,6 +148,31 @@ pub fn user_id(username: &str) -> String {
         .to_string()
 }
 
+/// Column `column` of resource `id`, read as `account` from `list resource -c … --json`: the
+/// fields `get resource` does not print.
+pub fn resource_column(account: Account, id: &str, column: &str) -> Value {
+    let listed = run_json_as(
+        account,
+        &[
+            "list",
+            "resource",
+            "--filter",
+            &format!("id={id}"),
+            "-c",
+            column,
+        ],
+    );
+    listed[0][column].clone()
+}
+
+/// The key type of the metadata of resource `id` (`user_key` or `shared_key`), as `account`
+/// reads it on the server.
+pub fn metadata_key_type(account: Account, id: &str) -> Option<String> {
+    block_on(sdk_login(account).get_resource(id))
+        .unwrap()
+        .metadata_key_type
+}
+
 /// Ids in a JSON list output.
 pub fn ids(listed: &Value) -> Vec<&str> {
     listed
@@ -212,11 +237,16 @@ pub fn admin_id() -> String {
     current_user_id(ADMIN)
 }
 
+/// The id of `account`: `get user` does not print ids, as in go-passbolt-cli.
 pub fn current_user_id(account: Account) -> String {
-    run_json_as(account, &["get", "user", "--id", "me"])["id"]
-        .as_str()
-        .unwrap()
-        .to_string()
+    static IDS: std::sync::Mutex<[Option<String>; 2]> = std::sync::Mutex::new([None, None]);
+    let slot = usize::from(matches!(account, Account::Admin));
+    if let Some(id) = &IDS.lock().unwrap()[slot] {
+        return id.clone();
+    }
+    let id = block_on(sdk_login(account).get_me()).unwrap().id;
+    IDS.lock().unwrap()[slot] = Some(id.clone());
+    id
 }
 
 /// Group created by the admin. Only a group manager can add members, so pass the admin

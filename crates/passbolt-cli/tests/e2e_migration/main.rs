@@ -21,8 +21,9 @@ mod common;
 use serde_json::Value;
 
 use common::{
-    admin_id, assert_signed_by, block_on, create_group, current_user_id, openpgp_js, private_key,
-    run, run_json, run_json_as, sdk_login, unique_name, Account, Cleanup, ADMIN,
+    admin_id, assert_signed_by, block_on, create_group, current_user_id, metadata_key_type,
+    openpgp_js, private_key, resource_column, run, run_json, run_json_as, sdk_login, unique_name,
+    Account, Cleanup, ADMIN,
 };
 
 const TOTP_KEY: &str = "JBSWY3DPEHPK3PXP";
@@ -35,12 +36,9 @@ fn create_v4(account: Account, slug: &str, args: &[&str]) -> (Cleanup, String) {
     let mut create_args = vec!["create", "resource", "--type", slug, "--name", &name];
     create_args.extend_from_slice(args);
     let created = run_json_as(account, &create_args);
-    assert!(
-        run_json_as(
-            account,
-            &["get", "resource", "--id", created["id"].as_str().unwrap()]
-        )["metadata_key_type"]
-            .is_null(),
+    assert_eq!(
+        key_type(account, created["id"].as_str().unwrap()),
+        Value::Null,
         "{slug} is not created as v4"
     );
     (Cleanup::by(account, "resource", &created), name)
@@ -52,6 +50,11 @@ fn migrate(args: &[&str]) -> u64 {
     run_json_as(ADMIN, &migrate_args)["upgraded"]
         .as_u64()
         .unwrap()
+}
+
+/// The key type of the metadata of resource `id`, `null` for a v4 resource.
+fn key_type(account: Account, id: &str) -> Value {
+    metadata_key_type(account, id).map_or(Value::Null, Value::from)
 }
 
 fn get_as(account: Account, id: &str) -> Value {
@@ -94,8 +97,16 @@ fn every_v4_type_becomes_its_v5_type_its_owner_still_reads() {
 
     for ((v4_slug, _, v5_slug), (resource, name)) in cases.iter().zip(&created) {
         let fetched = get_as(Account::User, &resource.id);
-        assert_eq!(fetched["resource_type"], *v5_slug, "{v4_slug}: {fetched}");
-        assert_eq!(fetched["metadata_key_type"], "user_key", "{v4_slug}");
+        assert_eq!(
+            resource_column(Account::User, &resource.id, "resource_type"),
+            *v5_slug,
+            "{v4_slug}: {fetched}"
+        );
+        assert_eq!(
+            key_type(Account::User, &resource.id),
+            "user_key",
+            "{v4_slug}"
+        );
         assert_eq!(fetched["name"], name.as_str(), "{v4_slug}");
         if *v4_slug != "totp" {
             assert_eq!(fetched["username"], "e2e", "{v4_slug}");
@@ -124,7 +135,7 @@ fn the_administrators_own_personal_resources_stay_readable() {
     migrate(&[]);
 
     let fetched = get_as(ADMIN, &resource.id);
-    assert_eq!(fetched["metadata_key_type"], "user_key");
+    assert_eq!(key_type(ADMIN, &resource.id), "user_key");
     assert_eq!(fetched["name"], name.as_str());
     assert_eq!(fetched["password"], "p");
 }
@@ -151,7 +162,7 @@ fn a_resource_shared_with_another_user_gets_the_shared_key_both_read() {
 
     for account in [Account::User, ADMIN] {
         let fetched = get_as(account, &resource.id);
-        assert_eq!(fetched["metadata_key_type"], "shared_key");
+        assert_eq!(key_type(account, &resource.id), "shared_key");
         assert_eq!(fetched["name"], name.as_str());
         assert_eq!(fetched["password"], "p");
     }
@@ -190,7 +201,7 @@ fn a_resource_only_a_group_reads_gets_the_shared_key() {
     migrate(&[]);
 
     let fetched = get_as(Account::User, &resource.id);
-    assert_eq!(fetched["metadata_key_type"], "shared_key");
+    assert_eq!(key_type(Account::User, &resource.id), "shared_key");
     assert_eq!(fetched["name"], name.as_str());
     assert_eq!(fetched["password"], "p");
 }
@@ -220,11 +231,8 @@ fn shared_only_leaves_the_personal_resources_in_v4() {
 
     migrate(&["--shared-only"]);
 
-    assert!(get_as(Account::User, &personal.id)["metadata_key_type"].is_null());
-    assert_eq!(
-        get_as(Account::User, &shared.id)["metadata_key_type"],
-        "shared_key"
-    );
+    assert_eq!(key_type(Account::User, &personal.id), Value::Null);
+    assert_eq!(key_type(Account::User, &shared.id), "shared_key");
 }
 
 #[test]

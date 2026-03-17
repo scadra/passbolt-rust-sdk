@@ -16,3 +16,4 @@ pub mod output;
 pub mod password;
 pub mod resources;
 pub mod session;
+pub mod shapes;

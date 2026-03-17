@@ -11,8 +11,8 @@
 // @since         0.1.0
 
 use crate::common::{
-    admin_id, create_folder, create_resource, ids, run, run_json, run_json_as, run_text,
-    share_with_user_id, unique_name, Cleanup, ADMIN,
+    admin_id, create_folder, create_resource, ids, metadata_key_type, resource_column, run,
+    run_json, run_json_as, run_text, share_with_user_id, unique_name, Account, Cleanup, ADMIN,
 };
 
 const TOTP_KEY: &str = "JBSWY3DPEHPK3PXP";
@@ -77,11 +77,15 @@ fn every_creatable_type_reads_back() {
     ];
 
     for (slug, args, v5) in cases {
-        let (_resource, fetched) = create_and_get(slug, args);
+        let (resource, fetched) = create_and_get(slug, args);
 
-        assert_eq!(fetched["resource_type"], slug, "{fetched}");
         assert_eq!(
-            fetched["metadata_key_type"].is_string(),
+            resource_column(Account::User, &resource.id, "resource_type"),
+            slug,
+            "{fetched}"
+        );
+        assert_eq!(
+            metadata_key_type(Account::User, &resource.id).is_some(),
             v5,
             "{slug}: {fetched}"
         );
@@ -193,7 +197,10 @@ fn v5_personal_resource_shared_with_a_user_reads_back_for_them() {
     let as_recipient = run_json_as(ADMIN, &["get", "resource", "--id", &resource.id]);
     assert_eq!(as_recipient["name"], name.as_str());
     assert_eq!(as_recipient["password"], "shared-password");
-    assert_eq!(as_recipient["metadata_key_type"], "shared_key");
+    assert_eq!(
+        metadata_key_type(ADMIN, &resource.id).as_deref(),
+        Some("shared_key")
+    );
 }
 
 #[test]
@@ -322,7 +329,7 @@ fn an_unknown_column_is_refused() {
         .unwrap();
 
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Unknown column colour"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unknown column: \"colour\""));
 }
 
 #[test]
@@ -345,7 +352,11 @@ fn secret_fields_alone_create_a_resource_of_the_matching_type() {
 
         let fetched = run_json(&["get", "resource", "--id", &resource.id]);
 
-        assert_eq!(fetched["resource_type"], slug, "{fetched}");
+        assert_eq!(
+            resource_column(Account::User, &resource.id, "resource_type"),
+            slug,
+            "{fetched}"
+        );
         let value = if read_field == "note" {
             &fetched["secret"]["description"]
         } else {

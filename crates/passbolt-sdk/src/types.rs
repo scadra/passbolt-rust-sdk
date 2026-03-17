@@ -79,6 +79,8 @@ pub struct Resource {
     pub metadata_key_type: Option<String>,
     #[serde(default)]
     pub expired: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted: Option<bool>,
 }
 
 impl Resource {
@@ -332,6 +334,9 @@ pub struct User {
     pub active: Option<bool>,
     #[serde(default)]
     pub deleted: Option<bool>,
+    /// When the account was disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<String>,
     #[serde(default)]
     pub profile: Option<UserProfile>,
     #[serde(default)]

@@ -414,6 +414,7 @@ mod tests {
             metadata_key_id: None,
             metadata_key_type: None,
             expired: None,
+            deleted: None,
         }
     }
 

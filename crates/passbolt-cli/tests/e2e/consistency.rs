@@ -22,37 +22,38 @@ use crate::common::{
 #[test]
 fn permission_columns_can_be_chosen() {
     let resource = create_resource(&unique_name("columns"), "p", &[]);
+    let me = current_user_id(Account::User);
 
     let table = run_text(&[
         "get",
-        "resource-permissions",
+        "resource",
+        "permission",
         "--id",
         &resource.id,
         "-c",
-        "Permission Type",
+        "Type",
         "-c",
-        "aro_id",
+        "AroForeignKey",
     ]);
     let json = run_json(&[
         "get",
-        "resource-permissions",
+        "resource",
+        "permissions",
         "--id",
         &resource.id,
         "-c",
-        "type",
+        "Type",
     ]);
 
-    let header = table
-        .lines()
-        .find(|line| line.contains("Type"))
-        .unwrap_or_default();
-    let header_cells: Vec<&str> = header
-        .split('|')
-        .map(str::trim)
-        .filter(|cell| !cell.is_empty())
-        .collect();
-    assert_eq!(header_cells, ["Type", "ARO ID"], "{table}");
-    assert_eq!(json[0], serde_json::json!({ "type": "Owner" }));
+    assert_eq!(
+        table,
+        format!(
+            "Type  | AroForeignKey{}\nowner | {me}\n\n",
+            " ".repeat(me.len() - "AroForeignKey".len())
+        )
+    );
+    assert_eq!(json[0]["type"], 15, "the JSON keeps every field: {json}");
+    assert_eq!(json[0]["aco_foreign_key"], resource.id.as_str());
 }
 
 #[test]
