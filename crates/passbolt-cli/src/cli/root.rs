@@ -331,8 +331,9 @@ pub struct PermissionArgs {
 
 #[derive(clap::Args, Debug)]
 pub struct ListArgs {
-    /// Field conditions: field=value, field!=value, field~=contains, field^=prefix,
-    /// field$=suffix
+    /// A CEL expression on the columns (see -c), e.g.
+    /// `name == "x" && created_timestamp > timestamp("2024-01-01T00:00:00Z")`, or field
+    /// conditions: field=value, field!=value, field~=contains, field^=prefix, field$=suffix
     #[arg(long, global = true)]
     pub filter: Vec<String>,
     #[command(subcommand)]

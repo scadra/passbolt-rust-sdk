@@ -160,12 +160,41 @@ fn given(value: Option<&String>) -> Option<String> {
     value.filter(|value| !value.is_empty()).cloned()
 }
 
-fn parse_filters(expressions: &[String]) -> Result<Vec<passbolt_sdk::filter::Filter>> {
-    expressions
-        .iter()
-        .map(|expression| passbolt_sdk::filter::Filter::parse(expression))
-        .collect::<Result<_, _>>()
-        .map_err(Into::into)
+/// The `--filter` texts: CEL expressions, applied to the listed rows, and field conditions of the
+/// older syntax, which the SDK applies. An empty text filters nothing, as in go-passbolt-cli.
+fn split_filters(
+    texts: &[String],
+    variables: &[util::cel::Variable],
+) -> Result<(
+    Vec<passbolt_sdk::filter::Filter>,
+    Vec<util::cel::Expression>,
+)> {
+    use util::cel::FilterExpression;
+
+    let mut legacy = Vec::new();
+    let mut expressions = Vec::new();
+    for text in texts.iter().filter(|text| !text.trim().is_empty()) {
+        match FilterExpression::parse(text, variables)? {
+            FilterExpression::Cel(expression) => expressions.push(expression),
+            FilterExpression::Legacy(filter) => legacy.push(filter),
+        }
+    }
+    Ok((legacy, expressions))
+}
+
+/// `items` kept by every CEL expression; nothing kept is an error, as in go-passbolt-cli.
+fn cel_filtered<T>(
+    items: Vec<T>,
+    columns: &util::columns::Columns<T>,
+    variables: &[util::cel::Variable],
+    expressions: &[util::cel::Expression],
+) -> Result<Vec<T>> {
+    expressions.iter().try_fold(items, |items, expression| {
+        let read = expression.columns();
+        expression.filter(items, columns.noun, |item| {
+            columns.cel_row(variables, &read, item)
+        })
+    })
 }
 
 /// A filter matching nothing is an error, as in go-passbolt-cli.
@@ -443,8 +472,11 @@ async fn dispatch(
 
         // ── List ────────────────────────────────────────────────────────────
         Commands::List(args) => {
+            use util::cel::{
+                FOLDER_VARIABLES, GROUP_VARIABLES, RESOURCE_SECRET_COLUMNS, RESOURCE_VARIABLES,
+                USER_VARIABLES,
+            };
             let filter = &args.filter;
-            let filters = parse_filters(filter)?;
             match &args.entity {
                 ListEntity::Resource {
                     favorite,
@@ -454,9 +486,13 @@ async fn dispatch(
                     search,
                     column,
                 } => {
+                    let (filters, expressions) = split_filters(filter, RESOURCE_VARIABLES)?;
                     let selected = RESOURCES.select(column)?;
                     let needs_secrets = selected.iter().any(|column| column.secret)
-                        || filters_need_secrets(&filters);
+                        || filters_need_secrets(&filters)
+                        || expressions
+                            .iter()
+                            .any(|expression| expression.reads_any(RESOURCE_SECRET_COLUMNS));
                     let query = passbolt_sdk::ResourceQuery {
                         favorites_only: *favorite,
                         owned_by_me: *own,
@@ -483,6 +519,7 @@ async fn dispatch(
                         })
                         .collect();
                     let views = found(views, RESOURCES.noun, filter)?;
+                    let views = cel_filtered(views, &RESOURCES, RESOURCE_VARIABLES, &expressions)?;
                     RESOURCES.print(&views, column, shapes::listed_resource, json_output)?;
                 }
 
@@ -492,6 +529,7 @@ async fn dispatch(
                     group,
                     column,
                 } => {
+                    let (filters, expressions) = split_filters(filter, FOLDER_VARIABLES)?;
                     let folders = passbolt_sdk::folder::list::list_folders(
                         client,
                         search.clone(),
@@ -502,6 +540,7 @@ async fn dispatch(
                     .await
                     .context("listing Folder")?;
                     let folders = found(folders, FOLDERS.noun, filter)?;
+                    let folders = cel_filtered(folders, &FOLDERS, FOLDER_VARIABLES, &expressions)?;
                     FOLDERS.print(&folders, column, shapes::listed_folder, json_output)?;
                 }
 
@@ -512,6 +551,7 @@ async fn dispatch(
                     admin,
                     column,
                 } => {
+                    let (filters, expressions) = split_filters(filter, USER_VARIABLES)?;
                     let users = passbolt_sdk::user::list::list_users(
                         client,
                         search.clone(),
@@ -523,6 +563,7 @@ async fn dispatch(
                     .await
                     .context("listing User")?;
                     let users = found(users, USERS.noun, filter)?;
+                    let users = cel_filtered(users, &USERS, USER_VARIABLES, &expressions)?;
                     USERS.print(&users, column, shapes::listed_user, json_output)?;
                 }
 
@@ -531,6 +572,7 @@ async fn dispatch(
                     manager,
                     column,
                 } => {
+                    let (filters, expressions) = split_filters(filter, GROUP_VARIABLES)?;
                     let groups = passbolt_sdk::group::list::list_groups(
                         client,
                         user.clone(),
@@ -540,6 +582,7 @@ async fn dispatch(
                     .await
                     .context("listing Group")?;
                     let groups = found(groups, GROUPS.noun, filter)?;
+                    let groups = cel_filtered(groups, &GROUPS, GROUP_VARIABLES, &expressions)?;
                     GROUPS.print(&groups, column, shapes::listed_group, json_output)?;
                 }
             }

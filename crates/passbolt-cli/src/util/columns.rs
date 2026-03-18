@@ -19,6 +19,9 @@ use passbolt_sdk::types::{Folder, Group, GroupUser, Permission, User};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use std::collections::HashMap;
+
+use crate::util::cel::{zero_timestamp, CelValue, Kind, Variable};
 use crate::util::output;
 use crate::util::shapes::{self, metadata_text, permission_type_name, table_time};
 
@@ -79,6 +82,42 @@ impl<T> Columns<T> {
                 .collect());
         }
         requested.iter().map(|name| self.find(name)).collect()
+    }
+
+    /// The columns `read` of `item`, typed as `variables` declare them for a CEL filter.
+    pub fn cel_row(
+        &self,
+        variables: &[Variable],
+        read: &[&str],
+        item: &T,
+    ) -> HashMap<&'static str, CelValue> {
+        self.columns
+            .iter()
+            .filter(|column| read.contains(&column.name))
+            .filter_map(|column| {
+                let kind = variables
+                    .iter()
+                    .find(|variable| variable.column == column.name)?
+                    .kind;
+                let value = (column.value)(item);
+                let typed = match kind {
+                    Kind::String => CelValue::String(cell(value)),
+                    Kind::Bool => CelValue::Bool(value.as_bool().unwrap_or(false)),
+                    Kind::Int => CelValue::Int(value.as_i64().unwrap_or(0)),
+                    Kind::Timestamp => CelValue::Timestamp(
+                        value
+                            .as_str()
+                            .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+                            .map_or_else(zero_timestamp, |date| date.to_utc()),
+                    ),
+                    Kind::Map => CelValue::Map(match value {
+                        Value::Object(fields) => fields,
+                        _ => Map::new(),
+                    }),
+                };
+                Some((column.name, typed))
+            })
+            .collect()
     }
 
     /// Print `items`: a table of the selected columns, or JSON. Without requested columns the
@@ -712,5 +751,28 @@ mod tests {
     #[case(json!(["https://a.test", "https://b.test"]), "https://a.test, https://b.test")]
     fn test_cells_are_written_as_go_writes_them(#[case] value: Value, #[case] text: &str) {
         assert_eq!(cell(value), text);
+    }
+
+    #[test]
+    fn test_a_filter_row_reads_flags_as_booleans_and_missing_dates_as_zero() {
+        let user: User = serde_json::from_value(json!({
+            "id": "u1",
+            "username": "ada@passbolt.test",
+            "disabled": "2024-01-01T10:00:00+00:00"
+        }))
+        .unwrap();
+
+        let row = USERS.cel_row(
+            crate::util::cel::USER_VARIABLES,
+            &["active", "disabled", "created_timestamp"],
+            &user,
+        );
+
+        assert_eq!(row["active"], CelValue::Bool(false));
+        assert_eq!(row["disabled"], CelValue::Bool(true));
+        assert_eq!(
+            row["created_timestamp"],
+            CelValue::Timestamp(zero_timestamp())
+        );
     }
 }

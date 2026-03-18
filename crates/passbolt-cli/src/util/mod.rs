@@ -10,6 +10,7 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
+pub mod cel;
 pub mod columns;
 pub mod mfa;
 pub mod output;
