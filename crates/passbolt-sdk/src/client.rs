@@ -54,6 +54,10 @@ pub struct PassboltSdk<H: HttpClient> {
     /// The user's session keys of resource metadata, read once per session, then kept in step
     /// with what this session saves.
     session_keys: Mutex<Option<Arc<SessionKeys>>>,
+    /// Session keys found while decrypting single resources, not saved yet.
+    pending_session_keys: Mutex<Vec<ResourceSessionKey>>,
+    /// Session keys saved to the server during this session.
+    saved_session_keys: std::sync::atomic::AtomicUsize,
     resource_types: OnceLock<Arc<Vec<ResourceType>>>,
     metadata_settings: OnceLock<Arc<MetadataSettings>>,
     /// Answers the MFA challenge the server sends on any request after login.
@@ -224,6 +228,8 @@ impl<H: HttpClient> PassboltSdk<H> {
             trusted_metadata_key: Some(sdk_config.metadata_key_fingerprint.clone())
                 .filter(|fingerprint| !fingerprint.is_empty()),
             session_keys: Mutex::default(),
+            pending_session_keys: Mutex::default(),
+            saved_session_keys: std::sync::atomic::AtomicUsize::new(0),
             resource_types: OnceLock::new(),
             metadata_settings: OnceLock::new(),
             mfa_provider,
@@ -421,6 +427,7 @@ impl<H: HttpClient> PassboltSdk<H> {
             }
             self.mfa_failures.fetch_add(1, Ordering::SeqCst);
             last_error = server_message(&response);
+            provider.code_refused();
         }
         if attempts == 0 {
             last_error = format!("{MAX_MFA_FAILURES} codes were already refused in this session");
@@ -749,7 +756,34 @@ impl<H: HttpClient> PassboltSdk<H> {
             .session_keys
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(saved));
+        self.saved_session_keys
+            .fetch_add(new.len(), Ordering::SeqCst);
         Ok(())
+    }
+
+    /// Session keys found by [`Self::decrypt_resource_metadata`] and not saved yet.
+    pub fn pending_session_keys_count(&self) -> usize {
+        self.pending_session_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// Save the session keys found by [`Self::decrypt_resource_metadata`], as go-passbolt does
+    /// before logging out: the next reads of these resources decrypt faster.
+    pub async fn save_pending_session_keys(&self) -> Result<(), PassboltError> {
+        let pending = std::mem::take(
+            &mut *self
+                .pending_session_keys
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        self.save_session_keys(&pending).await
+    }
+
+    /// Number of session keys saved to the server during this session.
+    pub fn saved_session_keys_count(&self) -> usize {
+        self.saved_session_keys.load(Ordering::SeqCst)
     }
 
     /// Store `session_keys` in their latest bundle and delete the older ones; returns them as
@@ -835,7 +869,21 @@ impl<H: HttpClient> PassboltSdk<H> {
         let decrypted = self
             .decrypt_resource_metadata_keeping_session_key(resource)
             .await?;
-        Ok(decrypted.map(|(metadata, _)| metadata))
+        Ok(decrypted.map(|(metadata, session_key)| {
+            if let Some(session_key) = session_key {
+                let mut pending = self
+                    .pending_session_keys
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                pending.retain(|known| known.resource_id != resource.id);
+                pending.push(ResourceSessionKey {
+                    resource_id: resource.id.clone(),
+                    session_key,
+                    modified: resource.modified.map(|modified| modified.to_rfc3339()),
+                });
+            }
+            metadata
+        }))
     }
 
     // ── Batch decrypt (native only — requires tokio JoinSet) ────────────────

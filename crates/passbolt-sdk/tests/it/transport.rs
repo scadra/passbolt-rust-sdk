@@ -233,3 +233,33 @@ async fn says_it_is_the_rust_client() {
 
     assert_eq!(response.status, 200);
 }
+
+#[rstest::rstest]
+#[case::cert_only(
+    Some("cert"),
+    None,
+    "client TLS private key is empty, but client TLS cert was set"
+)]
+#[case::key_only(
+    None,
+    Some("key"),
+    "client TLS cert is empty, but client TLS private key was set"
+)]
+fn an_incomplete_client_certificate_is_refused(
+    #[case] cert: Option<&str>,
+    #[case] key: Option<&str>,
+    #[case] message: &str,
+) {
+    let error = NativeHttpClient::new(&NativeHttpConfig {
+        tls_skip_verify: false,
+        client_cert_pem: cert.map(|pem| pem.as_bytes().to_vec()),
+        client_key_pem: key.map(|pem| pem.as_bytes().to_vec()),
+        proxy_url: None,
+        resolve: Vec::new(),
+        timeout: None,
+    })
+    .err()
+    .unwrap();
+
+    assert!(error.to_string().contains(message), "{error}");
+}

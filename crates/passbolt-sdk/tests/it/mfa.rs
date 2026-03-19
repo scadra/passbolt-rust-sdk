@@ -219,3 +219,37 @@ async fn checking_the_session_never_answers_the_mfa_challenge() {
     );
     assert_eq!(fake.requests_to("POST", "/mfa/verify/totp.json").len(), 1);
 }
+
+/// Counts the codes refused it is told of.
+struct CountingRefusals {
+    codes: FixedTotpCodes,
+    refused: std::sync::Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl passbolt_sdk::MfaProvider for CountingRefusals {
+    fn get_totp_code(&self) -> Result<String, PassboltError> {
+        passbolt_sdk::MfaProvider::get_totp_code(&self.codes)
+    }
+
+    fn code_refused(&self) {
+        self.refused
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn the_provider_is_told_of_each_refused_code() {
+    let fake = FakePassbolt::new();
+    fake.require_mfa(CODE);
+    let refused = std::sync::Arc::default();
+    let provider = CountingRefusals {
+        codes: FixedTotpCodes::new(&["000000", "111111", CODE]),
+        refused: std::sync::Arc::clone(&refused),
+    };
+
+    PassboltSdk::login(fake.clone(), &ada_config(), Some(Box::new(provider)), 3)
+        .await
+        .unwrap();
+
+    assert_eq!(refused.load(std::sync::atomic::Ordering::SeqCst), 2);
+}

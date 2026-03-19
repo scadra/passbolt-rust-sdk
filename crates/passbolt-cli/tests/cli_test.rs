@@ -11,6 +11,7 @@
 // @since         0.1.0
 
 use assert_cmd::Command;
+use predicates::prelude::*;
 use predicates::str::contains;
 
 fn passbolt() -> Command {
@@ -32,7 +33,10 @@ fn test_version_flag() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(contains("0.1"));
+        .stdout(predicates::str::starts_with(
+            "passbolt version 0.1.0 (Built on ",
+        ))
+        .stdout(contains(" from Git SHA "));
 }
 
 #[test]
@@ -58,7 +62,7 @@ fn test_list_resource_fails_without_server() {
 
 #[test]
 fn test_unknown_subcommand_fails() {
-    passbolt().arg("nonexistent-command").assert().failure();
+    passbolt().arg("nonexistent-command").assert().code(1);
 }
 
 #[test]
@@ -316,6 +320,8 @@ fn an_invalid_resolve_fails_before_any_network_access() {
             "http://127.0.0.1:1",
             "--user-private-key-file",
             fixture_key("ada_private.asc").to_str().unwrap(),
+            "--user-password",
+            "p",
             "--resolve",
             "bad",
             "verify",
@@ -339,6 +345,8 @@ fn the_config_flag_selects_the_file_a_command_reads() {
             config.to_str().unwrap(),
             "--user-private-key-file",
             fixture_key("ada_private.asc").to_str().unwrap(),
+            "--user-password",
+            "p",
             "verify",
         ])
         .assert()
@@ -387,6 +395,8 @@ fn timeout_aborts_a_request_to_a_silent_server() {
             &format!("http://{address}"),
             "--user-private-key-file",
             fixture_key("ada_private.asc").to_str().unwrap(),
+            "--user-password",
+            "p",
             "--timeout",
             "1s",
             "verify",
@@ -438,18 +448,26 @@ fn gendoc_refuses_an_unknown_format() {
 }
 
 #[test]
-fn an_unknown_mfa_mode_is_refused_before_contacting_the_server() {
+fn an_unknown_mfa_mode_is_none_as_for_go_passbolt_cli() {
     let directory = tempfile::tempdir().unwrap();
 
     passbolt()
         .env("PASSBOLT_CONFIG", directory.path().join("config.toml"))
-        .env("PASSBOLT_SERVER_ADDRESS", "http://127.0.0.1:1")
-        .env("PASSBOLT_USER_PASSWORD", "dummy")
-        .env("PASSBOLT_USER_PRIVATE_KEY", "not-a-key")
-        .args(["--mfa-mode", "interactive", "list", "resource"])
+        .args([
+            "--serverAddress",
+            "http://127.0.0.1:1",
+            "--userPassword",
+            "p",
+        ])
+        .args([
+            "--userPrivateKeyFile",
+            fixture_key("ada_private.asc").to_str().unwrap(),
+        ])
+        .args(["--mfaMode", "interactive", "list", "resource"])
         .assert()
-        .failure()
-        .stderr(contains("Unknown MFA mode interactive"));
+        .code(1)
+        .stderr(contains("127.0.0.1:1"))
+        .stderr(contains("MFA").not());
 }
 
 #[test]

@@ -21,6 +21,7 @@ mod directory;
 mod errors;
 mod folder_permissions;
 mod folders;
+mod go_parity;
 mod interop;
 mod outputs;
 mod pinning;

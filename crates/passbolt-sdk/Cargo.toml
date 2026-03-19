@@ -47,7 +47,7 @@ regex-lite = "0.1"
 tokio = { version = "1", features = ["full"], optional = true }
 
 # HTTP client (gated behind native feature)
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "cookies"], default-features = false, optional = true }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "rustls-tls-native-roots", "cookies"], default-features = false, optional = true }
 
 # TOTP (gated behind totp feature)
 totp-rs = { version = "5", features = ["serde_support", "gen_secret"], optional = true }
