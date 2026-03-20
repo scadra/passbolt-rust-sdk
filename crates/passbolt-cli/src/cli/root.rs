@@ -12,98 +12,144 @@
 
 use clap::{Parser, Subcommand};
 
-/// passbolt-rs — Passbolt CLI
+/// `passbolt version X (Built on DATE from Git SHA SHA)`, as go-passbolt-cli prints it.
+const VERSION: &str = env!("PASSBOLT_VERSION_TEXT");
+
+/// Global flags. Each one also takes go-passbolt-cli's spelling (`--serverAddress`), and is
+/// also read from the environment: `PASSBOLT_SERVER_ADDRESS`, or go-passbolt-cli's
+/// `SERVERADDRESS`. Durations use Go's syntax (`30s`, `1m30s`, `-1m`); a plain number is
+/// seconds. Booleans take `--debug`, `--debug=true` or `--debug=false`.
 #[derive(Parser, Debug)]
 #[command(
     name = "passbolt",
-    version,
+    version = VERSION,
+    disable_version_flag = true,
     about = "Passbolt CLI — manage your Passbolt password manager",
     long_about = None
 )]
 pub struct Cli {
-    /// Path to config file (default: ~/.config/passbolt/config.toml)
+    /// Print the version
+    #[arg(short = 'v', long = "version", short_alias = 'V', action = clap::ArgAction::Version)]
+    pub version: Option<bool>,
+
+    /// Config file (default: ~/.config/passbolt/config.toml, else go-passbolt-cli's); its
+    /// extension gives the format: toml, json or yaml
     #[arg(long, global = true, env = "PASSBOLT_CONFIG")]
     pub config: Option<String>,
 
-    /// Passbolt server URL
-    #[arg(long, global = true, env = "PASSBOLT_SERVER_ADDRESS")]
+    /// Passbolt server address (`https://passbolt.example.com`)
+    #[arg(long, alias = "serverAddress", global = true)]
     pub server_address: Option<String>,
 
     /// PGP private key (armored, inline)
-    #[arg(long, global = true, env = "PASSBOLT_USER_PRIVATE_KEY")]
+    #[arg(long, alias = "userPrivateKey", global = true)]
     pub user_private_key: Option<String>,
 
-    /// Path to PGP private key file
-    #[arg(long, global = true, env = "PASSBOLT_USER_PRIVATE_KEY_FILE")]
+    /// File of the PGP private key: overrides --user-private-key; `configure` saves its
+    /// content
+    #[arg(long, alias = "userPrivateKeyFile", global = true)]
     pub user_private_key_file: Option<String>,
 
-    /// Master password (passphrase for the private key); also read from
-    /// `PASSBOLT_USER_PASSWORD`, which `configure` never saves
-    #[arg(long, global = true)]
+    /// Passphrase of the private key, asked for when not given; `configure` never saves the
+    /// one of an environment variable
+    #[arg(long, alias = "userPassword", global = true)]
     pub user_password: Option<String>,
 
-    /// MFA mode: interactive-totp | non-interactive-totp | none [default: interactive-totp]
-    #[arg(long, global = true, env = "PASSBOLT_MFA_MODE")]
+    /// How to answer MFA: none, interactive-totp or noninteractive-totp (also spelt
+    /// non-interactive-totp); any other mode is none [default: interactive-totp]
+    #[arg(long, alias = "mfaMode", global = true)]
     pub mfa_mode: Option<String>,
 
-    /// TOTP token for non-interactive MFA; also read from `PASSBOLT_MFA_TOTP_TOKEN`, which
-    /// `configure` never saves
-    #[arg(long, global = true)]
+    /// TOTP secret for noninteractive-totp; `configure` never saves the one of an
+    /// environment variable
+    #[arg(long, alias = "mfaTotpToken", global = true)]
     pub mfa_totp_token: Option<String>,
 
-    /// TOTP clock offset in seconds [default: 0]
-    #[arg(long, global = true, env = "PASSBOLT_MFA_TOTP_OFFSET")]
-    pub mfa_totp_offset: Option<i64>,
+    #[arg(long = "totpToken", global = true, hide = true)]
+    pub totp_token: Option<String>,
 
-    /// Number of MFA attempts, at most 3: the server disables the account after too many wrong
-    /// codes [default: 3]
-    #[arg(long, global = true, env = "PASSBOLT_MFA_RETRYS")]
+    /// TOTP clock offset for noninteractive-totp (e.g. 30s, -1m) [default: 0s]
+    #[arg(
+        long,
+        alias = "mfaTotpOffset",
+        global = true,
+        allow_hyphen_values = true
+    )]
+    pub mfa_totp_offset: Option<String>,
+
+    #[arg(
+        long = "totpOffset",
+        global = true,
+        hide = true,
+        allow_hyphen_values = true
+    )]
+    pub totp_offset: Option<String>,
+
+    /// TOTP codes to try in noninteractive-totp, at most 3: the server disables the account
+    /// after too many wrong codes (interactive-totp always asks 3 times) [default: 3]
+    #[arg(long, alias = "mfaRetrys", global = true)]
     pub mfa_retrys: Option<u32>,
 
-    /// Minimum delay between MFA attempts (e.g. 10s); a new attempt also waits for a new TOTP
-    /// code [default: 10s]
-    #[arg(long, global = true, env = "PASSBOLT_MFA_DELAY")]
+    /// Minimum delay between TOTP attempts in noninteractive-totp; a new attempt also waits
+    /// for a new code [default: 10s]
+    #[arg(long, alias = "mfaDelay", global = true)]
     pub mfa_delay: Option<String>,
 
-    /// Skip TLS certificate verification (insecure)
-    #[arg(long, global = true, env = "PASSBOLT_TLS_SKIP_VERIFY")]
-    pub tls_skip_verify: bool,
+    /// Allow servers with self-signed certificates (insecure)
+    #[arg(
+        long,
+        alias = "tlsSkipVerify",
+        global = true,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_parser = crate::config::parse_go_bool
+    )]
+    pub tls_skip_verify: Option<bool>,
 
-    /// TLS client certificate (PEM, inline)
-    #[arg(long, global = true, env = "PASSBOLT_TLS_CLIENT_CERT")]
+    /// TLS client certificate for mTLS (PEM, inline)
+    #[arg(long, alias = "tlsClientCert", global = true)]
     pub tls_client_cert: Option<String>,
 
-    /// TLS client private key (PEM, inline)
-    #[arg(long, global = true, env = "PASSBOLT_TLS_CLIENT_PRIVATE_KEY")]
+    /// TLS client private key for mTLS (PEM, inline)
+    #[arg(long, alias = "tlsClientPrivateKey", global = true)]
     pub tls_client_private_key: Option<String>,
 
-    /// Path to TLS client certificate file
-    #[arg(long, global = true, env = "PASSBOLT_TLS_CLIENT_CERT_FILE")]
+    /// File of the TLS client certificate for mTLS
+    #[arg(long, alias = "tlsClientCertFile", global = true)]
     pub tls_client_cert_file: Option<String>,
 
-    /// Path to TLS client private key file
-    #[arg(long, global = true, env = "PASSBOLT_TLS_CLIENT_PRIVATE_KEY_FILE")]
+    /// File of the TLS client private key for mTLS
+    #[arg(long, alias = "tlsClientPrivateKeyFile", global = true)]
     pub tls_client_private_key_file: Option<String>,
 
     /// HTTP proxy URL (e.g. `http://localhost:8080`)
-    #[arg(long, global = true, env = "PASSBOLT_PROXY")]
+    #[arg(long, global = true)]
     pub proxy: Option<String>,
 
     /// Pin a host name to an address: `host:port:address` (like `curl --resolve`)
-    #[arg(long, global = true, env = "PASSBOLT_RESOLVE")]
+    #[arg(long, global = true)]
     pub resolve: Option<String>,
 
-    /// Request timeout (e.g. 1m, 30s) [default: 1m]
-    #[arg(long, global = true, env = "PASSBOLT_TIMEOUT")]
+    /// Time each request, and the whole command, may take (e.g. 1m, 30s; 0 for no limit)
+    /// [default: 1m]
+    #[arg(long, global = true)]
     pub timeout: Option<String>,
 
-    /// Number of parallel workers (0 = auto) [default: 0]
-    #[arg(long, global = true, env = "PASSBOLT_WORKERS")]
+    /// Number of parallel workers (0 = number of CPUs) [default: 0]
+    #[arg(long, global = true)]
     pub workers: Option<usize>,
 
-    /// Enable debug output
-    #[arg(long, global = true, env = "PASSBOLT_DEBUG")]
-    pub debug: bool,
+    /// Enable debug output on stderr (no secrets)
+    #[arg(
+        long,
+        global = true,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_parser = crate::config::parse_go_bool
+    )]
+    pub debug: Option<bool>,
 
     /// Output JSON instead of a table
     #[arg(short = 'j', long, global = true)]
@@ -122,18 +168,23 @@ pub enum Commands {
     Verify(crate::cli::verify::VerifyArgs),
 
     /// Create resources, folders, users, groups
+    #[command(visible_alias = "new")]
     Create(CreateArgs),
 
     /// Get a resource, folder, user, group or permissions
+    #[command(visible_alias = "read")]
     Get(GetArgs),
 
     /// List resources, folders, users, groups
+    #[command(visible_aliases = ["index", "ls", "filter", "search"])]
     List(ListArgs),
 
     /// Update resources, folders, users, groups
+    #[command(visible_alias = "change")]
     Update(UpdateArgs),
 
     /// Delete resources, folders, users, groups
+    #[command(visible_alias = "remove")]
     Delete(DeleteArgs),
 
     /// Share resources and folders
@@ -184,9 +235,9 @@ pub enum CreateEntity {
         /// Default: from the fields given and the server's default version
         #[arg(short = 't', long = "type")]
         resource_type: Option<String>,
-        /// Resource name
+        /// Resource name; required unless given by --field name=… (or --type / --secret-field)
         #[arg(short = 'n', long)]
-        name: String,
+        name: Option<String>,
         /// Username / login
         #[arg(short = 'u', long)]
         username: Option<String>,
@@ -205,15 +256,15 @@ pub enum CreateEntity {
         /// PIN code, for v5-pin-code (4 to 12 digits)
         #[arg(long)]
         pin_code: Option<String>,
-        /// Field of the v5 metadata (or v4 resource) as key=value, the value read as JSON if it is
-        /// JSON: --field 'icon={"type":"keepass-icon-set","value":42}'
+        /// Field of the v5 metadata (or v4 resource) as key=value, a value starting with [ or {
+        /// read as JSON: --field 'icon={"type":"keepass-icon-set","value":42}'
         #[arg(long = "field")]
         field: Vec<String>,
-        /// Secret field as key=value, the value read as JSON if it is JSON
+        /// Secret field as key=value, a value starting with [ or { read as JSON
         #[arg(long = "secret-field")]
         secret_field: Vec<String>,
         /// Parent folder ID
-        #[arg(short = 'f', long)]
+        #[arg(short = 'f', long, alias = "folderParentID")]
         folder_parent_id: Option<String>,
         /// Expiry (RFC3339, duration "7d"/"48h", or "none")
         #[arg(long)]
@@ -235,7 +286,7 @@ pub enum CreateEntity {
     Folder {
         #[arg(short = 'n', long)]
         name: String,
-        #[arg(short = 'f', long)]
+        #[arg(short = 'f', long, alias = "folderParentID")]
         folder_parent_id: Option<String>,
     },
     /// Invite / create a user
@@ -272,26 +323,12 @@ pub struct GetArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum GetEntity {
-    Resource {
-        #[arg(long)]
-        id: String,
-    },
-    ResourcePermissions {
-        #[arg(long)]
-        id: String,
-        #[arg(short = 'c', long)]
-        column: Vec<String>,
-    },
-    Folder {
-        #[arg(long)]
-        id: String,
-    },
-    FolderPermissions {
-        #[arg(long)]
-        id: String,
-        #[arg(short = 'c', long)]
-        column: Vec<String>,
-    },
+    Resource(GetWithPermissions),
+    #[command(hide = true)]
+    ResourcePermissions(PermissionArgs),
+    Folder(GetWithPermissions),
+    #[command(hide = true)]
+    FolderPermissions(PermissionArgs),
     User {
         #[arg(long)]
         id: String,
@@ -309,16 +346,49 @@ pub enum GetEntity {
     },
 }
 
+/// `get resource --id X` or `get resource permission --id X`.
+#[derive(clap::Args, Debug)]
+#[command(subcommand_negates_reqs = true)]
+pub struct GetWithPermissions {
+    #[arg(long, required = true)]
+    pub id: Option<String>,
+    #[command(subcommand)]
+    pub permission: Option<PermissionCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PermissionCommand {
+    /// Get the permissions
+    #[command(visible_alias = "permissions")]
+    Permission(PermissionArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct PermissionArgs {
+    #[arg(long)]
+    pub id: String,
+    /// Columns: `ID`, `Aco`, `AcoForeignKey`, `Aro`, `AroForeignKey`, `Type`,
+    /// `CreatedTimestamp`, `ModifiedTimestamp`
+    #[arg(short = 'c', long)]
+    pub column: Vec<String>,
+}
+
 // ── List ──────────────────────────────────────────────────────────────────────
 
 #[derive(clap::Args, Debug)]
 pub struct ListArgs {
+    /// A CEL expression on the columns (see -c), e.g.
+    /// `name == "x" && created_timestamp > timestamp("2024-01-01T00:00:00Z")`, or field
+    /// conditions: field=value, field!=value, field~=contains, field^=prefix, field$=suffix
+    #[arg(long, global = true)]
+    pub filter: Vec<String>,
     #[command(subcommand)]
     pub entity: ListEntity,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum ListEntity {
+    #[command(visible_alias = "resources")]
     Resource {
         #[arg(long)]
         favorite: bool,
@@ -336,10 +406,8 @@ pub enum ListEntity {
         /// Columns to display
         #[arg(short = 'c', long)]
         column: Vec<String>,
-        /// Field filter expressions (field=value, field~=contains, ...)
-        #[arg(long)]
-        filter: Vec<String>,
     },
+    #[command(visible_alias = "folders")]
     Folder {
         #[arg(short = 's', long)]
         search: Option<String>,
@@ -351,32 +419,33 @@ pub enum ListEntity {
         group: Vec<String>,
         #[arg(short = 'c', long)]
         column: Vec<String>,
-        #[arg(long)]
-        filter: Vec<String>,
     },
+    #[command(visible_alias = "users")]
     User {
+        /// Users in one of these groups — may be repeated
         #[arg(short = 'g', long)]
-        group: Option<String>,
+        group: Vec<String>,
+        /// Users with access to this resource
         #[arg(short = 'r', long)]
-        resource: Option<String>,
+        resource: Vec<String>,
         #[arg(short = 's', long)]
         search: Option<String>,
-        #[arg(long)]
+        /// Only administrators
+        #[arg(short = 'a', long)]
         admin: bool,
         #[arg(short = 'c', long)]
         column: Vec<String>,
-        #[arg(long)]
-        filter: Vec<String>,
     },
+    #[command(visible_alias = "groups")]
     Group {
+        /// Groups with one of these members — may be repeated
         #[arg(short = 'u', long)]
-        user: Option<String>,
+        user: Vec<String>,
+        /// Groups with one of these managers — may be repeated
         #[arg(short = 'm', long)]
-        manager: Option<String>,
+        manager: Vec<String>,
         #[arg(short = 'c', long)]
         column: Vec<String>,
-        #[arg(long)]
-        filter: Vec<String>,
     },
 }
 
@@ -458,15 +527,15 @@ pub enum UpdateEntity {
         id: String,
         #[arg(short = 'n', long)]
         name: Option<String>,
-        /// Add member user IDs
+        /// Members: added, or made members if they manage it
         #[arg(short = 'u', long)]
         user: Vec<String>,
-        /// Add manager user IDs
+        /// Managers: added, or made managers if they are members
         #[arg(short = 'm', long)]
         manager: Vec<String>,
-        /// Remove member user IDs
+        /// Remove the given users and managers instead
         #[arg(short = 'd', long)]
-        delete: Vec<String>,
+        delete: bool,
     },
 }
 
@@ -474,19 +543,17 @@ pub enum UpdateEntity {
 
 #[derive(clap::Args, Debug)]
 pub struct DeleteArgs {
+    /// ID of what to delete
+    #[arg(long, global = true)]
+    pub id: Option<String>,
     #[command(subcommand)]
     pub entity: DeleteEntity,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum DeleteEntity {
-    Resource {
-        #[arg(long)]
-        id: String,
-    },
+    Resource,
     Folder {
-        #[arg(long)]
-        id: String,
         /// Also delete its sub-folders and the resources in them; without it, they move to the
         /// root
         #[arg(long)]
@@ -495,8 +562,6 @@ pub enum DeleteEntity {
     /// Delete a user (administrators); what they alone own or manage blocks it until given to
     /// someone with --transfer-to
     User {
-        #[arg(long)]
-        id: String,
         /// Only list what blocks the deletion
         #[arg(long, conflicts_with = "transfer_to")]
         dry_run: bool,
@@ -507,8 +572,6 @@ pub enum DeleteEntity {
     },
     /// Delete a group; what it alone owns blocks it until given to someone with --transfer-to
     Group {
-        #[arg(long)]
-        id: String,
         /// Only list what blocks the deletion
         #[arg(long, conflicts_with = "transfer_to")]
         dry_run: bool,
@@ -529,7 +592,6 @@ pub struct ShareArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ShareEntity {
-    #[command(group(clap::ArgGroup::new("recipients").args(["user", "group"]).multiple(true).required(true)))]
     Resource {
         #[arg(long)]
         id: String,
@@ -549,7 +611,6 @@ pub enum ShareEntity {
         #[arg(short = 'g', long)]
         group: Vec<String>,
     },
-    #[command(group(clap::ArgGroup::new("recipients").args(["user", "group"]).multiple(true).required(true)))]
     Folder {
         #[arg(long)]
         id: String,
@@ -586,7 +647,7 @@ pub enum MoveEntity {
         #[arg(long)]
         id: String,
         /// Target folder ID (empty = root)
-        #[arg(short = 'f', long)]
+        #[arg(short = 'f', long, alias = "folderParentID")]
         folder_parent_id: Option<String>,
         /// Also change its permissions as the browser extension does: drop those it got from the
         /// folder it leaves, add the target folder's, the higher level winning (owners only)
@@ -597,7 +658,7 @@ pub enum MoveEntity {
         #[arg(long)]
         id: String,
         /// Target folder ID (empty = root)
-        #[arg(short = 'f', long)]
+        #[arg(short = 'f', long, alias = "folderParentID")]
         folder_parent_id: Option<String>,
         /// Also change its permissions as for a resource, then copy that change onto the content
         /// the user owns (owners only)

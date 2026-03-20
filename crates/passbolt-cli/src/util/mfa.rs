@@ -13,12 +13,21 @@
 use passbolt_sdk::error::PassboltError;
 use passbolt_sdk::MfaProvider;
 
-/// Interactive MFA: prompts the user via terminal.
+/// Codes asked in interactive-totp mode, as go-passbolt-cli asks them.
+pub const INTERACTIVE_ATTEMPTS: u32 = 3;
+
+/// Asks for each TOTP code: `Enter TOTP:` on stderr, read from the terminal, or from stdin when
+/// it is not one.
 pub struct TerminalMfaProvider;
 
 impl MfaProvider for TerminalMfaProvider {
     fn get_totp_code(&self) -> Result<String, PassboltError> {
-        rpassword::prompt_password("TOTP code: ")
-            .map_err(|error| PassboltError::Other(format!("Failed to read TOTP code: {error}")))
+        crate::util::password::prompt_secret("Enter TOTP:")
+            .map(|code| code.trim().to_string())
+            .map_err(|error| PassboltError::Other(format!("reading TOTP: {error}")))
+    }
+
+    fn code_refused(&self) {
+        println!("TOTP Verification Failed");
     }
 }

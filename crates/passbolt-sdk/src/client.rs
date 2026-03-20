@@ -54,6 +54,10 @@ pub struct PassboltSdk<H: HttpClient> {
     /// The user's session keys of resource metadata, read once per session, then kept in step
     /// with what this session saves.
     session_keys: Mutex<Option<Arc<SessionKeys>>>,
+    /// Session keys found while decrypting single resources, not saved yet.
+    pending_session_keys: Mutex<Vec<ResourceSessionKey>>,
+    /// Session keys saved to the server during this session.
+    saved_session_keys: std::sync::atomic::AtomicUsize,
     resource_types: OnceLock<Arc<Vec<ResourceType>>>,
     metadata_settings: OnceLock<Arc<MetadataSettings>>,
     /// Answers the MFA challenge the server sends on any request after login.
@@ -224,6 +228,8 @@ impl<H: HttpClient> PassboltSdk<H> {
             trusted_metadata_key: Some(sdk_config.metadata_key_fingerprint.clone())
                 .filter(|fingerprint| !fingerprint.is_empty()),
             session_keys: Mutex::default(),
+            pending_session_keys: Mutex::default(),
+            saved_session_keys: std::sync::atomic::AtomicUsize::new(0),
             resource_types: OnceLock::new(),
             metadata_settings: OnceLock::new(),
             mfa_provider,
@@ -421,6 +427,7 @@ impl<H: HttpClient> PassboltSdk<H> {
             }
             self.mfa_failures.fetch_add(1, Ordering::SeqCst);
             last_error = server_message(&response);
+            provider.code_refused();
         }
         if attempts == 0 {
             last_error = format!("{MAX_MFA_FAILURES} codes were already refused in this session");
@@ -749,7 +756,34 @@ impl<H: HttpClient> PassboltSdk<H> {
             .session_keys
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(saved));
+        self.saved_session_keys
+            .fetch_add(new.len(), Ordering::SeqCst);
         Ok(())
+    }
+
+    /// Session keys found by [`Self::decrypt_resource_metadata`] and not saved yet.
+    pub fn pending_session_keys_count(&self) -> usize {
+        self.pending_session_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// Save the session keys found by [`Self::decrypt_resource_metadata`], as go-passbolt does
+    /// before logging out: the next reads of these resources decrypt faster.
+    pub async fn save_pending_session_keys(&self) -> Result<(), PassboltError> {
+        let pending = std::mem::take(
+            &mut *self
+                .pending_session_keys
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        self.save_session_keys(&pending).await
+    }
+
+    /// Number of session keys saved to the server during this session.
+    pub fn saved_session_keys_count(&self) -> usize {
+        self.saved_session_keys.load(Ordering::SeqCst)
     }
 
     /// Store `session_keys` in their latest bundle and delete the older ones; returns them as
@@ -835,7 +869,21 @@ impl<H: HttpClient> PassboltSdk<H> {
         let decrypted = self
             .decrypt_resource_metadata_keeping_session_key(resource)
             .await?;
-        Ok(decrypted.map(|(metadata, _)| metadata))
+        Ok(decrypted.map(|(metadata, session_key)| {
+            if let Some(session_key) = session_key {
+                let mut pending = self
+                    .pending_session_keys
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                pending.retain(|known| known.resource_id != resource.id);
+                pending.push(ResourceSessionKey {
+                    resource_id: resource.id.clone(),
+                    session_key,
+                    modified: resource.modified.map(|modified| modified.to_rfc3339()),
+                });
+            }
+            metadata
+        }))
     }
 
     // ── Batch decrypt (native only — requires tokio JoinSet) ────────────────
@@ -1258,11 +1306,12 @@ impl<H: HttpClient> PassboltSdk<H> {
         if let Some(search) = options.search {
             params.push(("filter[search]", search));
         }
-        if let Some(group_id) = options.group_id {
-            params.push(("filter[has-groups]", group_id));
+        // The server reads comma-separated values as a list.
+        if !options.group_ids.is_empty() {
+            params.push(("filter[has-groups]", options.group_ids.join(",")));
         }
-        if let Some(resource_id) = options.resource_id {
-            params.push(("filter[has-access]", resource_id));
+        if !options.resource_ids.is_empty() {
+            params.push(("filter[has-access]", options.resource_ids.join(",")));
         }
         if options.admin_only {
             params.push(("filter[is-admin]", "1".into()));
@@ -1310,11 +1359,11 @@ impl<H: HttpClient> PassboltSdk<H> {
     pub async fn get_groups(&self, options: GroupQuery) -> Result<Vec<Group>, PassboltError> {
         let mut params: Vec<(&str, String)> = vec![("contain[groups_users]", "1".into())];
 
-        if let Some(user_id) = options.user_id {
-            params.push(("filter[has-users]", user_id));
+        if !options.user_ids.is_empty() {
+            params.push(("filter[has-users]", options.user_ids.join(",")));
         }
-        if let Some(manager_id) = options.manager_id {
-            params.push(("filter[has-managers]", manager_id));
+        if !options.manager_ids.is_empty() {
+            params.push(("filter[has-managers]", options.manager_ids.join(",")));
         }
 
         self.get_paginated("/groups.json", &params, &options.pagination)
@@ -1871,15 +1920,17 @@ pub struct FolderQuery {
 #[derive(Debug, Default)]
 pub struct UserQuery {
     pub search: Option<String>,
-    pub group_id: Option<String>,
-    pub resource_id: Option<String>,
+    /// Users in any of these groups.
+    pub group_ids: Vec<String>,
+    /// Users with access to this resource; the server takes one.
+    pub resource_ids: Vec<String>,
     pub admin_only: bool,
     pub pagination: PaginationParams,
 }
 
 #[derive(Debug, Default)]
 pub struct GroupQuery {
-    pub user_id: Option<String>,
-    pub manager_id: Option<String>,
+    pub user_ids: Vec<String>,
+    pub manager_ids: Vec<String>,
     pub pagination: PaginationParams,
 }

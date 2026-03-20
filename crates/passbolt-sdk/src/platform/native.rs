@@ -40,6 +40,7 @@ pub struct NativeHttpConfig {
 pub struct NativeHttpClient {
     inner: Client,
     cookies: Arc<Jar>,
+    debug: bool,
 }
 
 /// Sent with every request, as `passbolt-rust/<version>`: the server shows it, in the account
@@ -57,17 +58,32 @@ impl NativeHttpClient {
             .redirect(same_origin_redirects())
             .danger_accept_invalid_certs(config.tls_skip_verify);
 
-        // mTLS — client certificate
-        if let (Some(cert_pem), Some(key_pem)) = (
-            config.client_cert_pem.as_ref(),
-            config.client_key_pem.as_ref(),
+        match (
+            config
+                .client_cert_pem
+                .as_ref()
+                .filter(|pem| !pem.is_empty()),
+            config.client_key_pem.as_ref().filter(|pem| !pem.is_empty()),
         ) {
-            let mut combined = Vec::from(cert_pem.as_slice());
-            combined.extend_from_slice(key_pem);
-            let identity = reqwest::tls::Identity::from_pem(&combined).map_err(|error| {
-                TransportError::Http(format!("Failed to parse client TLS identity: {error}"))
-            })?;
-            builder = builder.identity(identity);
+            (None, None) => {}
+            (Some(_), None) => {
+                return Err(PassboltError::Config(
+                    "client TLS private key is empty, but client TLS cert was set".into(),
+                ))
+            }
+            (None, Some(_)) => {
+                return Err(PassboltError::Config(
+                    "client TLS cert is empty, but client TLS private key was set".into(),
+                ))
+            }
+            (Some(cert_pem), Some(key_pem)) => {
+                let mut combined = Vec::from(cert_pem.as_slice());
+                combined.extend_from_slice(key_pem);
+                let identity = reqwest::tls::Identity::from_pem(&combined).map_err(|error| {
+                    TransportError::Http(format!("Failed to parse client TLS identity: {error}"))
+                })?;
+                builder = builder.identity(identity);
+            }
         }
 
         // HTTP proxy
@@ -99,8 +115,48 @@ impl NativeHttpClient {
             TransportError::Http(format!("Failed to build HTTP client: {error}"))
         })?;
 
-        Ok(Self { inner, cookies })
+        Ok(Self {
+            inner,
+            cookies,
+            debug: false,
+        })
     }
+
+    /// Print each request and the status of its response on stderr (no headers, no bodies:
+    /// they carry secrets).
+    #[must_use]
+    pub const fn with_debug(mut self, debug: bool) -> Self {
+        self.debug = debug;
+        self
+    }
+
+    async fn execute(
+        &self,
+        method: &str,
+        url: &str,
+        builder: reqwest::RequestBuilder,
+    ) -> Result<HttpResponse, TransportError> {
+        if self.debug {
+            eprintln!("[debug] {method} {}", without_query(url));
+        }
+        let response = builder
+            .send()
+            .await
+            .map_err(|error| TransportError::Network(format!("{method} {url}: {error}")))?;
+        if self.debug {
+            eprintln!(
+                "[debug] {method} {} -> {}",
+                without_query(url),
+                response.status().as_u16()
+            );
+        }
+        into_http_response(response).await
+    }
+}
+
+/// The URL up to its query, which may hold search terms.
+fn without_query(url: &str) -> &str {
+    url.split_once('?').map_or(url, |(path, _)| path)
 }
 
 /// Follow redirects within the origin of the request only: reqwest would
@@ -183,11 +239,7 @@ impl HttpClient for NativeHttpClient {
         for &(name, value) in headers {
             builder = builder.header(name, value);
         }
-        let response = builder
-            .send()
-            .await
-            .map_err(|error| TransportError::Network(format!("GET {url}: {error}")))?;
-        into_http_response(response).await
+        self.execute("GET", url, builder).await
     }
 
     async fn post(
@@ -200,12 +252,7 @@ impl HttpClient for NativeHttpClient {
         for &(name, value) in headers {
             builder = builder.header(name, value);
         }
-        let response = builder
-            .body(body.to_vec())
-            .send()
-            .await
-            .map_err(|error| TransportError::Network(format!("POST {url}: {error}")))?;
-        into_http_response(response).await
+        self.execute("POST", url, builder.body(body.to_vec())).await
     }
 
     async fn put(
@@ -218,12 +265,7 @@ impl HttpClient for NativeHttpClient {
         for &(name, value) in headers {
             builder = builder.header(name, value);
         }
-        let response = builder
-            .body(body.to_vec())
-            .send()
-            .await
-            .map_err(|error| TransportError::Network(format!("PUT {url}: {error}")))?;
-        into_http_response(response).await
+        self.execute("PUT", url, builder.body(body.to_vec())).await
     }
 
     async fn delete(
@@ -235,11 +277,7 @@ impl HttpClient for NativeHttpClient {
         for &(name, value) in headers {
             builder = builder.header(name, value);
         }
-        let response = builder
-            .send()
-            .await
-            .map_err(|error| TransportError::Network(format!("DELETE {url}: {error}")))?;
-        into_http_response(response).await
+        self.execute("DELETE", url, builder).await
     }
 
     async fn delete_with_body(
@@ -252,11 +290,7 @@ impl HttpClient for NativeHttpClient {
         for &(name, value) in headers {
             builder = builder.header(name, value);
         }
-        let response = builder
-            .body(body.to_vec())
-            .send()
+        self.execute("DELETE", url, builder.body(body.to_vec()))
             .await
-            .map_err(|error| TransportError::Network(format!("DELETE {url}: {error}")))?;
-        into_http_response(response).await
     }
 }

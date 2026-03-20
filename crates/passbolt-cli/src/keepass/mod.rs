@@ -11,3 +11,4 @@
 // @since         0.1.0
 
 pub mod export;
+pub mod kdbx3;

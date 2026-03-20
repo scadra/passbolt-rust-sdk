@@ -29,9 +29,10 @@ fn expiry_none_clears_the_date(#[case] input: &str) {
 }
 
 #[rstest]
-#[case("2025-12-31T23:59:59Z", "2025-12-31T23:59:59+00:00")]
-#[case("2025-12-31T23:59:59+02:00", "2025-12-31T21:59:59+00:00")]
-fn expiry_normalizes_rfc3339_to_utc(#[case] input: &str, #[case] expected: &str) {
+#[case("2025-12-31T23:59:59Z", "2025-12-31T23:59:59Z")]
+#[case("2025-12-31T23:59:59+02:00", "2025-12-31T21:59:59Z")]
+#[case("2025-12-31T23:59:59.750Z", "2025-12-31T23:59:59Z")]
+fn expiry_normalizes_rfc3339_to_utc_seconds(#[case] input: &str, #[case] expected: &str) {
     assert_eq!(parse_expiry(input).unwrap(), Value::String(expected.into()));
 }
 
@@ -49,8 +50,9 @@ fn expiry_durations_start_now(#[case] input: &str, #[case] duration: Duration) {
         .parse()
         .unwrap();
 
+    // Sent to the second: up to one second before `before + duration`.
     assert!(
-        (before + duration..=Utc::now() + duration).contains(&expiry),
+        (before + duration - Duration::seconds(1)..=Utc::now() + duration).contains(&expiry),
         "{expiry}"
     );
 }

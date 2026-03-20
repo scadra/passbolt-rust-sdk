@@ -108,6 +108,25 @@ async fn revoke_deletes_the_existing_permission_without_secrets() {
 }
 
 #[tokio::test]
+async fn sharing_twice_with_the_same_user_is_refused() {
+    let fake = fake_serving_shareable_resource(r#"{"password":"p"}"#, ada_owner_permissions());
+    let client = login_ada(&fake).await;
+
+    let error = share_with(&client, &[BETTY_ID, BETTY_ID], &[], 1)
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "Invalid argument: change 0 and 1 are Both About the same ARO User ID: {BETTY_ID}, \
+             there can only be once change per ARO"
+        )
+    );
+    assert!(fake.requests_to("PUT", &share_path()).is_empty());
+}
+
+#[tokio::test]
 async fn revoke_without_matching_permission_fails_before_sharing() {
     let fake = fake_serving_shareable_resource(r#"{"password":"p"}"#, ada_owner_permissions());
     let client = login_ada(&fake).await;
@@ -232,7 +251,7 @@ async fn adding_a_group_member_sends_the_needed_secrets() {
     );
     let client = login_ada(&fake).await;
 
-    group_update::update_group(&client, GROUP_ID, None, &[CAROL_ID.into()], &[], &[])
+    group_update::update_group(&client, GROUP_ID, None, &[CAROL_ID.into()], &[], false)
         .await
         .unwrap();
 
@@ -247,7 +266,7 @@ async fn removing_a_group_member_uses_the_membership_id() {
     let fake = fake_serving_group();
     let client = login_ada(&fake).await;
 
-    group_update::update_group(&client, GROUP_ID, None, &[], &[], &[BETTY_ID.into()])
+    group_update::update_group(&client, GROUP_ID, None, &[BETTY_ID.into()], &[], true)
         .await
         .unwrap();
 
@@ -549,14 +568,19 @@ async fn sharing_a_folder_with_its_content_shares_what_the_user_owns() {
 }
 
 #[tokio::test]
-async fn sharing_with_the_permission_already_given_sends_nothing() {
+async fn sharing_with_the_permission_already_given_is_refused() {
     let fake = fake_serving_shareable_resource(
         r#"{"password":"p"}"#,
         ada_owner_betty_reader_permissions(),
     );
     let client = login_ada(&fake).await;
 
-    share_with(&client, &[BETTY_ID], &[], 1).await.unwrap();
+    let error = share_with(&client, &[BETTY_ID], &[], 1).await.unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        format!("Invalid argument: permission for User {BETTY_ID} is already Type 1")
+    );
 
     assert!(fake.requests_to("PUT", &share_path()).is_empty());
     assert!(fake
@@ -614,7 +638,7 @@ async fn removing_a_user_who_is_not_a_member_is_refused() {
     let fake = fake_serving_group();
     let client = login_ada(&fake).await;
 
-    let error = group_update::update_group(&client, GROUP_ID, None, &[], &[], &[CAROL_ID.into()])
+    let error = group_update::update_group(&client, GROUP_ID, None, &[CAROL_ID.into()], &[], true)
         .await
         .unwrap_err();
 
@@ -626,15 +650,34 @@ async fn removing_a_user_who_is_not_a_member_is_refused() {
 }
 
 #[tokio::test]
-async fn adding_a_member_with_the_role_they_have_changes_nothing() {
+async fn giving_a_member_the_role_they_have_is_refused() {
     let fake = fake_serving_group();
     let client = login_ada(&fake).await;
 
-    group_update::update_group(&client, GROUP_ID, None, &[BETTY_ID.into()], &[], &[])
+    let error = group_update::update_group(&client, GROUP_ID, None, &[BETTY_ID.into()], &[], false)
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        format!("Invalid argument: membership for User {BETTY_ID} already Exists with Same Role")
+    );
+    assert!(fake.requests_to("PUT", &group_path()).is_empty());
+}
+
+#[tokio::test]
+async fn removing_a_manager_uses_the_membership_id() {
+    let fake = fake_serving_group();
+    let client = login_ada(&fake).await;
+
+    group_update::update_group(&client, GROUP_ID, None, &[], &[ADA_ID.into()], true)
         .await
         .unwrap();
 
-    assert!(fake.requests_to("PUT", &group_path()).is_empty());
+    assert_eq!(
+        fake.body_of("PUT", &group_path())["groups_users"],
+        json!([{ "id": data::group_membership_id(ADA_ID), "delete": true }])
+    );
 }
 
 #[rstest::rstest]
@@ -688,14 +731,25 @@ async fn raising_an_access_on_a_folder_only_reaches_the_content_the_user_has() {
 }
 
 #[tokio::test]
-async fn a_folder_already_shared_so_copies_nothing_to_its_content() {
+async fn a_folder_already_shared_so_is_refused_and_copies_nothing() {
     let fake = fake_serving_a_folder_tree();
     let mut folder = folder_betty_reads(FOLDER_ID, None, "p-betty-root");
     folder["permissions"][1]["type"] = 7.into();
     fake.on("GET", &format!("/folders/{FOLDER_ID}.json"), folder);
+    let client = login_ada(&fake).await;
 
-    share_folder_with_betty(&fake, true).await;
+    let error = passbolt_sdk::folder::share::share_folder(
+        &client,
+        FOLDER_ID,
+        &[BETTY_ID.into()],
+        &[],
+        7,
+        true,
+    )
+    .await
+    .unwrap_err();
 
+    assert!(error.to_string().contains("is already Type 7"), "{error}");
     for id in [FOLDER_ID, CHILD_FOLDER_ID] {
         assert!(fake.requests_to("PUT", &folder_share_path(id)).is_empty());
     }
@@ -720,23 +774,17 @@ async fn revoking_someone_without_access_changes_nothing_for_the_others() {
 }
 
 #[tokio::test]
-async fn adding_a_manager_as_member_keeps_them_manager() {
+async fn giving_a_manager_the_member_role_demotes_them() {
     let fake = fake_serving_group();
     let client = login_ada(&fake).await;
 
     // Ada manages the group already.
-    group_update::update_group(
-        &client,
-        GROUP_ID,
-        Some("Ops renamed"),
-        &[ADA_ID.into()],
-        &[],
-        &[],
-    )
-    .await
-    .unwrap();
+    group_update::update_group(&client, GROUP_ID, None, &[ADA_ID.into()], &[], false)
+        .await
+        .unwrap();
 
-    let body = fake.body_of("PUT", &group_path());
-    let membership_changes = body.get("groups_users").and_then(Value::as_array);
-    assert!(membership_changes.is_none_or(Vec::is_empty), "{body}");
+    assert_eq!(
+        fake.body_of("PUT", &group_path())["groups_users"],
+        json!([{ "id": data::group_membership_id(ADA_ID), "is_admin": false }])
+    );
 }

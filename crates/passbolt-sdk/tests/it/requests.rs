@@ -394,8 +394,8 @@ async fn get_users_sends_every_filter() {
     client
         .get_users(UserQuery {
             search: Some("ada".into()),
-            group_id: Some(GROUP_ID.into()),
-            resource_id: Some(RESOURCE_ID.into()),
+            group_ids: vec![GROUP_ID.into()],
+            resource_ids: vec![RESOURCE_ID.into()],
             admin_only: true,
             ..Default::default()
         })
@@ -499,8 +499,8 @@ async fn get_groups_sends_every_filter() {
 
     let groups = client
         .get_groups(GroupQuery {
-            user_id: Some(BETTY_ID.into()),
-            manager_id: Some(ADA_ID.into()),
+            user_ids: vec![BETTY_ID.into()],
+            manager_ids: vec![ADA_ID.into()],
             ..Default::default()
         })
         .await
@@ -516,6 +516,25 @@ async fn get_groups_sends_every_filter() {
         Some(ADA_ID)
     );
     assert_eq!(groups[0].id, GROUP_ID);
+}
+
+#[tokio::test]
+async fn several_ids_of_a_filter_are_sent_as_one_list() {
+    let (fake, client) = logged_in_with("GET", "/groups.json", json!([])).await;
+
+    client
+        .get_groups(GroupQuery {
+            user_ids: vec![BETTY_ID.into(), CAROL_ID.into()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let request = single_request(&fake, "GET", "/groups.json");
+    assert_eq!(
+        request.query_value("filter[has-users]"),
+        Some(format!("{BETTY_ID},{CAROL_ID}"))
+    );
 }
 
 #[tokio::test]

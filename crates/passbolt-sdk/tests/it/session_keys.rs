@@ -406,3 +406,43 @@ async fn nothing_is_saved_when_every_session_key_is_known() {
         .requests_to("PUT", &format!("/metadata/session-keys/{BUNDLE_ID}.json"))
         .is_empty());
 }
+
+#[tokio::test]
+async fn a_single_resource_read_keeps_its_session_key_until_saved() {
+    let resource = shared_resource();
+    let fake = server_listing(&[&resource]);
+    let client = login_ada(&fake).await;
+    client.decrypt_resource_metadata(&resource).await.unwrap();
+    assert!(fake.requests_to("POST", SESSION_KEYS_PATH).is_empty());
+
+    client.save_pending_session_keys().await.unwrap();
+
+    let saved = saved_bundle(&fake.body_of("POST", SESSION_KEYS_PATH));
+    assert_eq!(saved["session_keys"][0]["foreign_id"], resource.id.as_str());
+    assert_eq!(client.pending_session_keys_count(), 0);
+    assert_eq!(client.saved_session_keys_count(), 1);
+}
+
+#[tokio::test]
+async fn a_resource_read_twice_is_saved_once() {
+    let resource = shared_resource();
+    let fake = server_listing(&[&resource]);
+    let client = login_ada(&fake).await;
+
+    client.decrypt_resource_metadata(&resource).await.unwrap();
+    client.decrypt_resource_metadata(&resource).await.unwrap();
+
+    assert_eq!(client.pending_session_keys_count(), 1);
+}
+
+#[tokio::test]
+async fn the_session_keys_saved_by_a_listing_are_counted() {
+    let resource = shared_resource();
+    let fake = server_listing(&[&resource]);
+    let client = login_ada(&fake).await;
+
+    list(&client).await;
+
+    assert_eq!(client.saved_session_keys_count(), 1);
+    assert_eq!(client.pending_session_keys_count(), 0);
+}

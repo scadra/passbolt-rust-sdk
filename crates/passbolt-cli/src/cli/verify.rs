@@ -10,10 +10,11 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Args;
 
 use crate::config::Config;
+use crate::util::session;
 
 #[derive(Args, Debug)]
 pub struct VerifyArgs {
@@ -23,63 +24,76 @@ pub struct VerifyArgs {
     pub force: bool,
 }
 
-/// Pin the server public key, once the server proved it holds the private key, then the
-/// active shared metadata key: new shared metadata is never encrypted for another one.
-/// A pinned key that changed is kept unless `--force` is given.
+/// Pin the server key and save the settings given, as go-passbolt-cli's `verify` does: each
+/// login then checks the server holds the key. Pins the shared metadata key too when the
+/// account logs in without MFA.
 pub async fn run(args: &VerifyArgs, config: &Config) -> Result<()> {
+    let mut config = config.clone();
+    session::require_credentials(&mut config)?;
     let private_key = passbolt_sdk::crypto::parse_private_key(&config.private_key_text()?)?;
-    let http = passbolt_sdk::NativeHttpClient::new(&config.http_config()?)?;
-    let base_url = config.server_address.trim_end_matches('/');
+    let http = session::http_client(&config)?;
+    let base_url = config.server_address.trim_end_matches('/').to_string();
 
-    let (fingerprint, server_public_key) =
-        passbolt_sdk::auth::fetch_server_key(&http, base_url).await?;
+    let (fingerprint, server_public_key) = passbolt_sdk::auth::fetch_server_key(&http, &base_url)
+        .await
+        .context("setup Verification")?;
     if !config.server_public_key.is_empty() && !args.force {
         let pinned = passbolt_sdk::crypto::public_key_fingerprint(&config.server_public_key)?;
         refuse_change("server", &pinned, &fingerprint)?;
     }
-    passbolt_sdk::auth::check_server_identity(
+    // The token pair go-passbolt-cli checks at each login, proved once here.
+    let token = passbolt_sdk::auth::new_verify_token();
+    let server_key = passbolt_sdk::crypto::parse_public_key(&server_public_key)?;
+    let encrypted_token = passbolt_sdk::crypto::encrypt_message(token.as_bytes(), &[&server_key])?;
+    passbolt_sdk::auth::verify_server(
         &http,
-        base_url,
+        &base_url,
         &private_key.fingerprint,
-        &server_public_key,
-        "",
-        "",
+        &encrypted_token,
+        &token,
     )
-    .await?;
-    Config::save_server_public_key(&server_public_key)?;
+    .await
+    .context("setup Verification")?;
 
-    println!("Server key {fingerprint} pinned: each login now checks the server holds it.");
-
-    // Log in with the key just pinned, not the one replaced.
-    let mut config = config.clone();
     config.server_public_key = server_public_key;
-    config.server_verify_token.clear();
-    config.server_verify_enc_token.clear();
-    let client = crate::util::session::get_client(&config).await?;
-    let metadata_keys = client.metadata_keys().await;
-    client.logout().await;
-    let active = match metadata_keys {
-        Ok(keys) => keys.active_fingerprint(),
-        Err(error) => {
-            anyhow::bail!("Could not read the shared metadata keys, none pinned: {error}")
-        }
-    };
-    match active {
-        Some(fingerprint) => {
-            if !config.metadata_key_fingerprint.is_empty() && !args.force {
-                refuse_change("metadata", &config.metadata_key_fingerprint, &fingerprint)?;
-            }
-            Config::save_metadata_key_fingerprint(&fingerprint)?;
-            println!(
-                "Metadata key {fingerprint} pinned: shared metadata is only encrypted for it."
-            );
-        }
-        None => println!("No shared metadata key to pin."),
+    config.server_verify_token = token;
+    config.server_verify_enc_token = encrypted_token;
+    config.save()?;
+    if config.debug {
+        eprintln!("Server key {fingerprint} pinned: each login now checks the server holds it.");
     }
+
+    pin_metadata_key(args, &mut config).await?;
+    println!("Verification Enabled");
     Ok(())
 }
 
-/// Fail when the `pinned` key of `kind` is not the `current` one.
+/// Pin the active shared metadata key. A login that needs MFA, or any other failure to read
+/// the key, leaves it unpinned: only a changed key is an error.
+async fn pin_metadata_key(args: &VerifyArgs, config: &mut Config) -> Result<()> {
+    let mut without_mfa = config.clone();
+    without_mfa.mfa_mode = "none".into();
+    let Ok(client) = session::get_client(&without_mfa).await else {
+        return Ok(());
+    };
+    let metadata_keys = client.metadata_keys().await;
+    client.logout().await;
+    let Some(fingerprint) = metadata_keys
+        .ok()
+        .and_then(|keys| keys.active_fingerprint())
+    else {
+        return Ok(());
+    };
+    if !config.metadata_key_fingerprint.is_empty() && !args.force {
+        refuse_change("metadata", &config.metadata_key_fingerprint, &fingerprint)?;
+    }
+    config.metadata_key_fingerprint.clone_from(&fingerprint);
+    config.save()?;
+    if config.debug {
+        eprintln!("Metadata key {fingerprint} pinned: shared metadata is only encrypted for it.");
+    }
+    Ok(())
+}
 fn refuse_change(kind: &str, pinned: &str, current: &str) -> Result<()> {
     if pinned.eq_ignore_ascii_case(current) {
         return Ok(());

@@ -57,15 +57,24 @@ fn share_new_resource(config: &Path) -> assert_cmd::assert::Assert {
         .assert()
 }
 
+/// The pinned keys: the go-passbolt-cli token is new at each `verify`.
+fn pins(config: &Path) -> String {
+    let saved: toml::Table = toml::from_str(&std::fs::read_to_string(config).unwrap()).unwrap();
+    format!(
+        "metadata_key_fingerprint = {}\nserver_public_key = {}",
+        saved["metadata_key_fingerprint"], saved["server_public_key"]
+    )
+}
+
 #[test]
 fn verify_again_keeps_the_same_pins() {
     let (_directory, config) = config_with("");
     verify(&config, &[]).success();
-    let pinned = std::fs::read_to_string(&config).unwrap();
+    let pinned = pins(&config);
 
     verify(&config, &[]).success();
 
-    assert_eq!(std::fs::read_to_string(&config).unwrap(), pinned);
+    assert_eq!(pins(&config), pinned);
     assert!(pinned.contains("metadata_key_fingerprint"), "{pinned}");
 }
 
