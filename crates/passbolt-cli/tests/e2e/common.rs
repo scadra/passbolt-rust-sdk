@@ -62,6 +62,9 @@ pub fn passbolt_as(account: Account) -> Command {
         }
     }
     command.env("PASSBOLT_MFA_MODE", "none");
+    // Listing or exporting the whole test vault, which grows with every run, outlasts the
+    // one-minute default of --timeout while other tests run.
+    command.env("PASSBOLT_TIMEOUT", "10m");
     command
 }
 

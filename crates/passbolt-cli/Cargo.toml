@@ -52,6 +52,14 @@ chrono = { version = "0.4", features = ["serde"] }
 # KeePass export
 keepass = { version = "0.6", features = ["save_kdbx4"] }
 secstr = "0.5"
+# KDBX 3.1 writer (the keepass crate only writes KDBX 4)
+aes = "0.8"
+base64 = "0.22"
+cbc = { version = "0.1", features = ["alloc"] }
+flate2 = "1"
+rand = "0.8"
+salsa20 = "0.10"
+sha2 = "0.10"
 
 [build-dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

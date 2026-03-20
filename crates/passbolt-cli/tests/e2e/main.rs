@@ -23,6 +23,7 @@ mod folder_permissions;
 mod folders;
 mod go_parity;
 mod interop;
+mod keepass_export;
 mod outputs;
 mod pinning;
 mod resource_types;
