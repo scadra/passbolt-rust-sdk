@@ -383,14 +383,14 @@ impl PassboltSession {
 
     // ── Folders ──────────────────────────────────────────────────────────
 
-    /// List all folders.
+    /// List all folders, or those whose name holds `search`.
     #[wasm_bindgen(js_name = "listFolders")]
-    pub async fn list_folders(&self) -> Result<JsValue, JsError> {
-        let folders = self
-            .client
-            .get_folders(passbolt_sdk::FolderQuery::default())
-            .await
-            .map_err(to_js_error)?;
+    pub async fn list_folders(&self, search: Option<String>) -> Result<JsValue, JsError> {
+        let query = passbolt_sdk::FolderQuery {
+            search,
+            ..Default::default()
+        };
+        let folders = self.client.get_folders(query).await.map_err(to_js_error)?;
         to_js_value(&folders)
     }
 
@@ -399,6 +399,73 @@ impl PassboltSession {
     pub async fn get_folder(&self, id: String) -> Result<JsValue, JsError> {
         let folder = self.client.get_folder(&id).await.map_err(to_js_error)?;
         to_js_value(&folder)
+    }
+
+    /// Create a folder, at the root or in `folderParentId`; in a parent folder it gets the
+    /// parent's permissions.
+    #[wasm_bindgen(js_name = "createFolder")]
+    pub async fn create_folder(
+        &self,
+        name: String,
+        folder_parent_id: Option<String>,
+    ) -> Result<JsValue, JsError> {
+        let folder = passbolt_sdk::folder::create::create_folder(
+            &self.client,
+            &name,
+            folder_parent_id.as_deref(),
+        )
+        .await
+        .map_err(to_js_error)?;
+        to_js_value(&folder)
+    }
+
+    /// Rename a folder.
+    #[wasm_bindgen(js_name = "renameFolder")]
+    pub async fn rename_folder(&self, id: String, name: String) -> Result<JsValue, JsError> {
+        let payload = passbolt_sdk::types::UpdateFolderPayload { name };
+        let folder = self
+            .client
+            .update_folder(&id, &payload)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&folder)
+    }
+
+    /// Delete a folder; its content moves to the root.
+    #[wasm_bindgen(js_name = "deleteFolder")]
+    pub async fn delete_folder(&self, id: String) -> Result<(), JsError> {
+        self.client.delete_folder(&id).await.map_err(to_js_error)
+    }
+
+    /// Delete a folder with its sub-folders and the resources the user may delete in them.
+    #[wasm_bindgen(js_name = "deleteFolderWithContent")]
+    pub async fn delete_folder_with_content(&self, id: String) -> Result<(), JsError> {
+        self.client
+            .delete_folder_with_content(&id)
+            .await
+            .map_err(to_js_error)
+    }
+
+    /// Get permissions for a folder.
+    #[wasm_bindgen(js_name = "getFolderPermissions")]
+    pub async fn get_folder_permissions(&self, id: String) -> Result<JsValue, JsError> {
+        let permissions = self
+            .client
+            .get_folder_permissions(&id)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&permissions)
+    }
+
+    /// The folders as a tree: `[{ folder, children: [...] }]`, the root folders first.
+    #[wasm_bindgen(js_name = "getFolderTree")]
+    pub async fn get_folder_tree(&self) -> Result<JsValue, JsError> {
+        let folders = self
+            .client
+            .get_folders(passbolt_sdk::FolderQuery::default())
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&passbolt_sdk::build_folder_tree(&folders))
     }
 
     // ── Users ────────────────────────────────────────────────────────────

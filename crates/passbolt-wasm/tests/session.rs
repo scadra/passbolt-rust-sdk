@@ -1,0 +1,248 @@
+// Passbolt ~ Open source password manager for teams
+// Copyright (c) Passbolt SA (https://www.passbolt.com)
+//
+// Licensed under GNU Affero General Public License version 3 of the or any later version.
+// For full copyright and license information, please see the LICENSE
+// Redistributions of files must retain the above copyright notice.
+//
+// @copyright     Copyright (c) Passbolt SA (https://www.passbolt.com)
+// @license       https://opensource.org/licenses/AGPL-3.0 AGPL License
+// @link          https://www.passbolt.com Passbolt(tm)
+// @since         0.1.0
+
+//! `PassboltSession` against a `fetch` answering the `GPGAuth` login as Passbolt does.
+//! Run in Node: `cargo test -p passbolt-wasm --target wasm32-unknown-unknown`.
+
+#![cfg(target_arch = "wasm32")]
+// WASM is single-threaded: futures don't need Send.
+#![allow(clippy::future_not_send)]
+
+use passbolt_wasm::{encrypt_message, get_key_fingerprint, PassboltSession};
+use serde_json::{json, Value};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen_test::wasm_bindgen_test;
+
+const ADA_PRIVATE: &str = include_str!("../../passbolt-sdk/tests/fixtures/keys/ada_private.asc");
+const ADA_PUBLIC: &str = include_str!("../../passbolt-sdk/tests/fixtures/keys/ada_public.asc");
+const ADA_PASSPHRASE: &str = "ada-passphrase";
+const ADA_ID: &str = "8b6c3a10-0000-4000-8000-00000000a0da";
+const SERVER_URL: &str = "http://127.0.0.1:1";
+const FOLDER_ID: &str = "5f6e7d8c-0000-4000-8000-0000000000f1";
+
+const FOLDER: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/folder.json");
+
+/// The routes `fetch` answers after the login, and the requests it receives.
+struct Passbolt {
+    routes: js_sys::Array,
+    fetch: JsValue,
+}
+
+impl Passbolt {
+    /// Installs a `fetch` answering the `GPGAuth` login of ada and `/users/me.json`.
+    fn new() -> Self {
+        let token = format!("gpgauthv1.3.0|36|{}|gpgauthv1.3.0", uuid::Uuid::new_v4());
+        let challenge = encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()]).unwrap();
+        let factory = js_sys::Function::new_with_args(
+            "challenge, userId, armoredKey, fingerprint, routes",
+            r#"
+            const answer = (status, body, headers = {}) =>
+                new Response(
+                    JSON.stringify({
+                        header: { status: status < 400 ? "success" : "error", message: "" },
+                        body,
+                    }),
+                    { status, headers: { "X-GPGAuth-Version": "1.3.0", ...headers } },
+                );
+            const step = (authenticated, progress, headers) => ({
+                "X-GPGAuth-Authenticated": authenticated,
+                "X-GPGAuth-Progress": progress,
+                ...headers,
+            });
+            const requests = [];
+            const fetch = async (request) => {
+                const text = request.method === "GET" ? "" : await request.text();
+                const url = new URL(request.url);
+                if (url.pathname === "/auth/login.json") {
+                    return text.includes("user_token_result")
+                        ? answer(200, { user: { id: userId } }, step("true", "complete", { "X-GPGAuth-Refer": "/" }))
+                        : answer(200, null, step("false", "stage1", {
+                              "X-GPGAuth-User-Auth-Token": encodeURIComponent(challenge),
+                          }));
+                }
+                if (url.pathname === "/users/me.json") {
+                    return answer(200, {
+                        id: userId,
+                        username: "ada@passbolt.test",
+                        gpgkey: { armored_key: armoredKey, fingerprint },
+                    });
+                }
+                let body = null;
+                try { body = JSON.parse(text); } catch {}
+                requests.push({ method: request.method, path: url.pathname, query: decodeURIComponent(url.search.slice(1)), body });
+                const route = routes.find(
+                    (route) => route.method === request.method && route.path === url.pathname,
+                );
+                return route ? answer(route.status, route.body) : answer(404, null);
+            };
+            fetch.requests = requests;
+            return fetch;
+            "#,
+        );
+        let routes = js_sys::Array::new();
+        let arguments: js_sys::Array = [
+            JsValue::from_str(&challenge),
+            JsValue::from_str(ADA_ID),
+            JsValue::from_str(ADA_PUBLIC),
+            JsValue::from_str(&get_key_fingerprint(ADA_PRIVATE).unwrap()),
+            routes.clone().into(),
+        ]
+        .into_iter()
+        .collect();
+        let fetch = factory.apply(&JsValue::NULL, &arguments).unwrap();
+        js_sys::Reflect::set(&js_sys::global(), &"fetch".into(), &fetch).unwrap();
+        Self { routes, fetch }
+    }
+
+    fn on(&self, http_method: &str, url_path: &str, body: &Value) {
+        self.on_status(http_method, url_path, 200, body);
+    }
+
+    /// From 400, an error answer as the server sends it: an `error` header, the failure in `body`.
+    fn on_status(&self, http_method: &str, url_path: &str, status: u16, body: &Value) {
+        let route =
+            json!({"method": http_method, "path": url_path, "status": status, "body": body});
+        self.routes.push(&from_json(&route));
+    }
+
+    async fn login(&self) -> PassboltSession {
+        let options = js_sys::Object::new();
+        let csrf_token_provider = js_sys::Function::new_no_args("return 'csrf-token';");
+        js_sys::Reflect::set(&options, &"csrfTokenProvider".into(), &csrf_token_provider).unwrap();
+        let session = PassboltSession::login(
+            SERVER_URL.into(),
+            ADA_PRIVATE.into(),
+            ADA_PASSPHRASE.into(),
+            options.into(),
+        )
+        .await;
+        ok(session)
+    }
+
+    fn received(&self, http_method: &str, url_path: &str) -> Vec<Value> {
+        let requests = js_sys::Reflect::get(&self.fetch, &"requests".into()).unwrap();
+        let Value::Array(requests) = to_json(&requests) else {
+            panic!("the requests are not an array")
+        };
+        requests
+            .into_iter()
+            .filter(|request| request["method"] == http_method && request["path"] == url_path)
+            .collect()
+    }
+
+    fn requests(&self, http_method: &str, url_path: &str) -> Vec<Value> {
+        self.received(http_method, url_path)
+            .into_iter()
+            .map(|request| request["body"].clone())
+            .collect()
+    }
+
+    fn queries(&self, http_method: &str, url_path: &str) -> Vec<Value> {
+        self.received(http_method, url_path)
+            .into_iter()
+            .map(|request| request["query"].clone())
+            .collect()
+    }
+}
+
+/// The value, or a panic with the message of the JS error.
+fn ok<T>(result: Result<T, JsError>) -> T {
+    result.unwrap_or_else(|error| panic!("{}", message(error)))
+}
+
+fn message(error: JsError) -> String {
+    let error = JsValue::from(error);
+    js_sys::Reflect::get(&error, &"message".into())
+        .unwrap()
+        .as_string()
+        .unwrap_or_default()
+}
+
+fn to_json(value: &JsValue) -> Value {
+    let text = js_sys::JSON::stringify(value).unwrap();
+    serde_json::from_str(&String::from(text)).unwrap()
+}
+
+fn from_json(value: &Value) -> JsValue {
+    js_sys::JSON::parse(&value.to_string()).unwrap()
+}
+
+fn fixture(json: &str) -> Value {
+    serde_json::from_str(json).unwrap()
+}
+
+#[wasm_bindgen_test]
+async fn a_folder_is_created_at_the_root() {
+    let passbolt = Passbolt::new();
+    passbolt.on("POST", "/folders.json", &fixture(FOLDER));
+
+    let folder = ok(passbolt
+        .login()
+        .await
+        .create_folder("Ops".into(), None)
+        .await);
+
+    assert_eq!(to_json(&folder)["id"], FOLDER_ID);
+    let created = &passbolt.requests("POST", "/folders.json")[0];
+    assert_eq!(created["name"], "Ops");
+    assert_eq!(created["folder_parent_id"], Value::Null);
+}
+
+#[wasm_bindgen_test]
+async fn a_folder_is_renamed() {
+    let passbolt = Passbolt::new();
+    let folder_path = format!("/folders/{FOLDER_ID}.json");
+    passbolt.on("PUT", &folder_path, &fixture(FOLDER));
+
+    ok(passbolt
+        .login()
+        .await
+        .rename_folder(FOLDER_ID.into(), "Infra".into())
+        .await);
+
+    assert_eq!(
+        passbolt.requests("PUT", &folder_path),
+        [json!({"name": "Infra"})]
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_folder_is_deleted_with_its_content() {
+    let passbolt = Passbolt::new();
+    let folder_path = format!("/folders/{FOLDER_ID}.json");
+    passbolt.on("DELETE", &folder_path, &Value::Null);
+
+    ok(passbolt
+        .login()
+        .await
+        .delete_folder_with_content(FOLDER_ID.into())
+        .await);
+
+    assert_eq!(passbolt.queries("DELETE", &folder_path), ["cascade=1"]);
+}
+
+#[wasm_bindgen_test]
+async fn the_folder_tree_nests_a_folder_in_its_parent() {
+    let passbolt = Passbolt::new();
+    let mut child = fixture(FOLDER);
+    child["id"] = json!("5f6e7d8c-0000-4000-8000-0000000000f2");
+    child["name"] = json!("Databases");
+    child["folder_parent_id"] = json!(FOLDER_ID);
+    passbolt.on("GET", "/folders.json", &json!([fixture(FOLDER), child]));
+
+    let tree = ok(passbolt.login().await.get_folder_tree().await);
+
+    let tree = to_json(&tree);
+    assert_eq!(tree.as_array().map(Vec::len), Some(1));
+    assert_eq!(tree[0]["folder"]["name"], "Ops");
+    assert_eq!(tree[0]["children"][0]["folder"]["name"], "Databases");
+}
