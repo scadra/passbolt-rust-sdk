@@ -28,8 +28,11 @@ const ADA_PASSPHRASE: &str = "ada-passphrase";
 const ADA_ID: &str = "8b6c3a10-0000-4000-8000-00000000a0da";
 const SERVER_URL: &str = "http://127.0.0.1:1";
 const FOLDER_ID: &str = "5f6e7d8c-0000-4000-8000-0000000000f1";
+const RESOURCE_ID: &str = "7a5b2c30-0000-4000-8000-0000000000e1";
+const OTHER_RESOURCE_ID: &str = "7a5b2c30-0000-4000-8000-0000000000e2";
 
 const FOLDER: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/folder.json");
+const FAVORITE: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/favorite.json");
 
 /// The routes `fetch` answers after the login, and the requests it receives.
 struct Passbolt {
@@ -245,4 +248,67 @@ async fn the_folder_tree_nests_a_folder_in_its_parent() {
     assert_eq!(tree.as_array().map(Vec::len), Some(1));
     assert_eq!(tree[0]["folder"]["name"], "Ops");
     assert_eq!(tree[0]["children"][0]["folder"]["name"], "Databases");
+}
+
+#[wasm_bindgen_test]
+async fn the_session_gives_the_user_and_the_server() {
+    let passbolt = Passbolt::new();
+
+    let session = passbolt.login().await;
+
+    assert_eq!(session.user_id(), ADA_ID);
+    assert_eq!(session.base_url(), SERVER_URL);
+}
+
+#[wasm_bindgen_test]
+async fn the_favorite_resources_are_listed() {
+    let passbolt = Passbolt::new();
+    passbolt.on("GET", "/resources.json", &json!([]));
+
+    ok(passbolt
+        .login()
+        .await
+        .list_resources(None, Some(true), None)
+        .await);
+
+    let query = passbolt.queries("GET", "/resources.json")[0].to_string();
+    assert!(query.contains("filter[is-favorite]=1"), "{query}");
+    assert!(!query.contains("is-owned-by-me"), "{query}");
+}
+
+#[wasm_bindgen_test]
+async fn a_resource_is_added_to_the_favorites() {
+    let passbolt = Passbolt::new();
+    passbolt.on(
+        "POST",
+        &format!("/favorites/resource/{RESOURCE_ID}.json"),
+        &fixture(FAVORITE),
+    );
+
+    let favorite = ok(passbolt
+        .login()
+        .await
+        .add_favorite(RESOURCE_ID.into())
+        .await);
+
+    assert_eq!(to_json(&favorite)["foreign_key"], RESOURCE_ID);
+}
+
+#[wasm_bindgen_test]
+async fn resources_are_deleted_one_by_one() {
+    let passbolt = Passbolt::new();
+    for id in [RESOURCE_ID, OTHER_RESOURCE_ID] {
+        passbolt.on("DELETE", &format!("/resources/{id}.json"), &Value::Null);
+    }
+
+    ok(passbolt
+        .login()
+        .await
+        .delete_resources(vec![RESOURCE_ID.into(), OTHER_RESOURCE_ID.into()])
+        .await);
+
+    for id in [RESOURCE_ID, OTHER_RESOURCE_ID] {
+        let deleted = passbolt.received("DELETE", &format!("/resources/{id}.json"));
+        assert_eq!(deleted.len(), 1, "{id}");
+    }
 }

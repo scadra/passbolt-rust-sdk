@@ -195,6 +195,18 @@ impl PassboltSession {
         Ok(metadata_keys.active_fingerprint())
     }
 
+    /// The ID of the logged-in user.
+    #[wasm_bindgen(getter, js_name = "userId")]
+    pub fn user_id(&self) -> String {
+        self.client.user_id.clone()
+    }
+
+    /// The server URL.
+    #[wasm_bindgen(getter, js_name = "baseUrl")]
+    pub fn base_url(&self) -> String {
+        self.client.base_url.clone()
+    }
+
     /// Terminate the server-side session.
     #[wasm_bindgen]
     pub async fn logout(&self) {
@@ -215,11 +227,19 @@ impl PassboltSession {
 
     // ── Resources ────────────────────────────────────────────────────────
 
-    /// List all resources (with secrets and permissions).
+    /// List all resources (with secrets and permissions), or those whose name holds `search`,
+    /// among the favorites with `favoritesOnly`, among those the user owns with `ownedByMe`.
     #[wasm_bindgen(js_name = "listResources")]
-    pub async fn list_resources(&self, search: Option<String>) -> Result<JsValue, JsError> {
+    pub async fn list_resources(
+        &self,
+        search: Option<String>,
+        favorites_only: Option<bool>,
+        owned_by_me: Option<bool>,
+    ) -> Result<JsValue, JsError> {
         let query = passbolt_sdk::ResourceQuery {
             search,
+            favorites_only: favorites_only.unwrap_or_default(),
+            owned_by_me: owned_by_me.unwrap_or_default(),
             ..Default::default()
         };
         let resources = self
@@ -235,6 +255,28 @@ impl PassboltSession {
     pub async fn get_resource(&self, id: String) -> Result<JsValue, JsError> {
         let resource = self.client.get_resource(&id).await.map_err(to_js_error)?;
         to_js_value(&resource)
+    }
+
+    /// Get the resources of these IDs.
+    #[wasm_bindgen(js_name = "getResourcesByIds")]
+    pub async fn get_resources_by_ids(&self, ids: Vec<String>) -> Result<JsValue, JsError> {
+        let resources = self
+            .client
+            .get_resources_by_ids(&ids)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&resources)
+    }
+
+    /// Get permissions for a resource.
+    #[wasm_bindgen(js_name = "getResourcePermissions")]
+    pub async fn get_resource_permissions(&self, id: String) -> Result<JsValue, JsError> {
+        let permissions = self
+            .client
+            .get_resource_permissions(&id)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&permissions)
     }
 
     /// Decrypt a resource's secret. Returns the plaintext secret data as JSON.
@@ -379,6 +421,37 @@ impl PassboltSession {
     #[wasm_bindgen(js_name = "deleteResource")]
     pub async fn delete_resource(&self, id: String) -> Result<(), JsError> {
         self.client.delete_resource(&id).await.map_err(to_js_error)
+    }
+
+    /// Delete several resources.
+    #[wasm_bindgen(js_name = "deleteResources")]
+    pub async fn delete_resources(&self, ids: Vec<String>) -> Result<(), JsError> {
+        self.client
+            .delete_resources(&ids)
+            .await
+            .map_err(to_js_error)
+    }
+
+    // ── Favorites ────────────────────────────────────────────────────────
+
+    /// Add a resource to the favorites; the favorite's `id` removes it.
+    #[wasm_bindgen(js_name = "addFavorite")]
+    pub async fn add_favorite(&self, resource_id: String) -> Result<JsValue, JsError> {
+        let favorite = self
+            .client
+            .add_favorite(&resource_id)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&favorite)
+    }
+
+    /// Remove a favorite.
+    #[wasm_bindgen(js_name = "removeFavorite")]
+    pub async fn remove_favorite(&self, favorite_id: String) -> Result<(), JsError> {
+        self.client
+            .remove_favorite(&favorite_id)
+            .await
+            .map_err(to_js_error)
     }
 
     // ── Folders ──────────────────────────────────────────────────────────
