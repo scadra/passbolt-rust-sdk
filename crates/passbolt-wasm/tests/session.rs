@@ -30,9 +30,14 @@ const SERVER_URL: &str = "http://127.0.0.1:1";
 const FOLDER_ID: &str = "5f6e7d8c-0000-4000-8000-0000000000f1";
 const RESOURCE_ID: &str = "7a5b2c30-0000-4000-8000-0000000000e1";
 const OTHER_RESOURCE_ID: &str = "7a5b2c30-0000-4000-8000-0000000000e2";
+const BETTY_ID: &str = "8b6c3a10-0000-4000-8000-000000000be7";
+const GROUP_ID: &str = "9c7d4b20-0000-4000-8000-000000000960";
 
 const FOLDER: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/folder.json");
 const FAVORITE: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/favorite.json");
+const GROUP: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/group.json");
+const ROLES: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/roles.json");
+const USERS: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/users.json");
 
 /// The routes `fetch` answers after the login, and the requests it receives.
 struct Passbolt {
@@ -311,4 +316,87 @@ async fn resources_are_deleted_one_by_one() {
         let deleted = passbolt.received("DELETE", &format!("/resources/{id}.json"));
         assert_eq!(deleted.len(), 1, "{id}");
     }
+}
+
+#[wasm_bindgen_test]
+async fn a_user_is_created_with_the_id_of_their_role() {
+    let passbolt = Passbolt::new();
+    passbolt.on("GET", "/roles.json", &fixture(ROLES));
+    passbolt.on("POST", "/users.json", &fixture(USERS)["betty"]);
+
+    ok(passbolt
+        .login()
+        .await
+        .create_user(
+            "betty@passbolt.test".into(),
+            "Betty".into(),
+            "Test".into(),
+            "user".into(),
+        )
+        .await);
+
+    let created = &passbolt.requests("POST", "/users.json")[0];
+    assert_eq!(created["username"], "betty@passbolt.test");
+    assert_eq!(created["role_id"], "a58de6d3-f52c-5080-b79b-a601a647ac85");
+    assert_eq!(
+        created["profile"],
+        json!({"first_name": "Betty", "last_name": "Test"})
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_group_is_created_with_its_managers_and_members() {
+    let passbolt = Passbolt::new();
+    passbolt.on("POST", "/groups.json", &fixture(GROUP));
+
+    ok(passbolt
+        .login()
+        .await
+        .create_group("Ops".into(), vec![BETTY_ID.into()], vec![ADA_ID.into()])
+        .await);
+
+    let memberships: Vec<(Value, Value)> = passbolt.requests("POST", "/groups.json")[0]
+        ["groups_users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|membership| {
+            (
+                membership["user_id"].clone(),
+                membership["is_admin"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        memberships,
+        [
+            (json!(ADA_ID), json!(true)),
+            (json!(BETTY_ID), json!(false))
+        ]
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_group_is_renamed() {
+    let passbolt = Passbolt::new();
+    let group_path = format!("/groups/{GROUP_ID}.json");
+    passbolt.on("GET", &group_path, &fixture(GROUP));
+    passbolt.on("PUT", &group_path, &fixture(GROUP));
+
+    ok(passbolt
+        .login()
+        .await
+        .update_group(
+            GROUP_ID.into(),
+            Some("Infra".into()),
+            vec![],
+            vec![],
+            vec![],
+        )
+        .await);
+
+    assert_eq!(
+        passbolt.requests("PUT", &group_path),
+        [json!({"name": "Infra"})]
+    );
 }

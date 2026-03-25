@@ -543,15 +543,88 @@ impl PassboltSession {
 
     // ── Users ────────────────────────────────────────────────────────────
 
-    /// List all users.
+    /// List all users, or those matching `search`, members of `groupId`, admins with `adminOnly`.
     #[wasm_bindgen(js_name = "listUsers")]
-    pub async fn list_users(&self) -> Result<JsValue, JsError> {
-        let users = self
+    pub async fn list_users(
+        &self,
+        search: Option<String>,
+        group_id: Option<String>,
+        admin_only: Option<bool>,
+    ) -> Result<JsValue, JsError> {
+        let query = passbolt_sdk::UserQuery {
+            search,
+            group_id,
+            admin_only: admin_only.unwrap_or_default(),
+            ..Default::default()
+        };
+        let users = self.client.get_users(query).await.map_err(to_js_error)?;
+        to_js_value(&users)
+    }
+
+    /// Get a user by ID.
+    #[wasm_bindgen(js_name = "getUser")]
+    pub async fn get_user(&self, id: String) -> Result<JsValue, JsError> {
+        let user = self.client.get_user(&id).await.map_err(to_js_error)?;
+        to_js_value(&user)
+    }
+
+    /// Create a user with the role named `role` (`user` or `admin`).
+    #[wasm_bindgen(js_name = "createUser")]
+    pub async fn create_user(
+        &self,
+        username: String,
+        first_name: String,
+        last_name: String,
+        role: String,
+    ) -> Result<JsValue, JsError> {
+        let user = passbolt_sdk::user::create::create_user(
+            &self.client,
+            &username,
+            &first_name,
+            &last_name,
+            &role,
+        )
+        .await
+        .map_err(to_js_error)?;
+        to_js_value(&user)
+    }
+
+    /// Update a user's names or role; `undefined` keeps the value.
+    #[wasm_bindgen(js_name = "updateUser")]
+    pub async fn update_user(
+        &self,
+        id: String,
+        first_name: Option<String>,
+        last_name: Option<String>,
+        role: Option<String>,
+    ) -> Result<JsValue, JsError> {
+        let user = passbolt_sdk::user::update::update_user(
+            &self.client,
+            &id,
+            first_name.as_deref(),
+            last_name.as_deref(),
+            role.as_deref(),
+        )
+        .await
+        .map_err(to_js_error)?;
+        to_js_value(&user)
+    }
+
+    /// Delete a user.
+    #[wasm_bindgen(js_name = "deleteUser")]
+    pub async fn delete_user(&self, id: String) -> Result<(), JsError> {
+        self.client.delete_user(&id).await.map_err(to_js_error)
+    }
+
+    /// Preview the impact of deleting a user.
+    #[wasm_bindgen(js_name = "deleteUserDryRun")]
+    pub async fn delete_user_dry_run(&self, id: String) -> Result<JsValue, JsError> {
+        let dry_run = self
             .client
-            .get_users(passbolt_sdk::UserQuery::default())
+            .delete_user_dry_run(&id)
             .await
             .map_err(to_js_error)?;
-        to_js_value(&users)
+        to_js_value(&dry_run)
     }
 
     /// Get the currently logged-in user.
@@ -572,6 +645,73 @@ impl PassboltSession {
             .await
             .map_err(to_js_error)?;
         to_js_value(&groups)
+    }
+
+    /// Get a group by ID.
+    #[wasm_bindgen(js_name = "getGroup")]
+    pub async fn get_group(&self, id: String) -> Result<JsValue, JsError> {
+        let group = self.client.get_group(&id).await.map_err(to_js_error)?;
+        to_js_value(&group)
+    }
+
+    /// Create a group; a manager is also a member.
+    #[wasm_bindgen(js_name = "createGroup")]
+    pub async fn create_group(
+        &self,
+        name: String,
+        member_ids: Vec<String>,
+        manager_ids: Vec<String>,
+    ) -> Result<JsValue, JsError> {
+        let group = passbolt_sdk::group::create::create_group(
+            &self.client,
+            &name,
+            &member_ids,
+            &manager_ids,
+        )
+        .await
+        .map_err(to_js_error)?;
+        to_js_value(&group)
+    }
+
+    /// Rename a group and change its members; new members get the secrets of the group's
+    /// resources.
+    #[wasm_bindgen(js_name = "updateGroup")]
+    pub async fn update_group(
+        &self,
+        id: String,
+        name: Option<String>,
+        add_member_ids: Vec<String>,
+        add_manager_ids: Vec<String>,
+        remove_member_ids: Vec<String>,
+    ) -> Result<JsValue, JsError> {
+        let group = passbolt_sdk::group::update::update_group(
+            &self.client,
+            &id,
+            name.as_deref(),
+            &add_member_ids,
+            &add_manager_ids,
+            &remove_member_ids,
+        )
+        .await
+        .map_err(to_js_error)?;
+        to_js_value(&group)
+    }
+
+    /// Delete a group.
+    #[wasm_bindgen(js_name = "deleteGroup")]
+    pub async fn delete_group(&self, id: String) -> Result<(), JsError> {
+        self.client.delete_group(&id).await.map_err(to_js_error)
+    }
+
+    /// Preview the impact of deleting a group.
+    #[wasm_bindgen(js_name = "deleteGroupDryRun")]
+    pub async fn delete_group_dry_run(&self, id: String) -> Result<JsValue, JsError> {
+        let dry_run = self
+            .client
+            .delete_group_dry_run(&id)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&dry_run)
     }
 
     // ── Tags ─────────────────────────────────────────────────────────────
