@@ -634,6 +634,41 @@ impl PassboltSession {
         to_js_value(&me)
     }
 
+    /// What blocks deleting the user: what they alone own or manage, as `{ resources, folders, groups,
+    /// groups_to_delete }`.
+    #[wasm_bindgen(js_name = "userDeleteBlockers")]
+    pub async fn user_delete_blockers(&self, id: String) -> Result<JsValue, JsError> {
+        let blockers = self
+            .client
+            .user_delete_blockers(&id)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&blockers)
+    }
+
+    /// Delete a user, giving what they alone own or manage to `successorId`, a user or a group that
+    /// already has access to it.
+    #[wasm_bindgen(js_name = "deleteUserWithTransfer")]
+    pub async fn delete_user_with_transfer(
+        &self,
+        id: String,
+        successor_id: String,
+    ) -> Result<(), JsError> {
+        let blockers = self
+            .client
+            .user_delete_blockers(&id)
+            .await
+            .map_err(to_js_error)?;
+        if blockers.is_empty() {
+            return self.client.delete_user(&id).await.map_err(to_js_error);
+        }
+        let transfer = blockers.transfer_to(&successor_id).map_err(to_js_error)?;
+        self.client
+            .delete_user_with_transfer(&id, &transfer)
+            .await
+            .map_err(to_js_error)
+    }
+
     // ── Groups ───────────────────────────────────────────────────────────
 
     /// List all groups.
@@ -712,6 +747,41 @@ impl PassboltSession {
             .await
             .map_err(to_js_error)?;
         to_js_value(&dry_run)
+    }
+
+    /// What blocks deleting the group: what it alone owns, as `{ resources, folders, groups,
+    /// groups_to_delete }`.
+    #[wasm_bindgen(js_name = "groupDeleteBlockers")]
+    pub async fn group_delete_blockers(&self, id: String) -> Result<JsValue, JsError> {
+        let blockers = self
+            .client
+            .group_delete_blockers(&id)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&blockers)
+    }
+
+    /// Delete a group, giving what it alone owns to `successorId`, a user or a group that
+    /// already has access to it.
+    #[wasm_bindgen(js_name = "deleteGroupWithTransfer")]
+    pub async fn delete_group_with_transfer(
+        &self,
+        id: String,
+        successor_id: String,
+    ) -> Result<(), JsError> {
+        let blockers = self
+            .client
+            .group_delete_blockers(&id)
+            .await
+            .map_err(to_js_error)?;
+        if blockers.is_empty() {
+            return self.client.delete_group(&id).await.map_err(to_js_error);
+        }
+        let transfer = blockers.transfer_to(&successor_id).map_err(to_js_error)?;
+        self.client
+            .delete_group_with_transfer(&id, &transfer)
+            .await
+            .map_err(to_js_error)
     }
 
     // ── Tags ─────────────────────────────────────────────────────────────
