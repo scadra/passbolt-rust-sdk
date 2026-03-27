@@ -867,7 +867,7 @@ pub struct MetadataPrivateKeyPayload {
 // ─── Folder Tree ─────────────────────────────────────────────────────────────
 
 /// A node in a folder hierarchy tree.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FolderTreeNode {
     pub folder: Folder,
     pub children: Vec<Self>,
