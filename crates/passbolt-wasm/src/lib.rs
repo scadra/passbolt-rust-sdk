@@ -793,6 +793,53 @@ impl PassboltSession {
         to_js_value(&tags)
     }
 
+    /// Add a tag to a resource, keeping its other tags; returns the resource's tags.
+    #[wasm_bindgen(js_name = "addTagToResource")]
+    pub async fn add_tag_to_resource(
+        &self,
+        resource_id: String,
+        slug: String,
+    ) -> Result<JsValue, JsError> {
+        let tags = self
+            .client
+            .add_tag_to_resource(&resource_id, &slug)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&tags)
+    }
+
+    /// Replace all the tags of a resource; returns its tags.
+    #[wasm_bindgen(js_name = "setResourceTags")]
+    pub async fn set_resource_tags(
+        &self,
+        resource_id: String,
+        slugs: Vec<String>,
+    ) -> Result<JsValue, JsError> {
+        let tags = self
+            .client
+            .update_resource_tags(&resource_id, &slugs)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&tags)
+    }
+
+    /// Rename a tag.
+    #[wasm_bindgen(js_name = "renameTag")]
+    pub async fn rename_tag(&self, id: String, slug: String) -> Result<JsValue, JsError> {
+        let tag = self
+            .client
+            .update_tag(&id, &slug)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&tag)
+    }
+
+    /// Delete a tag.
+    #[wasm_bindgen(js_name = "deleteTag")]
+    pub async fn delete_tag(&self, id: String) -> Result<(), JsError> {
+        self.client.delete_tag(&id).await.map_err(to_js_error)
+    }
+
     // ── Comments ─────────────────────────────────────────────────────────
 
     /// Get comments for a resource.
@@ -822,6 +869,12 @@ impl PassboltSession {
         to_js_value(&comment)
     }
 
+    /// Delete a comment.
+    #[wasm_bindgen(js_name = "deleteComment")]
+    pub async fn delete_comment(&self, id: String) -> Result<(), JsError> {
+        self.client.delete_comment(&id).await.map_err(to_js_error)
+    }
+
     // ── Sharing ──────────────────────────────────────────────────────────
 
     /// Search for users and groups (AROs) for sharing.
@@ -833,6 +886,108 @@ impl PassboltSession {
             .await
             .map_err(to_js_error)?;
         to_js_value(&aros)
+    }
+
+    // ── Password expiry ──────────────────────────────────────────────────
+
+    /// The password expiry settings: `{ id, default_expiry_period, policy_override,
+    /// automatic_expiry, automatic_update }`, the period in days.
+    #[wasm_bindgen(js_name = "getPasswordExpirySettings")]
+    pub async fn get_password_expiry_settings(&self) -> Result<JsValue, JsError> {
+        let settings = self
+            .client
+            .get_password_expiry_settings()
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&settings)
+    }
+
+    /// Create or update the password expiry settings (admin).
+    #[wasm_bindgen(js_name = "savePasswordExpirySettings")]
+    pub async fn save_password_expiry_settings(
+        &self,
+        settings: JsValue,
+    ) -> Result<JsValue, JsError> {
+        let settings: passbolt_sdk::types::PasswordExpirySettings =
+            serde_wasm_bindgen::from_value(settings)
+                .map_err(|error| JsError::new(&format!("Invalid settings: {error}")))?;
+        let saved = self
+            .client
+            .save_password_expiry_settings(&settings)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&saved)
+    }
+
+    /// Delete the password expiry settings (admin): the defaults apply again.
+    #[wasm_bindgen(js_name = "deletePasswordExpirySettings")]
+    pub async fn delete_password_expiry_settings(&self, id: String) -> Result<(), JsError> {
+        self.client
+            .delete_password_expiry_settings(&id)
+            .await
+            .map_err(to_js_error)
+    }
+
+    // ── Resource types and metadata settings ─────────────────────────────
+
+    /// The resource types of the server, with the JSON Schemas of their `definition`.
+    #[wasm_bindgen(js_name = "listResourceTypes")]
+    pub async fn list_resource_types(&self) -> Result<JsValue, JsError> {
+        let resource_types = self.client.resource_types().await.map_err(to_js_error)?;
+        to_js_value(&*resource_types)
+    }
+
+    /// Which metadata versions the organization creates and allows.
+    #[wasm_bindgen(js_name = "getMetadataTypesSettings")]
+    pub async fn get_metadata_types_settings(&self) -> Result<JsValue, JsError> {
+        let settings = self
+            .client
+            .get_metadata_types_settings()
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&settings)
+    }
+
+    /// Save the metadata types settings (admin).
+    #[wasm_bindgen(js_name = "saveMetadataTypesSettings")]
+    pub async fn save_metadata_types_settings(
+        &self,
+        settings: JsValue,
+    ) -> Result<JsValue, JsError> {
+        let settings: passbolt_sdk::types::MetadataTypesSettings =
+            serde_wasm_bindgen::from_value(settings)
+                .map_err(|error| JsError::new(&format!("Invalid settings: {error}")))?;
+        let saved = self
+            .client
+            .save_metadata_types_settings(&settings)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&saved)
+    }
+
+    /// How metadata keys are used: `{ allow_usage_of_personal_keys, zero_knowledge_key_share }`.
+    #[wasm_bindgen(js_name = "getMetadataKeysSettings")]
+    pub async fn get_metadata_keys_settings(&self) -> Result<JsValue, JsError> {
+        let settings = self
+            .client
+            .get_metadata_keys_settings()
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&settings)
+    }
+
+    /// Save the metadata keys settings (admin).
+    #[wasm_bindgen(js_name = "saveMetadataKeysSettings")]
+    pub async fn save_metadata_keys_settings(&self, settings: JsValue) -> Result<JsValue, JsError> {
+        let settings: passbolt_sdk::types::MetadataKeysSettings =
+            serde_wasm_bindgen::from_value(settings)
+                .map_err(|error| JsError::new(&format!("Invalid settings: {error}")))?;
+        let saved = self
+            .client
+            .save_metadata_keys_settings(&settings)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&saved)
     }
 
     // ── HIBP ─────────────────────────────────────────────────────────────

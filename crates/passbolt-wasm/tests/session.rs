@@ -39,6 +39,13 @@ const FAVORITE: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/favo
 const GROUP: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/group.json");
 const ROLES: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/roles.json");
 const USERS: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/users.json");
+const TAG: &str = include_str!("../../passbolt-sdk/tests/fixtures/data/tag.json");
+const PASSWORD_EXPIRY_SETTINGS: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/data/password_expiry_settings.json");
+const METADATA_KEYS_SETTINGS: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/data/metadata_keys_settings.json");
+const RESOURCE_TYPES: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/data/resource_types.json");
 const USER_DELETE_DRY_RUN_ERRORS: &str =
     include_str!("../../passbolt-sdk/tests/fixtures/data/user_delete_dry_run_errors.json");
 
@@ -498,4 +505,110 @@ async fn a_successor_without_access_is_refused_before_the_deletion() {
 
     assert!(deletion.is_err());
     assert_eq!(passbolt.requests("DELETE", &user_path), Vec::<Value>::new());
+}
+
+#[wasm_bindgen_test]
+async fn the_tags_of_a_resource_are_replaced() {
+    let passbolt = Passbolt::new();
+    let tags_path = format!("/tags/{RESOURCE_ID}.json");
+    passbolt.on("POST", &tags_path, &json!([fixture(TAG)]));
+
+    let tags = ok(passbolt
+        .login()
+        .await
+        .set_resource_tags(RESOURCE_ID.into(), vec!["prod".into()])
+        .await);
+
+    assert_eq!(to_json(&tags)[0]["slug"], "prod");
+    assert_eq!(
+        passbolt.requests("POST", &tags_path),
+        [json!({"tags": ["prod"]})]
+    );
+}
+
+#[wasm_bindgen_test]
+async fn the_password_expiry_settings_are_saved_from_a_js_object() {
+    let passbolt = Passbolt::new();
+    passbolt.on(
+        "POST",
+        "/password-expiry/settings.json",
+        &fixture(PASSWORD_EXPIRY_SETTINGS),
+    );
+    let settings = from_json(&json!({
+        "default_expiry_period": 90,
+        "policy_override": false,
+        "automatic_expiry": true,
+        "automatic_update": true
+    }));
+
+    let saved = ok(passbolt
+        .login()
+        .await
+        .save_password_expiry_settings(settings)
+        .await);
+
+    assert_eq!(to_json(&saved)["default_expiry_period"], 90);
+    let sent = &passbolt.requests("POST", "/password-expiry/settings.json")[0];
+    assert_eq!(sent["default_expiry_period"], 90);
+    assert_eq!(sent["automatic_expiry"], true);
+}
+
+#[wasm_bindgen_test]
+async fn invalid_password_expiry_settings_are_refused_before_the_request() {
+    let passbolt = Passbolt::new();
+
+    let saved = passbolt
+        .login()
+        .await
+        .save_password_expiry_settings(from_json(&json!({"default_expiry_period": "soon"})))
+        .await;
+
+    let Err(error) = saved else {
+        panic!("saved invalid settings")
+    };
+    assert!(message(error).starts_with("Invalid settings"));
+    assert_eq!(
+        passbolt.received("POST", "/password-expiry/settings.json"),
+        Vec::<Value>::new()
+    );
+}
+
+#[wasm_bindgen_test]
+async fn the_resource_types_are_listed_with_their_schema() {
+    let passbolt = Passbolt::new();
+    passbolt.on("GET", "/resource-types.json", &fixture(RESOURCE_TYPES));
+
+    let resource_types = ok(passbolt.login().await.list_resource_types().await);
+
+    let resource_types = to_json(&resource_types);
+    assert_eq!(resource_types[0]["slug"], "password-string");
+    assert_eq!(
+        resource_types[0]["definition"]["resource"]["required"],
+        json!(["name"])
+    );
+}
+
+#[wasm_bindgen_test]
+async fn the_metadata_keys_settings_are_saved() {
+    let passbolt = Passbolt::new();
+    passbolt.on(
+        "POST",
+        "/metadata/keys/settings.json",
+        &fixture(METADATA_KEYS_SETTINGS),
+    );
+    let settings = from_json(&json!({
+        "allow_usage_of_personal_keys": false,
+        "zero_knowledge_key_share": false
+    }));
+
+    ok(passbolt
+        .login()
+        .await
+        .save_metadata_keys_settings(settings)
+        .await);
+
+    assert_eq!(
+        passbolt.requests("POST", "/metadata/keys/settings.json"),
+        [json!({"allow_usage_of_personal_keys": false, "zero_knowledge_key_share": false})]
+    );
 }
