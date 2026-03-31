@@ -70,7 +70,8 @@ pub fn set_csrf_token_provider(provider: Option<js_sys::Function>) {
 ///
 /// The CSRF cookie is read again after each response, as the browser extension does.
 /// Browsers keep the cookies and hide `Set-Cookie`; Node, Deno and Bun show it and keep
-/// nothing, so the client keeps those cookies itself: one client talks to one server.
+/// nothing, so the client keeps those cookies itself and sends them back: one client talks
+/// to one server.
 pub struct WasmHttpClient {
     csrf_token: Mutex<Option<String>>,
     cookies: Mutex<Vec<(String, String)>>,
@@ -104,6 +105,18 @@ impl WasmHttpClient {
             .map(|(_, value)| value.clone())
     }
 
+    /// The `Cookie` header of the kept cookies; `None` in a browser, which keeps them itself.
+    fn cookie_header(&self) -> Option<String> {
+        let cookies = self.cookies.lock().ok()?;
+        (!cookies.is_empty()).then(|| {
+            cookies
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+    }
+
     fn keep_cookies(&self, response_headers: &Headers) {
         let Ok(mut cookies) = self.cookies.lock() else {
             return;
@@ -130,6 +143,11 @@ impl WasmHttpClient {
             request_headers
                 .set(name, value)
                 .map_err(|error| js_err(&format!("set header {name}"), &error))?;
+        }
+        if let Some(cookie_header) = self.cookie_header() {
+            request_headers
+                .set("Cookie", &cookie_header)
+                .map_err(|error| js_err("set header Cookie", &error))?;
         }
         request_init.set_headers(&request_headers);
 
@@ -350,6 +368,22 @@ mod tests {
     }
 
     #[test]
+    fn test_kept_cookies_make_the_cookie_header() {
+        let client = WasmHttpClient::new();
+        *client.cookies.lock().unwrap() = kept(&["passbolt_session=s1", "csrfToken=t1"]);
+
+        assert_eq!(
+            client.cookie_header().as_deref(),
+            Some("passbolt_session=s1; csrfToken=t1")
+        );
+    }
+
+    #[test]
+    fn test_without_kept_cookies_there_is_no_cookie_header() {
+        assert_eq!(WasmHttpClient::new().cookie_header(), None);
+    }
+
+    #[test]
     fn test_a_new_client_has_no_csrf_token() {
         assert_eq!(
             WasmHttpClient::new().cookie("https://passbolt.test", CSRF_COOKIE),
@@ -438,6 +472,44 @@ mod wasm_tests {
         let provider = js_sys::Function::new_no_args("return null;");
 
         assert_eq!(token_after_a_response(Some(provider)).await, None);
+    }
+
+    /// Installs a `fetch` setting `csrfToken` and the session cookie, echoing the `Cookie`
+    /// header it receives in its body; returns the real `fetch`.
+    fn install_cookie_setting_fetch() -> JsValue {
+        let fetch = js_sys::Function::new_no_args(
+            r#"
+            return async (request) => {
+                const headers = new Headers({ "Content-Type": "application/json" });
+                headers.append("Set-Cookie", "passbolt_session=s1; path=/; HttpOnly");
+                headers.append("Set-Cookie", "csrfToken=t1; path=/");
+                return new Response(JSON.stringify(request.headers.get("cookie")), { headers });
+            };
+            "#,
+        )
+        .call0(&JsValue::NULL)
+        .unwrap();
+        let global = js_sys::global();
+        let real_fetch = js_sys::Reflect::get(&global, &"fetch".into()).unwrap();
+        js_sys::Reflect::set(&global, &"fetch".into(), &fetch).unwrap();
+        real_fetch
+    }
+
+    fn restore_fetch(real_fetch: &JsValue) {
+        js_sys::Reflect::set(&js_sys::global(), &"fetch".into(), real_fetch).unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_the_kept_cookies_are_sent_back() {
+        let real_fetch = install_cookie_setting_fetch();
+        let client = WasmHttpClient::new();
+
+        let first = client.get("http://127.0.0.1:1/", &[]).await.unwrap();
+        let second = client.get("http://127.0.0.1:1/", &[]).await.unwrap();
+
+        restore_fetch(&real_fetch);
+        assert_eq!(first.body, b"null");
+        assert_eq!(second.body, br#""passbolt_session=s1; csrfToken=t1""#);
     }
 
     #[wasm_bindgen_test]
