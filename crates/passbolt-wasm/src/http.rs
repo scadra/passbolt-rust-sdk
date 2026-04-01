@@ -90,7 +90,9 @@ impl WasmHttpClient {
         let provider = CSRF_TOKEN_PROVIDER.with(|stored| stored.borrow().clone());
         let token = match provider {
             Some(provider) => provided_token(&provider).await,
-            None => document_cookie().and_then(|cookies| cookie_value(&cookies, CSRF_COOKIE)),
+            None => document_cookie()
+                .and_then(|cookies| cookie_value(&cookies, CSRF_COOKIE))
+                .or_else(|| self.kept_cookie(CSRF_COOKIE)),
         };
         if let (Some(token), Ok(mut stored)) = (token, self.csrf_token.lock()) {
             *stored = Some(token);
@@ -497,6 +499,20 @@ mod wasm_tests {
 
     fn restore_fetch(real_fetch: &JsValue) {
         js_sys::Reflect::set(&js_sys::global(), &"fetch".into(), real_fetch).unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_without_provider_the_csrf_token_comes_from_set_cookie() {
+        let real_fetch = install_cookie_setting_fetch();
+        let client = WasmHttpClient::new();
+
+        client.get("http://127.0.0.1:1/", &[]).await.unwrap();
+
+        restore_fetch(&real_fetch);
+        assert_eq!(
+            client.cookie("http://127.0.0.1:1/", CSRF_COOKIE).as_deref(),
+            Some("t1")
+        );
     }
 
     #[wasm_bindgen_test]
