@@ -135,7 +135,7 @@ impl PassboltSession {
     /// `options` (optional):
     /// - `csrfTokenProvider`: function returning the `csrfToken` cookie, or a promise of it,
     ///   e.g. with `browser.cookies.get` in an extension. Default: `document.cookie`, readable
-    ///   by pages served by Passbolt only.
+    ///   by pages served by Passbolt only, or in Node the cookie the server set.
     /// - `totpCode`: the TOTP code to answer the MFA challenge with.
     /// - `serverPublicKey`: the armored server key pinned with `fetchServerKey`; each login
     ///   then checks the server holds its private key.

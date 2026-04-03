@@ -56,21 +56,27 @@ struct Passbolt {
 }
 
 impl Passbolt {
-    /// Installs a `fetch` answering the `GPGAuth` login of ada and `/users/me.json`.
+    /// Installs a `fetch` answering the `GPGAuth` login of ada and `/users/me.json`. As Node
+    /// keeps no cookie, the session and `csrfToken` cookies it sets come back only if the
+    /// client keeps them: without the session cookie, the server answers 403.
     fn new() -> Self {
         let token = format!("gpgauthv1.3.0|36|{}|gpgauthv1.3.0", uuid::Uuid::new_v4());
         let challenge = encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()]).unwrap();
         let factory = js_sys::Function::new_with_args(
             "challenge, userId, armoredKey, fingerprint, routes",
             r#"
-            const answer = (status, body, headers = {}) =>
-                new Response(
+            const answer = (status, body, headers = {}, cookies = []) => {
+                const responseHeaders = new Headers({ "X-GPGAuth-Version": "1.3.0", ...headers });
+                for (const cookie of cookies) responseHeaders.append("Set-Cookie", cookie);
+                return new Response(
                     JSON.stringify({
                         header: { status: status < 400 ? "success" : "error", message: "" },
                         body,
                     }),
-                    { status, headers: { "X-GPGAuth-Version": "1.3.0", ...headers } },
+                    { status, headers: responseHeaders },
                 );
+            };
+            const sessionCookies = ["passbolt_session=ada-session; path=/; HttpOnly", "csrfToken=ada-csrf; path=/"];
             const step = (authenticated, progress, headers) => ({
                 "X-GPGAuth-Authenticated": authenticated,
                 "X-GPGAuth-Progress": progress,
@@ -82,10 +88,18 @@ impl Passbolt {
                 const url = new URL(request.url);
                 if (url.pathname === "/auth/login.json") {
                     return text.includes("user_token_result")
-                        ? answer(200, { user: { id: userId } }, step("true", "complete", { "X-GPGAuth-Refer": "/" }))
+                        ? answer(
+                              200,
+                              { user: { id: userId } },
+                              step("true", "complete", { "X-GPGAuth-Refer": "/" }),
+                              sessionCookies,
+                          )
                         : answer(200, null, step("false", "stage1", {
                               "X-GPGAuth-User-Auth-Token": encodeURIComponent(challenge),
                           }));
+                }
+                if (!(request.headers.get("cookie") ?? "").includes("passbolt_session=ada-session")) {
+                    return answer(403, null);
                 }
                 if (url.pathname === "/users/me.json") {
                     return answer(200, {
@@ -96,7 +110,13 @@ impl Passbolt {
                 }
                 let body = null;
                 try { body = JSON.parse(text); } catch {}
-                requests.push({ method: request.method, path: url.pathname, query: decodeURIComponent(url.search.slice(1)), body });
+                requests.push({
+                    method: request.method,
+                    path: url.pathname,
+                    query: decodeURIComponent(url.search.slice(1)),
+                    csrfToken: request.headers.get("x-csrf-token"),
+                    body,
+                });
                 const route = routes.find(
                     (route) => route.method === request.method && route.path === url.pathname,
                 );
@@ -132,15 +152,13 @@ impl Passbolt {
         self.routes.push(&from_json(&route));
     }
 
+    /// Logs in as Node does: no CSRF token provider, no `document.cookie`.
     async fn login(&self) -> PassboltSession {
-        let options = js_sys::Object::new();
-        let csrf_token_provider = js_sys::Function::new_no_args("return 'csrf-token';");
-        js_sys::Reflect::set(&options, &"csrfTokenProvider".into(), &csrf_token_provider).unwrap();
         let session = PassboltSession::login(
             SERVER_URL.into(),
             ADA_PRIVATE.into(),
             ADA_PASSPHRASE.into(),
-            options.into(),
+            JsValue::UNDEFINED,
         )
         .await;
         ok(session)
@@ -611,4 +629,19 @@ async fn the_metadata_keys_settings_are_saved() {
         passbolt.requests("POST", "/metadata/keys/settings.json"),
         [json!({"allow_usage_of_personal_keys": false, "zero_knowledge_key_share": false})]
     );
+}
+
+#[wasm_bindgen_test]
+async fn a_change_sends_the_csrf_token_of_the_cookie() {
+    let passbolt = Passbolt::new();
+    passbolt.on("POST", "/folders.json", &fixture(FOLDER));
+
+    ok(passbolt
+        .login()
+        .await
+        .create_folder("Ops".into(), None)
+        .await);
+
+    let created = &passbolt.received("POST", "/folders.json")[0];
+    assert_eq!(created["csrfToken"], "ada-csrf");
 }

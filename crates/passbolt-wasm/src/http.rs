@@ -66,11 +66,15 @@ pub fn set_csrf_token_provider(provider: Option<js_sys::Function>) {
     CSRF_TOKEN_PROVIDER.with(|stored| *stored.borrow_mut() = provider);
 }
 
-/// Browser-native HTTP client using `fetch()` with cookie credentials.
+/// HTTP client using `fetch()` with cookie credentials.
 ///
 /// The CSRF cookie is read again after each response, as the browser extension does.
+/// Browsers keep the cookies and hide `Set-Cookie`; Node, Deno and Bun show it and keep
+/// nothing, so the client keeps those cookies itself and sends them back: one client talks
+/// to one server.
 pub struct WasmHttpClient {
     csrf_token: Mutex<Option<String>>,
+    cookies: Mutex<Vec<(String, String)>>,
 }
 
 impl WasmHttpClient {
@@ -78,6 +82,7 @@ impl WasmHttpClient {
     pub const fn new() -> Self {
         Self {
             csrf_token: Mutex::new(None),
+            cookies: Mutex::new(Vec::new()),
         }
     }
 
@@ -85,10 +90,41 @@ impl WasmHttpClient {
         let provider = CSRF_TOKEN_PROVIDER.with(|stored| stored.borrow().clone());
         let token = match provider {
             Some(provider) => provided_token(&provider).await,
-            None => document_cookie().and_then(|cookies| cookie_value(&cookies, CSRF_COOKIE)),
+            None => document_cookie()
+                .and_then(|cookies| cookie_value(&cookies, CSRF_COOKIE))
+                .or_else(|| self.kept_cookie(CSRF_COOKIE)),
         };
         if let (Some(token), Ok(mut stored)) = (token, self.csrf_token.lock()) {
             *stored = Some(token);
+        }
+    }
+
+    fn kept_cookie(&self, name: &str) -> Option<String> {
+        let cookies = self.cookies.lock().ok()?;
+        cookies
+            .iter()
+            .find(|(kept_name, _)| kept_name == name)
+            .map(|(_, value)| value.clone())
+    }
+
+    /// The `Cookie` header of the kept cookies; `None` in a browser, which keeps them itself.
+    fn cookie_header(&self) -> Option<String> {
+        let cookies = self.cookies.lock().ok()?;
+        (!cookies.is_empty()).then(|| {
+            cookies
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+    }
+
+    fn keep_cookies(&self, response_headers: &Headers) {
+        let Ok(mut cookies) = self.cookies.lock() else {
+            return;
+        };
+        for set_cookie in set_cookie_headers(response_headers) {
+            keep_cookie(&mut cookies, &set_cookie);
         }
     }
 
@@ -109,6 +145,11 @@ impl WasmHttpClient {
             request_headers
                 .set(name, value)
                 .map_err(|error| js_err(&format!("set header {name}"), &error))?;
+        }
+        if let Some(cookie_header) = self.cookie_header() {
+            request_headers
+                .set("Cookie", &cookie_header)
+                .map_err(|error| js_err("set header Cookie", &error))?;
         }
         request_init.set_headers(&request_headers);
 
@@ -133,6 +174,7 @@ impl WasmHttpClient {
 
         // Extract response headers
         let response_headers = response.headers();
+        self.keep_cookies(&response_headers);
         let mut header_vec: Vec<(String, String)> = Vec::new();
 
         // Iterate through headers using js_sys
@@ -182,6 +224,42 @@ fn document_cookie() -> Option<String> {
         .as_string()
 }
 
+/// The `Set-Cookie` headers, one per cookie: `getSetCookie()` gives none in a browser.
+fn set_cookie_headers(headers: &Headers) -> Vec<String> {
+    let Ok(get_set_cookie) = js_sys::Reflect::get(headers, &JsValue::from_str("getSetCookie"))
+    else {
+        return Vec::new();
+    };
+    let Ok(get_set_cookie) = get_set_cookie.dyn_into::<js_sys::Function>() else {
+        return Vec::new();
+    };
+    get_set_cookie
+        .call0(headers)
+        .ok()
+        .and_then(|values| values.dyn_into::<Array>().ok())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Keep the cookie of a `Set-Cookie` header, replacing the one of the same name; an empty
+/// value or `Max-Age=0`, as the server logs out, removes it.
+fn keep_cookie(cookies: &mut Vec<(String, String)>, set_cookie: &str) {
+    let mut attributes = set_cookie.split(';').map(str::trim);
+    let Some((name, value)) = attributes.next().and_then(|pair| pair.split_once('=')) else {
+        return;
+    };
+    let expired = attributes.any(|attribute| attribute.eq_ignore_ascii_case("max-age=0"));
+    cookies.retain(|(kept_name, _)| kept_name != name);
+    if !value.is_empty() && !expired {
+        cookies.push((name.to_string(), value.to_string()));
+    }
+}
+
 /// The value of cookie `name` in a `document.cookie` string.
 fn cookie_value(cookies: &str, name: &str) -> Option<String> {
     cookies.split("; ").find_map(|cookie| {
@@ -193,7 +271,7 @@ fn cookie_value(cookies: &str, name: &str) -> Option<String> {
 impl HttpClient for WasmHttpClient {
     fn cookie(&self, _url: &str, name: &str) -> Option<String> {
         if name != CSRF_COOKIE {
-            return None;
+            return self.kept_cookie(name);
         }
         self.csrf_token.lock().ok()?.clone()
     }
@@ -264,6 +342,47 @@ mod tests {
     #[case::empty_value("csrfToken=", None)]
     fn test_cookie_value(#[case] cookies: &str, #[case] expected: Option<&str>) {
         assert_eq!(cookie_value(cookies, CSRF_COOKIE).as_deref(), expected);
+    }
+
+    fn kept(set_cookies: &[&str]) -> Vec<(String, String)> {
+        let mut cookies = Vec::new();
+        for set_cookie in set_cookies {
+            keep_cookie(&mut cookies, set_cookie);
+        }
+        cookies
+    }
+
+    #[rstest]
+    #[case::name_and_value(&["passbolt_session=s1; path=/; HttpOnly"], &[("passbolt_session", "s1")])]
+    #[case::several(&["passbolt_session=s1", "csrfToken=t1"], &[("passbolt_session", "s1"), ("csrfToken", "t1")])]
+    #[case::replaced_by_name(&["csrfToken=t1", "csrfToken=t2"], &[("csrfToken", "t2")])]
+    #[case::emptied(&["passbolt_session=s1", "passbolt_session=; path=/"], &[])]
+    #[case::expired(&["passbolt_session=s1", "passbolt_session=s1; Max-Age=0"], &[])]
+    #[case::value_with_equals(&["token=a=b"], &[("token", "a=b")])]
+    #[case::without_value(&["broken"], &[])]
+    fn test_keep_cookie(#[case] set_cookies: &[&str], #[case] expected: &[(&str, &str)]) {
+        let expected: Vec<(String, String)> = expected
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+            .collect();
+
+        assert_eq!(kept(set_cookies), expected);
+    }
+
+    #[test]
+    fn test_kept_cookies_make_the_cookie_header() {
+        let client = WasmHttpClient::new();
+        *client.cookies.lock().unwrap() = kept(&["passbolt_session=s1", "csrfToken=t1"]);
+
+        assert_eq!(
+            client.cookie_header().as_deref(),
+            Some("passbolt_session=s1; csrfToken=t1")
+        );
+    }
+
+    #[test]
+    fn test_without_kept_cookies_there_is_no_cookie_header() {
+        assert_eq!(WasmHttpClient::new().cookie_header(), None);
     }
 
     #[test]
@@ -355,6 +474,58 @@ mod wasm_tests {
         let provider = js_sys::Function::new_no_args("return null;");
 
         assert_eq!(token_after_a_response(Some(provider)).await, None);
+    }
+
+    /// Installs a `fetch` setting `csrfToken` and the session cookie, echoing the `Cookie`
+    /// header it receives in its body; returns the real `fetch`.
+    fn install_cookie_setting_fetch() -> JsValue {
+        let fetch = js_sys::Function::new_no_args(
+            r#"
+            return async (request) => {
+                const headers = new Headers({ "Content-Type": "application/json" });
+                headers.append("Set-Cookie", "passbolt_session=s1; path=/; HttpOnly");
+                headers.append("Set-Cookie", "csrfToken=t1; path=/");
+                return new Response(JSON.stringify(request.headers.get("cookie")), { headers });
+            };
+            "#,
+        )
+        .call0(&JsValue::NULL)
+        .unwrap();
+        let global = js_sys::global();
+        let real_fetch = js_sys::Reflect::get(&global, &"fetch".into()).unwrap();
+        js_sys::Reflect::set(&global, &"fetch".into(), &fetch).unwrap();
+        real_fetch
+    }
+
+    fn restore_fetch(real_fetch: &JsValue) {
+        js_sys::Reflect::set(&js_sys::global(), &"fetch".into(), real_fetch).unwrap();
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_without_provider_the_csrf_token_comes_from_set_cookie() {
+        let real_fetch = install_cookie_setting_fetch();
+        let client = WasmHttpClient::new();
+
+        client.get("http://127.0.0.1:1/", &[]).await.unwrap();
+
+        restore_fetch(&real_fetch);
+        assert_eq!(
+            client.cookie("http://127.0.0.1:1/", CSRF_COOKIE).as_deref(),
+            Some("t1")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_the_kept_cookies_are_sent_back() {
+        let real_fetch = install_cookie_setting_fetch();
+        let client = WasmHttpClient::new();
+
+        let first = client.get("http://127.0.0.1:1/", &[]).await.unwrap();
+        let second = client.get("http://127.0.0.1:1/", &[]).await.unwrap();
+
+        restore_fetch(&real_fetch);
+        assert_eq!(first.body, b"null");
+        assert_eq!(second.body, br#""passbolt_session=s1; csrfToken=t1""#);
     }
 
     #[wasm_bindgen_test]

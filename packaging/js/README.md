@@ -8,4 +8,14 @@ TypeScript declarations.
 import { PassboltSession, getKeyFingerprint } from "@passbolt/sdk";
 ```
 
-The session relies on `fetch` with cookie credentials, as in a browser or an extension.
+The session relies on `fetch`. A browser or an extension keeps the session cookies; give
+`login` a `csrfTokenProvider` there, e.g. with `browser.cookies.get`. Node (20+), Deno and
+Bun keep none: the session keeps the cookies the server sets and sends them back.
+
+```js
+const { PassboltSession } = require("@passbolt/sdk");
+
+const session = await PassboltSession.login(serverUrl, privateKey, passphrase);
+const resources = await session.listResourceViews(undefined, false);
+await session.logout();
+```
