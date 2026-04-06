@@ -84,8 +84,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: CLI
         run: cargo build --release --locked -p passbolt-cli --target "$TARGET"
+      # The bindings are generated from the UniFFI metadata symbols: a stripped library has none.
       - name: SDK library
         if: matrix.ffi
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: "false"
         run: cargo build --release --locked -p passbolt-ffi --lib --target "$TARGET"
       # Go links the static library: it also needs the system libraries Rust prints.
       - name: SDK static library
@@ -168,6 +171,7 @@ jobs:
         with:
           name: bindings
           path: bindings/
+          if-no-files-found: error
 
   python:
     name: Python (${{ matrix.target }}, ${{ matrix.os }})
@@ -187,7 +191,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # maturin generates the bindings from the library: its UniFFI symbols must stay.
       - uses: PyO3/maturin-action@v1
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: "false"
         with:
           working-directory: crates/passbolt-ffi
           target: ${{ matrix.target }}
