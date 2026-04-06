@@ -34,5 +34,10 @@ for language in "${languages[@]}"; do
       echo "unknown language: $language" >&2
       exit 1 ;;
   esac
+  # A stripped library has no UniFFI metadata: the generators then write nothing, silently.
+  if [[ -z "$(ls -A "$dir")" ]]; then
+    echo "$language: nothing generated, is $lib stripped?" >&2
+    exit 1
+  fi
   echo "$language: $dir"
 done
