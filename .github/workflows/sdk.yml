@@ -534,6 +534,11 @@ jobs:
         run: |
           gradle -p packaging/android --no-daemon assembleRelease
           aar=packaging/android/build/outputs/aar/passbolt-sdk-release.aar
+          for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+            unzip -l "$aar" | grep -q "jni/$abi/libpassbolt_ffi.so"
+          done
+          unzip -p "$aar" classes.jar > classes.jar
+          unzip -l classes.jar | grep -q 'com/passbolt/sdk/PassboltClient.class'
           mkdir -p dist
           cp "$aar" "dist/passbolt-sdk-android-${{ needs.version.outputs.sdk }}.aar"
       - uses: actions/upload-artifact@v4
