@@ -32,6 +32,7 @@ env:
   UNIFFI_BINDGEN_JAVA: 0.2.1
   CARGO_NDK: 4.1.2
   JNA: 5.14.0
+  GRADLE: 8.11.1
 
 jobs:
   version:
@@ -521,14 +522,25 @@ jobs:
         run: |
           cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 -o build/android/jniLibs \
             build --release --locked -p passbolt-ffi --lib
-      # Kotlin sources and jniLibs/, for an Android module depending on net.java.dev.jna:jna (aar).
-      - name: Package
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE }}
+      # The Kotlin bindings and jni/<abi>/ in one AAR; apps also depend on net.java.dev.jna:jna (aar).
+      - name: AAR
         run: |
-          pkg=build/android
-          mkdir -p "$pkg/kotlin" dist
-          cp -r bindings/kotlin/. "$pkg/kotlin/"
-          cp LICENSE "$pkg/"
-          (cd build && zip -qr "../dist/passbolt-sdk-android-${{ needs.version.outputs.sdk }}.zip" android)
+          gradle -p packaging/android --no-daemon assembleRelease
+          aar=packaging/android/build/outputs/aar/passbolt-sdk-release.aar
+          for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+            unzip -l "$aar" | grep -q "jni/$abi/libpassbolt_ffi.so"
+          done
+          unzip -p "$aar" classes.jar > classes.jar
+          unzip -l classes.jar | grep -q 'com/passbolt/sdk/PassboltClient.class'
+          mkdir -p dist
+          cp "$aar" "dist/passbolt-sdk-android-${{ needs.version.outputs.sdk }}.aar"
       - uses: actions/upload-artifact@v4
         with:
           name: sdk-android

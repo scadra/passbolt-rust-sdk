@@ -51,3 +51,5 @@ Thumbs.db
 # Interop checks (npm ci in tests/interop) #
 ######################
 node_modules/
+/packaging/android/build
+/packaging/android/.gradle
