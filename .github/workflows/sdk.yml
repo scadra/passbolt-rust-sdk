@@ -91,14 +91,15 @@ jobs:
         env:
           CARGO_PROFILE_RELEASE_STRIP: "false"
         run: cargo build --release --locked -p passbolt-ffi --lib --target "$TARGET"
-      # Go links the static library: it also needs the system libraries Rust prints.
+      # Go links the static library: it also needs the system libraries Rust prints, without
+      # colours: cgo refuses a flag holding an escape code.
       - name: SDK static library
         if: matrix.ffi && runner.os != 'Windows'
         run: |
-          cargo rustc --release --locked -p passbolt-ffi --lib --crate-type staticlib --target "$TARGET" \
-            -- --print native-static-libs 2> static.log || { cat static.log; exit 1; }
+          cargo rustc --color never --release --locked -p passbolt-ffi --lib --crate-type staticlib \
+            --target "$TARGET" -- --print native-static-libs 2> static.log || { cat static.log; exit 1; }
           sed -n 's/.*native-static-libs: //p' static.log | tail -n 1 > native-static-libs.txt
-          test -s native-static-libs.txt
+          grep -Eqx -- '-[-A-Za-z0-9_.,/= ]+' native-static-libs.txt
       - name: Package
         run: |
           name="passbolt-cli-${{ needs.version.outputs.cli }}-$TARGET"
@@ -516,10 +517,11 @@ jobs:
           name: bindings
           path: bindings
       - run: cargo install --locked cargo-ndk --version "$CARGO_NDK"
+      # The NDK of the runner image: `env.` only reads the workflow's variables, not the runner's.
       - name: Native libraries
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
         run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
+          test -d "$ANDROID_NDK_HOME"
           cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 -o build/android/jniLibs \
             build --release --locked -p passbolt-ffi --lib
       - uses: actions/setup-java@v4
