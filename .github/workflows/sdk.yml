@@ -206,7 +206,7 @@ jobs:
         if: matrix.smoke
         shell: bash
         run: |
-          python -m pip install --no-index --find-links crates/passbolt-ffi/dist passbolt-sdk
+          python -m pip install --no-index --find-links crates/passbolt-ffi/dist switch-case-passbolt-sdk
           python packaging/smoke/smoke.py
       - uses: actions/upload-artifact@v4
         with:
