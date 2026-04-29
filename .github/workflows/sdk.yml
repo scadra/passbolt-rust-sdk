@@ -631,3 +631,37 @@ jobs:
           path: dist
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-nuget:
+    name: Publish NuGet
+    needs: release-check
+    if: vars.PUBLISH_NUGET == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-dotnet
+          path: dist
+      - run: dotnet nuget push dist/*.nupkg --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+
+  publish-rubygems:
+    name: Publish RubyGems
+    needs: release-check
+    if: vars.PUBLISH_RUBYGEMS == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-ruby
+          path: dist
+      - run: for gem in dist/*.gem; do gem push "$gem"; done
+        env:
+          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
