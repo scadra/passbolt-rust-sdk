@@ -4,7 +4,7 @@ requires = ["maturin>=1.8,<2"]
 build-backend = "maturin"
 
 [project]
-name = "passbolt-sdk"
+name = "switch-case-passbolt-sdk"
 description = "Passbolt SDK — Python bindings of the Rust SDK"
 license = { text = "AGPL-3.0-or-later" }
 requires-python = ">=3.9"
