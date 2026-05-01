@@ -705,3 +705,16 @@ jobs:
           token="$(printf '%s:%s' "$MAVEN_CENTRAL_USERNAME" "$MAVEN_CENTRAL_PASSWORD" | base64 -w0)"
           curl --fail-with-body -X POST -H "Authorization: Bearer $token" -F bundle=@bundle.zip \
             "https://central.sonatype.com/api/v1/publisher/upload?name=passbolt-sdk-${{ needs.version.outputs.sdk }}&publishingType=AUTOMATIC"
+
+  # Under `<prefix>-passbolt-sdk` and `<prefix>-passbolt-cli`, the code unchanged.
+  publish-crates:
+    name: Publish crates.io
+    needs: release-check
+    if: vars.PUBLISH_CRATES == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: bash scripts/publish-crates.sh "${{ vars.CRATES_PREFIX || 'switch-case' }}"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
