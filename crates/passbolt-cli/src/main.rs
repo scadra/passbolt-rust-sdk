@@ -889,7 +889,11 @@ async fn dispatch(
 
         // ── Export ──────────────────────────────────────────────────────────
         Commands::Export(args) => {
-            cli::export::run(args, client, workers).await?;
+            Box::pin(cli::export::run(args, client, workers, json_output)).await?;
+        }
+
+        Commands::Import(args) => {
+            Box::pin(cli::import::run(args, client, json_output)).await?;
         }
 
         // ── Migrate metadata ────────────────────────────────────────────────

@@ -10,12 +10,18 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
+use indicatif::ProgressBar;
+use passbolt_sdk::exchange::{export, formats};
+use passbolt_sdk::resource::list::list_resources;
+use passbolt_sdk::resource::view::ResourceView;
+use passbolt_sdk::types::Folder;
 use secrecy::{ExposeSecret, SecretString};
 use std::path::PathBuf;
 
 use crate::keepass::export::{export_keepass, KdbxVersion};
+use crate::util::output;
 use crate::util::password::read_password;
 use crate::Client;
 
@@ -29,6 +35,21 @@ pub struct ExportArgs {
 pub enum ExportFormat {
     /// Exports Passbolt to a `KeePass` File
     Keepass(KeepassArgs),
+    /// Exports Passbolt to a CSV file of another password manager
+    Csv(CsvArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct CsvArgs {
+    /// The CSV format: csv-kdbx
+    #[arg(long, default_value = "csv-kdbx")]
+    pub format: String,
+    /// File name; default: passbolt-export-<date>.csv
+    #[arg(short = 'f', long)]
+    pub file: Option<PathBuf>,
+    /// Export only this folder and its sub-folders (by ID); default: export all
+    #[arg(long)]
+    pub folder_id: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -54,8 +75,86 @@ pub struct KeepassArgs {
     pub folder_id: Option<String>,
 }
 
-pub async fn run(args: &ExportArgs, client: &Client, workers: usize) -> Result<()> {
+/// The resources to export, decrypted, and their folders: those of `folder_id` and below it,
+/// else all.
+pub async fn exported(
+    client: &Client,
+    folder_id: Option<&str>,
+    workers: usize,
+) -> Result<(Vec<ResourceView>, Vec<Folder>)> {
+    let all_folders = client
+        .get_folders(passbolt_sdk::FolderQuery::default())
+        .await
+        .context("Failed to fetch folders")?;
+    let (query, folders) = match folder_id {
+        Some(root_id) => {
+            if !all_folders.iter().any(|folder| folder.id == root_id) {
+                anyhow::bail!("folder {root_id} not found");
+            }
+            let subtree_ids = passbolt_sdk::collect_subtree_ids(root_id, &all_folders);
+            let query = passbolt_sdk::ResourceQuery {
+                folder_ids: subtree_ids.iter().cloned().collect(),
+                ..Default::default()
+            };
+            let folders: Vec<Folder> = all_folders
+                .into_iter()
+                .filter(|folder| subtree_ids.contains(&folder.id))
+                .collect();
+            (query, folders)
+        }
+        None => (passbolt_sdk::ResourceQuery::default(), all_folders),
+    };
+    let progress = ProgressBar::new_spinner().with_message("Decrypting Resources");
+    progress.enable_steady_tick(std::time::Duration::from_millis(100));
+    let views = list_resources(client, query, &[], Some(workers))
+        .await
+        .context("getting Resources");
+    progress.finish_and_clear();
+    Ok((views?, folders))
+}
+
+/// Write the resources in a CSV file of `args.format`; those that do not decrypt are reported
+/// and left out.
+async fn export_csv(args: &CsvArgs, client: &Client, workers: usize, json: bool) -> Result<()> {
+    let format = formats::named(&args.format)?;
+    let file = args.file.clone().unwrap_or_else(|| {
+        PathBuf::from(export::file_name(chrono::Local::now().date_naive(), "csv"))
+    });
+    let (views, folders) = exported(client, args.folder_id.as_deref(), workers).await?;
+    let (readable, unreadable): (Vec<ResourceView>, Vec<ResourceView>) =
+        views.into_iter().partition(|view| view.error.is_none());
+    for view in &unreadable {
+        eprintln!(
+            "Skipping Export of Resource {} {} Because of: {}",
+            view.id,
+            view.name,
+            view.error.as_deref().unwrap_or_default()
+        );
+    }
+    let resources = export::external_resources(&readable, &folders);
+    let content = zeroize::Zeroizing::new(export::write_csv(format, &resources));
+    crate::keepass::export::save_replacing(&file, |handle| {
+        std::io::Write::write_all(handle, content.as_bytes())
+            .with_context(|| format!("Cannot write {}", file.display()))
+    })?;
+    if json {
+        return output::print_json(&serde_json::json!({
+            "file": file,
+            "format": format.name,
+            "resources": resources.len(),
+        }));
+    }
+    println!(
+        "Exported {} resources to {}",
+        resources.len(),
+        file.display()
+    );
+    Ok(())
+}
+
+pub async fn run(args: &ExportArgs, client: &Client, workers: usize, json: bool) -> Result<()> {
     match &args.format {
+        ExportFormat::Csv(csv) => export_csv(csv, client, workers, json).await,
         ExportFormat::Keepass(keepass) => {
             let master_password = match keepass.password.as_deref() {
                 Some(password) if !password.is_empty() => {
@@ -89,7 +188,9 @@ mod tests {
 
     fn parse(arguments: &[&str]) -> Result<KeepassArgs, clap::Error> {
         let command = Command::try_parse_from(std::iter::once(&"export").chain(arguments))?;
-        let ExportFormat::Keepass(keepass) = command.format;
+        let ExportFormat::Keepass(keepass) = command.format else {
+            panic!("not a keepass export");
+        };
         Ok(keepass)
     }
 

@@ -72,6 +72,7 @@ If you've found a security related issue in Passbolt, please don't open an issue
   - [group](#group)
   - [exec](#exec)
   - [export](#export)
+  - [import](#import)
   - [migrate-metadata](#migrate-metadata)
 - [Global Flags](#global-flags)
 - [Output Formats](#output-formats)
@@ -645,6 +646,42 @@ succeeds, as with go-passbolt-cli.
 
 Unlike go-passbolt-cli, an empty password is refused instead of writing a file without
 credentials, and v3 files use 60,000 AES-KDF rounds (KeePass 2.x default) instead of 6,000.
+
+---
+
+#### export csv
+
+Export to the CSV file of another password manager, as the browser extension writes it: every
+cell quoted, the folder path in the folder column, the TOTP as an `otpauth://` URI.
+
+```bash
+passbolt export csv --format csv-kdbx                      # passbolt-export-<date>.csv
+passbolt export csv --format csv-kdbx -f vault.csv --folder-id <FOLDER_UUID>
+```
+
+| Format | Columns |
+|---|---|
+| `csv-kdbx` | KeePass: `Title`, `Username`, `URL`, `Password`, `Notes`, `Group`, `TOTP` |
+
+A resource that does not decrypt is reported and left out.
+
+---
+
+### import
+
+Import a CSV file of another password manager, as the browser extension imports it: its format
+is recognised from its columns, everything goes into a new folder named `import-<date>` with the
+folders of the file below it, and each resource is tagged with that name.
+
+```bash
+passbolt import -f vault.csv
+passbolt import -f vault.csv --no-folders --no-tags --json
+```
+
+- Each row gets the resource type that stores what it holds (password, description, TOTP…); a
+  password of 4 to 12 digits alone becomes a PIN code. The resources are personal.
+- `--no-folders` puts every resource at the root, `--no-tags` leaves them untagged.
+- The rows, folders or resources not imported are listed, and the command then fails.
 
 ---
 

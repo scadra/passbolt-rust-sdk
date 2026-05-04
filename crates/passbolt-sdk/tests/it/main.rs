@@ -17,6 +17,7 @@ mod common;
 
 mod auth;
 mod create_v5;
+mod exchange;
 #[cfg(feature = "interop")]
 mod interop;
 mod listing;
