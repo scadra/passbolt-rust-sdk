@@ -81,6 +81,28 @@ fn parent_of(folder_id: &str) -> String {
         .unwrap()
 }
 
+/// The passwords of the resources in `folder_id` and in its folders.
+fn passwords_below(folder_id: &str) -> Vec<String> {
+    let folders = run_json(&["list", "folder", "-c", "id", "-c", "folder_parent_id"]);
+    let children = folders
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|folder| folder["folder_parent_id"] == folder_id)
+        .map(|folder| folder["id"].as_str().unwrap().to_string());
+    std::iter::once(folder_id.to_string())
+        .chain(children)
+        .flat_map(|id| {
+            run_json(&["list", "resource", "--folder", &id, "-c", "password"])
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|resource| resource["password"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 #[test]
 fn a_keepass_csv_file_is_imported_into_its_folders() {
     let prefix = unique_name("import");
@@ -241,4 +263,72 @@ fn an_exported_folder_imports_back() {
     assert_eq!(passwords, ["first-password", "second-password"]);
     let copy_folder = copies[0]["folder_parent_id"].as_str().unwrap();
     assert_eq!(self::folder_name(copy_folder), folder_name);
+}
+
+// Each CSV format: a folder exported as the browser extension writes it, then imported.
+
+#[rstest::rstest]
+#[case::lastpass("csv-lastpass", "\"url\",\"username\",\"password\",\"totp\",\"extra\",\"name\",\"grouping\",\"fav\"", "\"<uri>\",\"ada\",\"<password>\",\"<totp_key>\",\"<description>\",\"<name>\",\"<folder>\",\"\"")]
+fn a_folder_exports_and_imports_back(
+    #[case] format: &str,
+    #[case] header: &str,
+    #[case] row: &str,
+) {
+    let folder_name = unique_name("format");
+    let folder = create_folder(&folder_name, &[]);
+    let name = unique_name(format);
+    let _resource = create_resource(
+        &name,
+        "format-password",
+        &[
+            "--type",
+            "v5-default-with-totp",
+            "--username",
+            "ada",
+            "--uri",
+            "https://a.test",
+            "--description",
+            "format description",
+            "--totp-key",
+            "JBSWY3DPEHPK3PXP",
+            "--folder-parent-id",
+            &folder.id,
+        ],
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("export.csv");
+
+    run_json(&[
+        "export",
+        "csv",
+        "--format",
+        format,
+        "--folder-id",
+        &folder.id,
+        "-f",
+        file.to_str().unwrap(),
+    ]);
+
+    let totp_uri = format!(
+        "otpauth://totp/{}?secret=JBSWY3DPEHPK3PXP&issuer=https%253A%252F%252Fa.test&algorithm=SHA1&digits=6&period=30",
+        format!("{name}:ada").replace(':', "%3A")
+    );
+    let expected_row = row
+        .replace("<name>", &name)
+        .replace("<uri>", "https://a.test")
+        .replace("<password>", "format-password")
+        .replace("<description>", "format description")
+        .replace("<folder>", &folder_name)
+        .replace("<totp_key>", "JBSWY3DPEHPK3PXP")
+        .replace("<totp_uri>", &totp_uri);
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("{header}\r\n{expected_row}")
+    );
+
+    let (report, _import_folder) = import(&file, &["--no-tags"]);
+    assert_eq!(report["resources"], 1, "{report}");
+    // Looked up by folder: some formats name the resource after its URI.
+    let imported = passwords_below(report["folder_id"].as_str().unwrap());
+    assert_eq!(imported, ["format-password"]);
 }

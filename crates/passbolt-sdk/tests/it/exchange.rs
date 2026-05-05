@@ -233,3 +233,29 @@ fn a_keepass_csv_file_reads_back_as_written() {
     };
     assert_eq!(without_totp(&written), without_totp(KEEPASS_CSV));
 }
+
+// Each file of the browser extension's examples, read.
+
+#[rstest::rstest]
+#[case::lastpass(include_str!("../fixtures/exchange/csv-lastpass.csv"), "Password 1", "Secret 1", "Description 1")]
+fn an_example_file_is_read_and_typed(
+    #[case] file: &str,
+    #[case] name: &str,
+    #[case] password: &str,
+    #[case] description: &str,
+) {
+    let types: Vec<passbolt_sdk::types::ResourceType> =
+        serde_json::from_value(data::resource_types()).unwrap();
+
+    let parsed = import::parse_csv(file, &types, true, REFERENCE.into()).unwrap();
+
+    let (resource, resource_type) = &parsed.resources[0];
+    assert_eq!(resource.name, name);
+    assert_eq!(resource.secret_clear, password);
+    assert_eq!(
+        resource.description.as_deref().unwrap_or_default(),
+        description
+    );
+    assert_eq!(resource_type.slug, "v5-default");
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+}
