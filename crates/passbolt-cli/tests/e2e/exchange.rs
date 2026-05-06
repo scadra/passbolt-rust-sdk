@@ -269,6 +269,11 @@ fn an_exported_folder_imports_back() {
 
 #[rstest::rstest]
 #[case::lastpass("csv-lastpass", "\"url\",\"username\",\"password\",\"totp\",\"extra\",\"name\",\"grouping\",\"fav\"", "\"<uri>\",\"ada\",\"<password>\",\"<totp_key>\",\"<description>\",\"<name>\",\"<folder>\",\"\"")]
+#[case::one_password(
+    "csv-1password",
+    "\"Title\",\"Username\",\"Url\",\"Password\",\"Notes\",\"Type\"",
+    "\"<name>\",\"ada\",\"<uri>\",\"<password>\",\"<description>\",\"<folder>\""
+)]
 fn a_folder_exports_and_imports_back(
     #[case] format: &str,
     #[case] header: &str,

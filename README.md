@@ -663,6 +663,7 @@ passbolt export csv --format csv-kdbx -f vault.csv --folder-id <FOLDER_UUID>
 |---|---|
 | `csv-kdbx` | KeePass: `Title`, `Username`, `URL`, `Password`, `Notes`, `Group`, `TOTP` |
 | `csv-lastpass` | LastPass: `url`, `username`, `password`, `totp`, `extra`, `name`, `grouping`, `fav` |
+| `csv-1password` | 1Password: `Title`, `Username`, `Url`, `Password`, `Notes`, `Type` |
 
 A resource that does not decrypt is reported and left out.
 

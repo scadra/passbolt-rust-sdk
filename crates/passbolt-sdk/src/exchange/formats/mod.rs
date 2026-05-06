@@ -14,6 +14,7 @@
 
 mod keepass;
 mod lastpass;
+mod one_password;
 
 use crate::error::PassboltError;
 
@@ -69,7 +70,7 @@ pub enum Written {
 }
 
 /// The formats, in the order the browser extension tries them when reading.
-pub const FORMATS: [&CsvFormat; 2] = [&keepass::FORMAT, &lastpass::FORMAT];
+pub const FORMATS: [&CsvFormat; 3] = [&one_password::FORMAT, &keepass::FORMAT, &lastpass::FORMAT];
 
 /// The format named `name`.
 pub fn named(name: &str) -> Result<&'static CsvFormat, PassboltError> {
