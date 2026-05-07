@@ -239,6 +239,7 @@ fn a_keepass_csv_file_reads_back_as_written() {
 #[rstest::rstest]
 #[case::lastpass(include_str!("../fixtures/exchange/csv-lastpass.csv"), "Password 1", "Secret 1", "Description 1")]
 #[case::one_password(include_str!("../fixtures/exchange/csv-1password.csv"), "Password 1", "Secret 1", "Description 1")]
+#[case::chromium(include_str!("../fixtures/exchange/csv-chromium.csv"), "Password 1", "Secret 1", "")]
 fn an_example_file_is_read_and_typed(
     #[case] file: &str,
     #[case] name: &str,

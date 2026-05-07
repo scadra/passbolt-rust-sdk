@@ -12,6 +12,7 @@
 
 //! The CSV formats of other password managers, as the browser extension reads and writes them.
 
+mod chromium;
 mod keepass;
 mod lastpass;
 mod one_password;
@@ -70,7 +71,12 @@ pub enum Written {
 }
 
 /// The formats, in the order the browser extension tries them when reading.
-pub const FORMATS: [&CsvFormat; 3] = [&one_password::FORMAT, &keepass::FORMAT, &lastpass::FORMAT];
+pub const FORMATS: [&CsvFormat; 4] = [
+    &one_password::FORMAT,
+    &keepass::FORMAT,
+    &lastpass::FORMAT,
+    &chromium::FORMAT,
+];
 
 /// The format named `name`.
 pub fn named(name: &str) -> Result<&'static CsvFormat, PassboltError> {
