@@ -279,6 +279,7 @@ fn an_exported_folder_imports_back() {
     "\"name\",\"url\",\"username\",\"password\"",
     "\"<name>\",\"<uri>\",\"ada\",\"<password>\""
 )]
+#[case::bitwarden("csv-bitwarden", "\"name\",\"login_username\",\"login_uri\",\"login_password\",\"notes\",\"folder\",\"login_totp\"", "\"<name>\",\"ada\",\"<uri>\",\"<password>\",\"<description>\",\"<folder>\",\"<totp_uri>\"")]
 fn a_folder_exports_and_imports_back(
     #[case] format: &str,
     #[case] header: &str,

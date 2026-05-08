@@ -12,6 +12,7 @@
 
 //! The CSV formats of other password managers, as the browser extension reads and writes them.
 
+mod bitwarden;
 mod chromium;
 mod keepass;
 mod lastpass;
@@ -71,11 +72,12 @@ pub enum Written {
 }
 
 /// The formats, in the order the browser extension tries them when reading.
-pub const FORMATS: [&CsvFormat; 4] = [
+pub const FORMATS: [&CsvFormat; 5] = [
     &one_password::FORMAT,
     &keepass::FORMAT,
     &lastpass::FORMAT,
     &chromium::FORMAT,
+    &bitwarden::FORMAT,
 ];
 
 /// The format named `name`.
