@@ -52,6 +52,8 @@ pub struct NewResource {
     pub metadata_fields: Map<String, Value>,
     /// Secret fields set as given, last (`--secret-field`).
     pub secret_fields: Map<String, Value>,
+    /// Leave the permissions of the folder out: an import creates its own personal folders.
+    pub without_folder_permissions: bool,
 }
 
 /// Create a resource, encrypting its secret for the user, and v5 metadata as the server settings
@@ -136,7 +138,7 @@ pub async fn create_resource<H: HttpClient>(
     if let Some(folder_id) = new_resource
         .folder_parent_id
         .as_deref()
-        .filter(|folder_id| !folder_id.is_empty())
+        .filter(|folder_id| !folder_id.is_empty() && !new_resource.without_folder_permissions)
     {
         share::inherit_folder_permissions(client, &created.id, folder_id).await?;
     }

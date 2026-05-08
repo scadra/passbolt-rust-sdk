@@ -199,6 +199,9 @@ pub enum Commands {
     /// Export to external formats
     Export(crate::cli::export::ExportArgs),
 
+    /// Import a CSV file of another password manager
+    Import(crate::cli::import::ImportArgs),
+
     /// Upgrade v4 resources to v5: their name, username, URI and description get encrypted
     /// (administrators)
     MigrateMetadata {

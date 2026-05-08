@@ -1,0 +1,5 @@
+"Title","Username","URL","Password","Notes","Group","TOTP"
+"Password 1","Username 1","https://url1.com","Secret 1","Description 1","Folder 1",""
+"Password 2","Username 2","https://url2.com","Secret 2","Description 2","Folder 1","otpauth://totp/test.com%20%3A%20admin%40passbolt.com:admin%40passbolt.com?secret=TJSNMLGTCYOEMXZG&period=30&digits=6&issuer=test.com%20%3A%20admin%40passbolt.com"
+"Root password","","","Secret 3","","",""
+"Escaped","","","Secret 4","","a / b",""

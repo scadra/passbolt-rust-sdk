@@ -43,6 +43,7 @@ pub mod config;
 pub mod crypto;
 pub mod duration;
 pub mod error;
+pub mod exchange;
 pub mod filter;
 pub mod folder;
 pub mod group;

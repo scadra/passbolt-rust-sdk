@@ -19,6 +19,7 @@ mod consistency;
 mod deletions;
 mod directory;
 mod errors;
+mod exchange;
 mod folder_permissions;
 mod folders;
 mod go_parity;

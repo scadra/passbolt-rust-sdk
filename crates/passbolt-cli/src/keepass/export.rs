@@ -11,7 +11,6 @@
 // @since         0.1.0
 
 use anyhow::{Context, Result};
-use indicatif::ProgressBar;
 use secstr::SecStr;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
@@ -19,7 +18,6 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::util::resources::custom_fields;
 use crate::Client;
-use passbolt_sdk::resource::list::list_resources;
 use passbolt_sdk::resource::view::ResourceView;
 use passbolt_sdk::types::{Folder, TotpData};
 
@@ -63,37 +61,8 @@ pub async fn export_keepass(
     if output_path.as_os_str().is_empty() {
         anyhow::bail!("the Filename cannot be empty");
     }
-    let all_folders = client
-        .get_folders(passbolt_sdk::FolderQuery::default())
-        .await
-        .context("Failed to fetch folders")?;
-
-    let (query, folders) = match folder_id {
-        Some(root_id) => {
-            if !all_folders.iter().any(|folder| folder.id == root_id) {
-                anyhow::bail!("folder {root_id} not found");
-            }
-            let subtree_ids = passbolt_sdk::collect_subtree_ids(root_id, &all_folders);
-            let query = passbolt_sdk::ResourceQuery {
-                folder_ids: subtree_ids.iter().cloned().collect(),
-                ..Default::default()
-            };
-            let folders: Vec<Folder> = all_folders
-                .into_iter()
-                .filter(|folder| subtree_ids.contains(&folder.id))
-                .collect();
-            (query, folders)
-        }
-        None => (passbolt_sdk::ResourceQuery::default(), all_folders),
-    };
-
     println!("Getting Resources...");
-    let progress = ProgressBar::new_spinner().with_message("Decrypting Resources");
-    progress.enable_steady_tick(std::time::Duration::from_millis(100));
-    let views = list_resources(client, query, &[], Some(workers))
-        .await
-        .context("getting Resources")?;
-    progress.finish_and_clear();
+    let (views, folders) = crate::cli::export::exported(client, folder_id, workers).await?;
 
     let (entries, skipped) = collect_entries(&views);
     for reason in &skipped {
@@ -373,7 +342,10 @@ fn keepass_group(group: &KeePassGroup) -> keepass::db::Group {
 
 /// Write a sibling file then rename it over `path`: a failed export never damages the
 /// previous one. The file is readable by its owner only on Unix.
-fn save_replacing(path: &Path, write: impl FnOnce(&mut std::fs::File) -> Result<()>) -> Result<()> {
+pub fn save_replacing(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> Result<()>,
+) -> Result<()> {
     let file_name = path
         .file_name()
         .with_context(|| format!("{} is not a file path", path.display()))?;

@@ -228,7 +228,7 @@ pub struct SecretData {
     pub raw: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TotpData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_key: Option<String>,
