@@ -666,6 +666,7 @@ passbolt export csv --format csv-kdbx -f vault.csv --folder-id <FOLDER_UUID>
 | `csv-1password` | 1Password: `Title`, `Username`, `Url`, `Password`, `Notes`, `Type` |
 | `csv-chromium` | Chromium (Chrome, Edge, Brave…): `name`, `url`, `username`, `password` |
 | `csv-bitwarden` | Bitwarden: `name`, `login_username`, `login_uri`, `login_password`, `notes`, `folder`, `login_totp` |
+| `csv-mozilla` | Firefox: `url`, `username`, `password`, `httpRealm`, `formActionOrigin`, `guid`, `timeCreated`, `timeLastUsed`, `timePasswordChanged` |
 
 A resource that does not decrypt is reported and left out.
 

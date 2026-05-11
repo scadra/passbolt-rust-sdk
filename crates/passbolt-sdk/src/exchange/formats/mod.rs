@@ -16,6 +16,7 @@ mod bitwarden;
 mod chromium;
 mod keepass;
 mod lastpass;
+mod mozilla;
 mod one_password;
 
 use crate::error::PassboltError;
@@ -72,12 +73,13 @@ pub enum Written {
 }
 
 /// The formats, in the order the browser extension tries them when reading.
-pub const FORMATS: [&CsvFormat; 5] = [
+pub const FORMATS: [&CsvFormat; 6] = [
     &one_password::FORMAT,
     &keepass::FORMAT,
     &lastpass::FORMAT,
     &chromium::FORMAT,
     &bitwarden::FORMAT,
+    &mozilla::FORMAT,
 ];
 
 /// The format named `name`.
