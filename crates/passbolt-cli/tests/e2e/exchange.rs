@@ -281,6 +281,11 @@ fn an_exported_folder_imports_back() {
 )]
 #[case::bitwarden("csv-bitwarden", "\"name\",\"login_username\",\"login_uri\",\"login_password\",\"notes\",\"folder\",\"login_totp\"", "\"<name>\",\"ada\",\"<uri>\",\"<password>\",\"<description>\",\"<folder>\",\"<totp_uri>\"")]
 #[case::mozilla("csv-mozilla", "\"url\",\"username\",\"password\",\"httpRealm\",\"formActionOrigin\",\"guid\",\"timeCreated\",\"timeLastUsed\",\"timePasswordChanged\"", "\"<uri>\",\"ada\",\"<password>\",\"\",\"\",\"\",\"\",\"\",\"\"")]
+#[case::safari(
+    "csv-safari",
+    "\"Title\",\"URL\",\"Username\",\"Password\",\"Notes\",\"OTPAuth\"",
+    "\"<name>\",\"<uri>\",\"ada\",\"<password>\",\"<description>\",\"\""
+)]
 fn a_folder_exports_and_imports_back(
     #[case] format: &str,
     #[case] header: &str,
