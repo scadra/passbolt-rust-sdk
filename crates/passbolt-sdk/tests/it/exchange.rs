@@ -243,6 +243,7 @@ fn a_keepass_csv_file_reads_back_as_written() {
 #[case::bitwarden(include_str!("../fixtures/exchange/csv-bitwarden.csv"), "Password 1", "Secret 1", "Description 1")]
 #[case::mozilla(include_str!("../fixtures/exchange/csv-mozilla.csv"), "https://url1.com", "Secret 1", "")]
 #[case::safari(include_str!("../fixtures/exchange/csv-safari.csv"), "Password 1", "Secret 1", "Description 1")]
+#[case::dashlane(include_str!("../fixtures/exchange/csv-dashlane.csv"), "Password 1", "Secret 1", "Description 1")]
 fn an_example_file_is_read_and_typed(
     #[case] file: &str,
     #[case] name: &str,

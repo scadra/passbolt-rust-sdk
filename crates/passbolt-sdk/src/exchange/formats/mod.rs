@@ -14,6 +14,7 @@
 
 mod bitwarden;
 mod chromium;
+mod dashlane;
 mod keepass;
 mod lastpass;
 mod mozilla;
@@ -74,13 +75,14 @@ pub enum Written {
 }
 
 /// The formats, in the order the browser extension tries them when reading.
-pub const FORMATS: [&CsvFormat; 7] = [
+pub const FORMATS: [&CsvFormat; 8] = [
     &one_password::FORMAT,
     &keepass::FORMAT,
     &lastpass::FORMAT,
     &chromium::FORMAT,
     &bitwarden::FORMAT,
     &safari::FORMAT,
+    &dashlane::FORMAT,
     &mozilla::FORMAT,
 ];
 

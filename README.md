@@ -668,6 +668,7 @@ passbolt export csv --format csv-kdbx -f vault.csv --folder-id <FOLDER_UUID>
 | `csv-bitwarden` | Bitwarden: `name`, `login_username`, `login_uri`, `login_password`, `notes`, `folder`, `login_totp` |
 | `csv-mozilla` | Firefox: `url`, `username`, `password`, `httpRealm`, `formActionOrigin`, `guid`, `timeCreated`, `timeLastUsed`, `timePasswordChanged` |
 | `csv-safari` | Safari: `Title`, `URL`, `Username`, `Password`, `Notes`, `OTPAuth` |
+| `csv-dashlane` | Dashlane: `username`, `username2`, `username3`, `title`, `password`, `note`, `url`, `category`, `otpSecret` |
 
 A resource that does not decrypt is reported and left out.
 

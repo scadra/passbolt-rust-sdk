@@ -286,6 +286,7 @@ fn an_exported_folder_imports_back() {
     "\"Title\",\"URL\",\"Username\",\"Password\",\"Notes\",\"OTPAuth\"",
     "\"<name>\",\"<uri>\",\"ada\",\"<password>\",\"<description>\",\"\""
 )]
+#[case::dashlane("csv-dashlane", "\"username\",\"username2\",\"username3\",\"title\",\"password\",\"note\",\"url\",\"category\",\"otpSecret\"", "\"ada\",\"\",\"\",\"<name>\",\"<password>\",\"<description>\",\"<uri>\",\"\",\"\"")]
 fn a_folder_exports_and_imports_back(
     #[case] format: &str,
     #[case] header: &str,
