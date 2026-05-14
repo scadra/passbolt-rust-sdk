@@ -669,6 +669,7 @@ passbolt export csv --format csv-kdbx -f vault.csv --folder-id <FOLDER_UUID>
 | `csv-mozilla` | Firefox: `url`, `username`, `password`, `httpRealm`, `formActionOrigin`, `guid`, `timeCreated`, `timeLastUsed`, `timePasswordChanged` |
 | `csv-safari` | Safari: `Title`, `URL`, `Username`, `Password`, `Notes`, `OTPAuth` |
 | `csv-dashlane` | Dashlane: `username`, `username2`, `username3`, `title`, `password`, `note`, `url`, `category`, `otpSecret` |
+| `csv-nordpass` | NordPass: `name`, `url`, `username`, `password`, `note`, `cardholername`, `cardnumber`, `cvc`, `expirydate`, `zipcode`, `folder`, `full_name`, `phone_number`, `email`, `address1`, `address2`, `city`, `country`, `state`, `type` |
 
 A resource that does not decrypt is reported and left out.
 
