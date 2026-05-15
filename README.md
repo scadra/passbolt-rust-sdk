@@ -666,6 +666,11 @@ passbolt export csv --format csv-kdbx -f vault.csv --folder-id <FOLDER_UUID>
 | `csv-1password` | 1Password: `Title`, `Username`, `Url`, `Password`, `Notes`, `Type` |
 | `csv-chromium` | Chromium (Chrome, Edge, Brave…): `name`, `url`, `username`, `password` |
 | `csv-bitwarden` | Bitwarden: `name`, `login_username`, `login_uri`, `login_password`, `notes`, `folder`, `login_totp` |
+| `csv-mozilla` | Firefox: `url`, `username`, `password`, `httpRealm`, `formActionOrigin`, `guid`, `timeCreated`, `timeLastUsed`, `timePasswordChanged` |
+| `csv-safari` | Safari: `Title`, `URL`, `Username`, `Password`, `Notes`, `OTPAuth` |
+| `csv-dashlane` | Dashlane: `username`, `username2`, `username3`, `title`, `password`, `note`, `url`, `category`, `otpSecret` |
+| `csv-nordpass` | NordPass: `name`, `url`, `username`, `password`, `note`, `cardholername`, `cardnumber`, `cvc`, `expirydate`, `zipcode`, `folder`, `full_name`, `phone_number`, `email`, `address1`, `address2`, `city`, `country`, `state`, `type` |
+| `csv-logmeonce` | LogMeOnce: `name`, `url`, `note`, `group`, `username`, `password`, `extra` |
 
 A resource that does not decrypt is reported and left out.
 
