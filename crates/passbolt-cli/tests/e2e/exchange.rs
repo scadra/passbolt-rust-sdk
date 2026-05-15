@@ -288,6 +288,11 @@ fn an_exported_folder_imports_back() {
 )]
 #[case::dashlane("csv-dashlane", "\"username\",\"username2\",\"username3\",\"title\",\"password\",\"note\",\"url\",\"category\",\"otpSecret\"", "\"ada\",\"\",\"\",\"<name>\",\"<password>\",\"<description>\",\"<uri>\",\"\",\"\"")]
 #[case::nordpass("csv-nordpass", "\"name\",\"url\",\"username\",\"password\",\"note\",\"cardholername\",\"cardnumber\",\"cvc\",\"expirydate\",\"zipcode\",\"folder\",\"full_name\",\"phone_number\",\"email\",\"address1\",\"address2\",\"city\",\"country\",\"state\",\"type\"", "\"<name>\",\"<uri>\",\"ada\",\"<password>\",\"<description>\",\"\",\"\",\"\",\"\",\"\",\"<folder>\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"")]
+#[case::log_me_once(
+    "csv-logmeonce",
+    "\"name\",\"url\",\"note\",\"group\",\"username\",\"password\",\"extra\"",
+    "\"<name>\",\"<uri>\",\"<description>\",\"<folder>\",\"ada\",\"<password>\",\"\""
+)]
 fn a_folder_exports_and_imports_back(
     #[case] format: &str,
     #[case] header: &str,
