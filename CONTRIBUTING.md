@@ -82,31 +82,8 @@ If you have any suggestions or want to get involved in other ways feel free to g
 * Every new `.rs` file must start with the Passbolt license header: run `bash scripts/license-headers.sh`
   (or `bash scripts/license-headers.sh --fix` to add it).
 * Never log or print secrets (passphrases, private keys, decrypted secrets), even in `--debug` mode.
-* `.github/workflows/sdk.yml` builds the CLI for each platform and the SDK packages (JS/TS, Python, Java,
-  Go, .NET, Ruby, iOS, Android) into one `passbolt-<version>` artifact; a `v*` tag makes it a GitHub
-  release. A change to `passbolt-ffi` or `passbolt-wasm` runs it on the pull request. To generate the
-  bindings locally: `bash scripts/sdk-bindings.sh target/release/libpassbolt_ffi.so bindings [language...]`
-  (Go, C# and Java need their generators, at the versions the workflow pins).
-
-#### Publishing
-
-A `v<version>` tag, the version of `passbolt-ffi`, publishes the packages `sdk.yml` built and tested,
-on each registry whose repository variable is `true` (Settings → Secrets and variables → Actions):
-
-| Variable | Registry, package | Secrets |
-|---|---|---|
-| `PUBLISH_NPM` | npm `@switch-case/passbolt-sdk` | `NPM_TOKEN` |
-| `PUBLISH_PYPI` | PyPI `switch-case-passbolt-sdk` | none: Trusted Publishing, workflow `sdk.yml`, environment `pypi` |
-| `PUBLISH_NUGET` | NuGet `SwitchCase.Passbolt.Sdk` | `NUGET_API_KEY` |
-| `PUBLISH_RUBYGEMS` | RubyGems `switch-case-passbolt-sdk` | `RUBYGEMS_API_KEY` |
-| `PUBLISH_MAVEN` | Maven Central `<MAVEN_GROUP>:passbolt-sdk`, `:passbolt-sdk-android` | `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD` (Central Portal token), `MAVEN_GPG_PRIVATE_KEY` (armored), `MAVEN_GPG_PASSPHRASE` |
-| `PUBLISH_CRATES` | crates.io `<CRATES_PREFIX>-passbolt-sdk`, `-passbolt-cli` | `CARGO_REGISTRY_TOKEN` |
-
-`MAVEN_GROUP` defaults to `io.github.scadra`, a namespace Central verifies through GitHub; `CRATES_PREFIX`
-to `switch-case`. The package names of the other registries are in `packaging/` and
-`crates/passbolt-ffi/pyproject.toml`. Go and Swift have no registry: their packages are a Git tag of a
-repository holding the content of `passbolt-sdk-go-<version>.tar.gz` and of `Package.swift` with the
-XCFramework.
+* The development guide, the tests, the SDK bindings, the CI and the releases are described in
+  [docs/contributing](docs/contributing/development.md).
 
 #### Submitting Changes
 

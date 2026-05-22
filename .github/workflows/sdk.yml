@@ -3,7 +3,7 @@ name: SDK and CLI builds
 # Builds the CLI for every desktop platform and the SDK for JS/TS, Python, Java, Go, .NET,
 # Ruby, iOS and Android. Each run uploads one `passbolt-<version>` payload with all of them;
 # a `v*` tag also attaches it to a GitHub release and publishes the packages on the enabled
-# registries (CONTRIBUTING.md, "Publishing").
+# registries (docs/contributing/publishing.md).
 
 on:
   push:
