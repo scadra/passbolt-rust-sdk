@@ -24,7 +24,9 @@ use crate::resource::create::{create_resource, NewResource};
 use crate::types::ResourceType;
 
 use super::csv;
-use super::external::{child_path, resolve_escaped_name, split_folder_path, ExternalResource};
+use super::external::{
+    child_path, resolve_escaped_name, sanitize_path, split_folder_path, ExternalResource,
+};
 use super::formats;
 use super::resource_type::{choose, importable_types, read_pin_code};
 
@@ -94,7 +96,7 @@ pub fn parse_csv(
         .rows
         .iter()
         .map(|row| (format.parse)(format, row).map_err(|error| (row_name(format, row), error)));
-    Ok(assemble(rows, types, v5, reference))
+    Ok(assemble(rows, &[], types, v5, reference))
 }
 
 fn row_name(format: &formats::CsvFormat, row: &csv::Row) -> String {
@@ -105,9 +107,11 @@ fn row_name(format: &formats::CsvFormat, row: &csv::Row) -> String {
         .unwrap_or_default()
 }
 
-/// The resources read, typed, under the import folder, with the folders their paths need.
+/// The resources read, typed, under the import folder, with `folders` and the folders their
+/// paths need.
 pub fn assemble(
     rows: impl Iterator<Item = Result<ExternalResource, (String, PassboltError)>>,
+    folders: &[String],
     types: &[ResourceType],
     v5: bool,
     reference: String,
@@ -151,6 +155,9 @@ pub fn assemble(
                     .push(issue("Cannot parse resource", &error, name));
             }
         }
+    }
+    for path in folders {
+        push_path(&mut parsed.folders, &sanitize_path(path));
     }
     for (resource, _) in &parsed.resources {
         push_path(&mut parsed.folders, &resource.folder_parent_path);

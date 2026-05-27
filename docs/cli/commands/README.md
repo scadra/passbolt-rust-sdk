@@ -14,7 +14,7 @@ sidebar_position: 1
 | [exec](exec.md) | run a command with secrets in its environment |
 | [export keepass](export-keepass.md) | a KeePass `.kdbx` file of the vault |
 | [export csv](export-csv.md) | the CSV file of another password manager |
-| [import](import.md) | a CSV file of another password manager |
+| [import](import.md) | a CSV file of another password manager, or a KeePass KDBX file |
 | [migrate-metadata](migrate-metadata.md) | upgrade v4 resources to v5 |
 
 `configure` and `verify` are described in [configuration](../configuration.md) and

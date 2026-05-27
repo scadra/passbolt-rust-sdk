@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `folder::{create, list, share, tree}` | folders and the folder tree |
 | `user`, `group` | creation, update; deletion with `transfer` |
 | `metadata` | v5 metadata keys and settings, `migrate-metadata` |
-| `exchange` | CSV import and export in the formats of other password managers |
+| `exchange` | CSV import and export in the formats of other password managers, KDBX import |
 | `crypto` | OpenPGP: parse keys, encrypt, decrypt, fingerprints |
 | `auth` | GPGAuth, `fetch_server_key` |
 | `PassboltSdk` methods | the API calls themselves: `get_resource`, `delete_resource`, `get_folders`, `get_users`, `add_favorite`, `get_tags`… |

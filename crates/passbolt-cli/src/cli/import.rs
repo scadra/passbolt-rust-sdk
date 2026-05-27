@@ -16,14 +16,21 @@ use anyhow::{Context, Result};
 use clap::Args;
 use passbolt_sdk::exchange::import::{self, ImportOptions, ImportReport};
 
+use crate::keepass;
 use crate::util::output;
 use crate::Client;
 
 #[derive(Args, Debug)]
 pub struct ImportArgs {
-    /// The CSV file to import; its format is recognised from its columns
+    /// The CSV or KDBX file to import; a CSV format is recognised from its columns
     #[arg(short = 'f', long)]
     pub file: PathBuf,
+    /// The password of the KDBX file
+    #[arg(short = 'p', long)]
+    pub password: Option<String>,
+    /// The key file of the KDBX file
+    #[arg(long)]
+    pub keyfile: Option<PathBuf>,
     /// Put every resource at the root of the import folder, without the folders of the file
     #[arg(long)]
     pub no_folders: bool,
@@ -34,15 +41,42 @@ pub struct ImportArgs {
 
 /// Import the file into a new `import-<date>` folder; fails when a row was not imported.
 pub async fn run(args: &ImportArgs, client: &Client, json: bool) -> Result<()> {
-    let text = std::fs::read_to_string(&args.file)
-        .with_context(|| format!("Cannot read {}", args.file.display()))?;
+    let file =
+        std::fs::read(&args.file).with_context(|| format!("Cannot read {}", args.file.display()))?;
     let types = client.resource_types().await?;
     let v5 = client
         .metadata_settings()
         .await?
         .types
         .creates_v5_resources_by_default();
-    let parsed = import::parse_csv(&text, &types, v5, import::reference(chrono::Utc::now()))?;
+    let reference = import::reference(chrono::Utc::now());
+    let is_kdbx = args
+        .file
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("kdbx"));
+    let parsed = if is_kdbx {
+        let keyfile = args
+            .keyfile
+            .as_ref()
+            .map(|path| {
+                std::fs::read(path).with_context(|| format!("Cannot read {}", path.display()))
+            })
+            .transpose()?;
+        let database = keepass::import::open(&file, args.password.as_deref(), keyfile.as_deref())?;
+        let content = keepass::import::read(&database, v5);
+        let mut parsed = import::assemble(
+            content.resources.into_iter(),
+            &content.folders,
+            &types,
+            v5,
+            reference,
+        );
+        parsed.warnings.splice(0..0, content.warnings);
+        parsed
+    } else {
+        let text = String::from_utf8(file).context("The CSV file is not UTF-8")?;
+        import::parse_csv(&text, &types, v5, reference)?
+    };
     let options = ImportOptions {
         folders: !args.no_folders,
         tags: !args.no_tags,
