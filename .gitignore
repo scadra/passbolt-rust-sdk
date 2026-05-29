@@ -26,6 +26,8 @@
 *.gpg
 *.pem
 *.key
+# The KeePass test files are public by design.
+!crates/passbolt-cli/tests/fixtures/kdbx/*
 /config.toml
 
 # Coverage & profiling #

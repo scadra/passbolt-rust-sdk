@@ -25,6 +25,7 @@ passbolt export csv --format csv-kdbx -f vault.csv --folder-id <FOLDER_UUID>
 | `csv-dashlane` | Dashlane: `username`, `username2`, `username3`, `title`, `password`, `note`, `url`, `category`, `otpSecret` |
 | `csv-nordpass` | NordPass: `name`, `url`, `username`, `password`, `note`, `cardholername`, `cardnumber`, `cvc`, `expirydate`, `zipcode`, `folder`, `full_name`, `phone_number`, `email`, `address1`, `address2`, `city`, `country`, `state`, `type` |
 | `csv-logmeonce` | LogMeOnce: `name`, `url`, `note`, `group`, `username`, `password`, `extra` |
+| `csv-netwrix` | Netwrix Password Secure: `DataTags`, `Description`, `User name`, `Password`, `Internet address`, `Email address` |
 
 A resource that does not decrypt is reported and left out.
 

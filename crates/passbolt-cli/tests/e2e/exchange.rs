@@ -293,6 +293,7 @@ fn an_exported_folder_imports_back() {
     "\"name\",\"url\",\"note\",\"group\",\"username\",\"password\",\"extra\"",
     "\"<name>\",\"<uri>\",\"<description>\",\"<folder>\",\"ada\",\"<password>\",\"\""
 )]
+#[case::netwrix("csv-netwrix", "\"DataTags\";\"Description\";\"User name\";\"Password\";\"Internet address\";\"Email address\"", "\"\";\"<name>\";\"ada\";\"<password>\";\"<uri>\";\"\"")]
 fn a_folder_exports_and_imports_back(
     #[case] format: &str,
     #[case] header: &str,

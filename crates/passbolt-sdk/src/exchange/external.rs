@@ -127,13 +127,27 @@ pub fn totp_with_defaults(
 }
 
 /// The number a text starts with, as JavaScript's `parseInt(text, 10)` reads it.
-fn leading_number(text: &str) -> Option<u64> {
+#[must_use]
+pub fn leading_number(text: &str) -> Option<u64> {
     let digits: String = text
         .trim_start()
         .chars()
         .take_while(char::is_ascii_digit)
         .collect();
     digits.parse().ok()
+}
+
+/// A text custom field, its key in the metadata and its value in the secret.
+#[must_use]
+pub fn text_custom_field(key: String, value: String) -> CustomField {
+    CustomField {
+        id: uuid::Uuid::new_v4().to_string(),
+        field_type: "text".into(),
+        metadata_key: Some(key),
+        metadata_value: None,
+        secret_key: None,
+        secret_value: Some(Value::String(value)),
+    }
 }
 
 /// What JavaScript's `encodeURIComponent` leaves as it is.

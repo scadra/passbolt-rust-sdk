@@ -41,7 +41,7 @@ pub enum ExportFormat {
 
 #[derive(Args, Debug)]
 pub struct CsvArgs {
-    /// The CSV format: csv-kdbx, csv-lastpass, csv-1password, csv-chromium, csv-bitwarden, csv-mozilla, csv-safari, csv-dashlane, csv-nordpass, csv-logmeonce
+    /// The CSV format: csv-kdbx, csv-lastpass, csv-1password, csv-chromium, csv-bitwarden, csv-mozilla, csv-safari, csv-dashlane, csv-nordpass, csv-logmeonce, csv-netwrix
     #[arg(long, default_value = "csv-kdbx")]
     pub format: String,
     /// File name; default: passbolt-export-<date>.csv
