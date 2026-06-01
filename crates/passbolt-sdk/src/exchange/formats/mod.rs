@@ -204,9 +204,7 @@ fn read_totp(value: &str, totp: Totp) -> Result<TotpData, PassboltError> {
     match totp {
         Totp::Uri => parse_totp_uri(value),
         Totp::UriOrSecretKey if is_uri => parse_totp_uri(value),
-        Totp::SecretKey | Totp::UriOrSecretKey => {
-            Ok(totp_with_defaults(value.to_string(), None, None, None))
-        }
+        Totp::SecretKey | Totp::UriOrSecretKey => Ok(totp_with_defaults(value, None, None, None)),
     }
 }
 

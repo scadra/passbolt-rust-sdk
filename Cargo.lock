@@ -2470,10 +2470,12 @@ version = "0.1.0"
 dependencies = [
  "aes",
  "anyhow",
+ "argon2",
  "assert_cmd",
  "base64 0.22.1",
  "cbc",
  "cel",
+ "chacha20 0.9.1",
  "chrono",
  "clap",
  "clap_complete",
@@ -2481,6 +2483,7 @@ dependencies = [
  "config",
  "directories",
  "flate2",
+ "hmac",
  "indicatif",
  "keepass",
  "passbolt-sdk",
@@ -2501,6 +2504,7 @@ dependencies = [
  "toml 0.8.23",
  "totp-rs",
  "unicode-width",
+ "xml-rs",
  "zeroize",
 ]
 

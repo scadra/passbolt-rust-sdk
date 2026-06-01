@@ -160,20 +160,26 @@ pub fn header(seeds: &Seeds, transform_rounds: u64) -> Result<Vec<u8>> {
 /// SHA-256(seed ‖ AES-KDF(SHA-256(SHA-256(password)))): the key of the payload.
 fn master_key(password: &str, seeds: &Seeds, transform_rounds: u64) -> Zeroizing<[u8; 32]> {
     let password_hash = Zeroizing::new(sha256(password.as_bytes()));
-    let mut transformed = Zeroizing::new(sha256(password_hash.as_ref()));
-    let cipher = Aes256::new(GenericArray::from_slice(&seeds.transform_seed));
-    for half in transformed.as_chunks_mut::<16>().0 {
-        let block = GenericArray::from_mut_slice(half);
-        for _ in 0..transform_rounds {
-            cipher.encrypt_block(block);
-        }
-    }
-    let transformed_key = Zeroizing::new(sha256(transformed.as_ref()));
+    let composite_key = Zeroizing::new(sha256(password_hash.as_ref()));
+    let transformed_key = aes_kdf(&composite_key, &seeds.transform_seed, transform_rounds);
 
     let mut hasher = Sha256::new();
     hasher.update(seeds.master_seed);
     hasher.update(transformed_key.as_ref());
     Zeroizing::new(hasher.finalize().into())
+}
+
+/// SHA-256 of the composite key encrypted `rounds` times with AES-256 keyed by `seed`.
+pub fn aes_kdf(composite_key: &[u8; 32], seed: &[u8; 32], rounds: u64) -> Zeroizing<[u8; 32]> {
+    let mut transformed = Zeroizing::new(*composite_key);
+    let cipher = Aes256::new(GenericArray::from_slice(seed));
+    for half in transformed.as_chunks_mut::<16>().0 {
+        let block = GenericArray::from_mut_slice(half);
+        for _ in 0..rounds {
+            cipher.encrypt_block(block);
+        }
+    }
+    Zeroizing::new(sha256(transformed.as_ref()))
 }
 
 /// Blocks of `(index: u32, SHA-256: [u8; 32], length: u32, data)`, then an empty block.
@@ -193,7 +199,7 @@ fn write_hashed_blocks(output: &mut Vec<u8>, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn sha256(data: &[u8]) -> [u8; 32] {
+pub fn sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
 

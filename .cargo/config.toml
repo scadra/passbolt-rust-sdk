@@ -1,3 +1,10 @@
 # `cargo test --target wasm32-unknown-unknown -p passbolt-wasm` runs the WASM tests in Node.
 [target.wasm32-unknown-unknown]
 runner = "wasm-bindgen-test-runner"
+
+# AES with the ARMv8 instructions: KDBX files derive their key with millions of AES rounds.
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["--cfg", "aes_armv8"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["--cfg", "aes_armv8"]

@@ -41,8 +41,8 @@ pub struct ImportArgs {
 
 /// Import the file into a new `import-<date>` folder; fails when a row was not imported.
 pub async fn run(args: &ImportArgs, client: &Client, json: bool) -> Result<()> {
-    let file =
-        std::fs::read(&args.file).with_context(|| format!("Cannot read {}", args.file.display()))?;
+    let file = std::fs::read(&args.file)
+        .with_context(|| format!("Cannot read {}", args.file.display()))?;
     let types = client.resource_types().await?;
     let v5 = client
         .metadata_settings()
@@ -62,8 +62,8 @@ pub async fn run(args: &ImportArgs, client: &Client, json: bool) -> Result<()> {
                 std::fs::read(path).with_context(|| format!("Cannot read {}", path.display()))
             })
             .transpose()?;
-        let database = keepass::import::open(&file, args.password.as_deref(), keyfile.as_deref())?;
-        let content = keepass::import::read(&database, v5);
+        let root = keepass::kdbx::read(&file, args.password.as_deref(), keyfile.as_deref())?;
+        let content = keepass::import::read(&root, v5);
         let mut parsed = import::assemble(
             content.resources.into_iter(),
             &content.folders,
