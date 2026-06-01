@@ -75,7 +75,7 @@ mod tests {
                 description: Some("Description 1".into()),
                 folder_parent_path: "Folder 1".into(),
                 totp: Some(totp_with_defaults(
-                    "ABC".into(),
+                    "ABC",
                     Some("SHA256".into()),
                     Some(8),
                     Some(60)

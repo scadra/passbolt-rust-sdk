@@ -289,7 +289,7 @@ mod tests {
     fn test_a_password_and_a_totp_need_the_totp_type() {
         let resource = ExternalResource {
             secret_clear: "p".into(),
-            totp: Some(totp_with_defaults("A".into(), None, None, None)),
+            totp: Some(totp_with_defaults("A", None, None, None)),
             ..ExternalResource::default()
         };
 
@@ -310,7 +310,7 @@ mod tests {
     fn test_a_totp_with_a_description_counts_as_a_password() {
         let resource = ExternalResource {
             description: Some("d".into()),
-            totp: Some(totp_with_defaults("A".into(), None, None, None)),
+            totp: Some(totp_with_defaults("A", None, None, None)),
             ..ExternalResource::default()
         };
 

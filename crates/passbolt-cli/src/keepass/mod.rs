@@ -12,4 +12,5 @@
 
 pub mod export;
 pub mod import;
+pub mod kdbx;
 pub mod kdbx3;

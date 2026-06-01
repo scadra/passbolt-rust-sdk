@@ -93,27 +93,34 @@ pub fn parse_totp_uri(text: &str) -> Result<TotpData, PassboltError> {
             .map(|(_, value)| value.into_owned())
     };
     Ok(totp_with_defaults(
-        parameter("secret").unwrap_or_default(),
+        &parameter("secret").unwrap_or_default(),
         parameter("algorithm"),
         parameter("digits").and_then(|digits| leading_number(&digits)),
         parameter("period").and_then(|period| leading_number(&period)),
     ))
 }
 
-/// A TOTP with the browser extension's defaults for what is missing (SHA1, 6, 30).
+/// A TOTP with the browser extension's defaults for what is missing (SHA1, 6, 30), its
+/// secret key cleaned as the browser extension cleans it: letters and digits, in capitals.
 #[must_use]
 pub fn totp_with_defaults(
-    secret_key: String,
+    secret_key: &str,
     algorithm: Option<String>,
     digits: Option<u64>,
     period: Option<u64>,
 ) -> TotpData {
     TotpData {
-        secret_key: Some(secret_key),
+        secret_key: Some(
+            secret_key
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .collect::<String>()
+                .to_ascii_uppercase(),
+        ),
         algorithm: Some(
             algorithm
                 .filter(|algorithm| !algorithm.is_empty())
-                .unwrap_or_else(|| "SHA1".into()),
+                .map_or_else(|| "SHA1".into(), |algorithm| algorithm.to_uppercase()),
         ),
         digits: Some(
             digits
@@ -392,12 +399,7 @@ mod tests {
             name: "Git hub".into(),
             username: Some("ada@passbolt.com".into()),
             uris: vec!["https://github.com/login?x=1&y=2".into()],
-            totp: Some(totp_with_defaults(
-                "JBSWY3DPEHPK3PXP".into(),
-                None,
-                None,
-                None,
-            )),
+            totp: Some(totp_with_defaults("JBSWY3DPEHPK3PXP", None, None, None)),
             ..ExternalResource::default()
         }
     }
@@ -426,7 +428,15 @@ mod tests {
     fn test_a_totp_uri_gets_the_defaults_it_lacks() {
         let totp = parse_totp_uri("otpauth://totp/x?secret=ABC&digits=8").unwrap();
 
-        assert_eq!(totp, totp_with_defaults("ABC".into(), None, Some(8), None));
+        assert_eq!(totp, totp_with_defaults("ABC", None, Some(8), None));
+    }
+
+    #[test]
+    fn test_a_totp_secret_keeps_its_letters_and_digits_in_capitals() {
+        let totp = totp_with_defaults("jbsw y3dp-eh_pk", Some("sha256".into()), None, None);
+
+        assert_eq!(totp.secret_key.as_deref(), Some("JBSWY3DPEHPK"));
+        assert_eq!(totp.algorithm.as_deref(), Some("SHA256"));
     }
 
     #[test]

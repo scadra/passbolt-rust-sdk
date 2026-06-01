@@ -161,6 +161,46 @@ fn a_password_of_four_digits_alone_is_imported_as_a_pin_code() {
     );
 }
 
+#[rstest::rstest]
+#[case::password("kdbx-protected-password.kdbx", &["-p", "passbolt"], &["Secret 1", "Secret 2"])]
+#[case::key_file("kdbx-protected-keyfile.kdbx", &["--keyfile", "<keyfile>"], &["Secret 1"])]
+fn a_kdbx_file_is_imported_into_its_root_group_folder(
+    #[case] name: &str,
+    #[case] credentials: &[&str],
+    #[case] passwords: &[&str],
+) {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/kdbx");
+    let keyfile = fixtures.join("kdbx-keyfile.key");
+    let mut arguments: Vec<&str> = credentials
+        .iter()
+        .map(|argument| match *argument {
+            "<keyfile>" => keyfile.to_str().unwrap(),
+            argument => argument,
+        })
+        .collect();
+    arguments.push("--no-tags");
+
+    let (report, _folder) = import(&fixtures.join(name), &arguments);
+
+    // The import folder, then the root group of the file.
+    assert_eq!(report["folders"], 2, "{report}");
+    let mut imported = passwords_below(report["folder_id"].as_str().unwrap());
+    imported.sort();
+    assert_eq!(imported, passwords);
+}
+
+#[test]
+fn a_kdbx_file_with_a_wrong_password_is_refused() {
+    let file = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/kdbx/kdbx-protected-password.kdbx");
+
+    passbolt()
+        .args(["import", "-f", file.to_str().unwrap(), "-p", "wrong"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("wrong password or key file"));
+}
+
 #[test]
 fn a_file_of_an_unknown_format_is_refused() {
     let directory = tempfile::tempdir().unwrap();

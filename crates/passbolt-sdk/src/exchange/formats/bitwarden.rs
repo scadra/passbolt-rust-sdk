@@ -120,12 +120,7 @@ mod tests {
 
         assert_eq!(
             resource.totp,
-            Some(totp_with_defaults(
-                "JBSWY3DPEHPK3PXP".into(),
-                None,
-                None,
-                None
-            ))
+            Some(totp_with_defaults("JBSWY3DPEHPK3PXP", None, None, None))
         );
     }
 }
