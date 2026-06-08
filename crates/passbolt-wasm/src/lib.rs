@@ -31,6 +31,16 @@ use crate::http::WasmHttpClient;
 
 type Client = PassboltSdk<WasmHttpClient>;
 
+#[wasm_bindgen(typescript_custom_section)]
+const TYPESCRIPT_TYPES: &str = include_str!("types.d.ts");
+
+#[wasm_bindgen]
+extern "C" {
+    /// The `LoginOptions` of `types.d.ts`; optional, so its own type rather than a `JsValue`.
+    #[wasm_bindgen(typescript_type = "LoginOptions")]
+    pub type LoginOptions;
+}
+
 // ── Error conversion ─────────────────────────────────────────────────────────
 
 fn to_js_error(e: PassboltError) -> JsError {
@@ -146,8 +156,9 @@ impl PassboltSession {
         server_url: String,
         private_key_armored: String,
         passphrase: String,
-        options: JsValue,
+        options: Option<LoginOptions>,
     ) -> Result<Self, JsError> {
+        let options = options.map_or(JsValue::UNDEFINED, JsValue::from);
         crate::http::set_csrf_token_provider(
             option(&options, "csrfTokenProvider").and_then(|provider| provider.dyn_into().ok()),
         );
@@ -177,7 +188,7 @@ impl PassboltSession {
 
     /// The server public key to pin, `{ fingerprint, armoredKey }`, the fingerprint computed
     /// from the key: show it to the user, then pass `armoredKey` as `serverPublicKey`.
-    #[wasm_bindgen(js_name = "fetchServerKey")]
+    #[wasm_bindgen(js_name = "fetchServerKey", unchecked_return_type = "ServerKey")]
     pub async fn fetch_server_key(server_url: String) -> Result<JsValue, JsError> {
         let http = WasmHttpClient::new();
         let (fingerprint, armored_key) =
@@ -1270,7 +1281,7 @@ mod wasm_tests {
             "http://127.0.0.1:1".into(),
             ADA_PRIVATE.into(),
             "ada-passphrase".into(),
-            options.into(),
+            Some(options.unchecked_into()),
         )
         .await;
 
@@ -1321,7 +1332,7 @@ mod wasm_tests {
             "http://127.0.0.1:1".into(),
             ADA_PRIVATE.into(),
             "ada-passphrase".into(),
-            options.into(),
+            Some(options.unchecked_into()),
         ))
         .await;
 

@@ -158,7 +158,7 @@ impl Passbolt {
             SERVER_URL.into(),
             ADA_PRIVATE.into(),
             ADA_PASSPHRASE.into(),
-            JsValue::UNDEFINED,
+            None,
         )
         .await;
         ok(session)
