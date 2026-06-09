@@ -240,7 +240,7 @@ impl PassboltSession {
 
     /// List all resources (with secrets and permissions), or those whose name holds `search`,
     /// among the favorites with `favoritesOnly`, among those the user owns with `ownedByMe`.
-    #[wasm_bindgen(js_name = "listResources")]
+    #[wasm_bindgen(js_name = "listResources", unchecked_return_type = "Resource[]")]
     pub async fn list_resources(
         &self,
         search: Option<String>,
@@ -262,14 +262,14 @@ impl PassboltSession {
     }
 
     /// Get a single resource by ID.
-    #[wasm_bindgen(js_name = "getResource")]
+    #[wasm_bindgen(js_name = "getResource", unchecked_return_type = "Resource")]
     pub async fn get_resource(&self, id: String) -> Result<JsValue, JsError> {
         let resource = self.client.get_resource(&id).await.map_err(to_js_error)?;
         to_js_value(&resource)
     }
 
     /// Get the resources of these IDs.
-    #[wasm_bindgen(js_name = "getResourcesByIds")]
+    #[wasm_bindgen(js_name = "getResourcesByIds", unchecked_return_type = "Resource[]")]
     pub async fn get_resources_by_ids(&self, ids: Vec<String>) -> Result<JsValue, JsError> {
         let resources = self
             .client
@@ -280,7 +280,10 @@ impl PassboltSession {
     }
 
     /// Get permissions for a resource.
-    #[wasm_bindgen(js_name = "getResourcePermissions")]
+    #[wasm_bindgen(
+        js_name = "getResourcePermissions",
+        unchecked_return_type = "Permission[]"
+    )]
     pub async fn get_resource_permissions(&self, id: String) -> Result<JsValue, JsError> {
         let permissions = self
             .client
@@ -291,8 +294,14 @@ impl PassboltSession {
     }
 
     /// Decrypt a resource's secret. Returns the plaintext secret data as JSON.
-    #[wasm_bindgen(js_name = "decryptResourceSecret")]
-    pub async fn decrypt_resource_secret(&self, resource_js: JsValue) -> Result<JsValue, JsError> {
+    #[wasm_bindgen(
+        js_name = "decryptResourceSecret",
+        unchecked_return_type = "SecretData"
+    )]
+    pub async fn decrypt_resource_secret(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "Resource")] resource_js: JsValue,
+    ) -> Result<JsValue, JsError> {
         let resource: passbolt_sdk::types::Resource =
             serde_wasm_bindgen::from_value(resource_js)
                 .map_err(|error| JsError::new(&format!("Invalid resource: {error}")))?;
@@ -306,7 +315,7 @@ impl PassboltSession {
 
     /// A resource with its v5 metadata and its secret decrypted, for every resource type:
     /// `name`, `username`, `uris`, `description`, `password`, `metadata`, `secret`…
-    #[wasm_bindgen(js_name = "getResourceView")]
+    #[wasm_bindgen(js_name = "getResourceView", unchecked_return_type = "ResourceView")]
     pub async fn get_resource_view(&self, id: String) -> Result<JsValue, JsError> {
         let view = passbolt_sdk::resource::get::get_resource_view(&self.client, &id)
             .await
@@ -316,7 +325,10 @@ impl PassboltSession {
 
     /// Resources with their v5 metadata decrypted, searched by their decrypted name; their
     /// secrets too with `withSecrets`. A resource that cannot be decrypted has an `error`.
-    #[wasm_bindgen(js_name = "listResourceViews")]
+    #[wasm_bindgen(
+        js_name = "listResourceViews",
+        unchecked_return_type = "ResourceView[]"
+    )]
     pub async fn list_resource_views(
         &self,
         search: Option<String>,
@@ -340,8 +352,11 @@ impl PassboltSession {
     /// Create a resource of any type from `{name, resource_type?, username?, uris?, password?,
     /// totp?, note?, pin_code?, custom_fields?, metadata_fields?, secret_fields?, …}`.
     /// The type follows the fields and the server's default version when not given.
-    #[wasm_bindgen(js_name = "createResource")]
-    pub async fn create_resource(&self, new_resource: JsValue) -> Result<JsValue, JsError> {
+    #[wasm_bindgen(js_name = "createResource", unchecked_return_type = "Resource")]
+    pub async fn create_resource(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "NewResource")] new_resource: JsValue,
+    ) -> Result<JsValue, JsError> {
         let new_resource: passbolt_sdk::resource::create::NewResource =
             serde_wasm_bindgen::from_value(new_resource)
                 .map_err(|error| JsError::new(&format!("Invalid resource: {error}")))?;
@@ -353,8 +368,12 @@ impl PassboltSession {
 
     /// Update a resource from the fields to change: `{name?, password?, totp?, remove_totp?,
     /// expired?, …}`; `expired: null` clears the expiry.
-    #[wasm_bindgen(js_name = "updateResource")]
-    pub async fn update_resource(&self, id: String, changes: JsValue) -> Result<JsValue, JsError> {
+    #[wasm_bindgen(js_name = "updateResource", unchecked_return_type = "Resource")]
+    pub async fn update_resource(
+        &self,
+        id: String,
+        #[wasm_bindgen(unchecked_param_type = "ResourceChanges")] changes: JsValue,
+    ) -> Result<JsValue, JsError> {
         let changes: passbolt_sdk::resource::update::ResourceChanges =
             serde_wasm_bindgen::from_value(changes)
                 .map_err(|error| JsError::new(&format!("Invalid changes: {error}")))?;
