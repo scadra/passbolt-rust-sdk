@@ -487,7 +487,7 @@ impl PassboltSession {
     // ── Folders ──────────────────────────────────────────────────────────
 
     /// List all folders, or those whose name holds `search`.
-    #[wasm_bindgen(js_name = "listFolders")]
+    #[wasm_bindgen(js_name = "listFolders", unchecked_return_type = "Folder[]")]
     pub async fn list_folders(&self, search: Option<String>) -> Result<JsValue, JsError> {
         let query = passbolt_sdk::FolderQuery {
             search,
@@ -498,7 +498,7 @@ impl PassboltSession {
     }
 
     /// Get a single folder by ID.
-    #[wasm_bindgen(js_name = "getFolder")]
+    #[wasm_bindgen(js_name = "getFolder", unchecked_return_type = "Folder")]
     pub async fn get_folder(&self, id: String) -> Result<JsValue, JsError> {
         let folder = self.client.get_folder(&id).await.map_err(to_js_error)?;
         to_js_value(&folder)
@@ -506,7 +506,7 @@ impl PassboltSession {
 
     /// Create a folder, at the root or in `folderParentId`; in a parent folder it gets the
     /// parent's permissions.
-    #[wasm_bindgen(js_name = "createFolder")]
+    #[wasm_bindgen(js_name = "createFolder", unchecked_return_type = "Folder")]
     pub async fn create_folder(
         &self,
         name: String,
@@ -523,7 +523,7 @@ impl PassboltSession {
     }
 
     /// Rename a folder.
-    #[wasm_bindgen(js_name = "renameFolder")]
+    #[wasm_bindgen(js_name = "renameFolder", unchecked_return_type = "Folder")]
     pub async fn rename_folder(&self, id: String, name: String) -> Result<JsValue, JsError> {
         let payload = passbolt_sdk::types::UpdateFolderPayload { name };
         let folder = self
@@ -550,7 +550,10 @@ impl PassboltSession {
     }
 
     /// Get permissions for a folder.
-    #[wasm_bindgen(js_name = "getFolderPermissions")]
+    #[wasm_bindgen(
+        js_name = "getFolderPermissions",
+        unchecked_return_type = "Permission[]"
+    )]
     pub async fn get_folder_permissions(&self, id: String) -> Result<JsValue, JsError> {
         let permissions = self
             .client
@@ -561,7 +564,7 @@ impl PassboltSession {
     }
 
     /// The folders as a tree: `[{ folder, children: [...] }]`, the root folders first.
-    #[wasm_bindgen(js_name = "getFolderTree")]
+    #[wasm_bindgen(js_name = "getFolderTree", unchecked_return_type = "FolderTreeNode[]")]
     pub async fn get_folder_tree(&self) -> Result<JsValue, JsError> {
         let folders = self
             .client
@@ -574,7 +577,7 @@ impl PassboltSession {
     // ── Users ────────────────────────────────────────────────────────────
 
     /// List all users, or those matching `search`, members of `groupId`, admins with `adminOnly`.
-    #[wasm_bindgen(js_name = "listUsers")]
+    #[wasm_bindgen(js_name = "listUsers", unchecked_return_type = "User[]")]
     pub async fn list_users(
         &self,
         search: Option<String>,
@@ -592,14 +595,14 @@ impl PassboltSession {
     }
 
     /// Get a user by ID.
-    #[wasm_bindgen(js_name = "getUser")]
+    #[wasm_bindgen(js_name = "getUser", unchecked_return_type = "User")]
     pub async fn get_user(&self, id: String) -> Result<JsValue, JsError> {
         let user = self.client.get_user(&id).await.map_err(to_js_error)?;
         to_js_value(&user)
     }
 
     /// Create a user with the role named `role` (`user` or `admin`).
-    #[wasm_bindgen(js_name = "createUser")]
+    #[wasm_bindgen(js_name = "createUser", unchecked_return_type = "User")]
     pub async fn create_user(
         &self,
         username: String,
@@ -620,7 +623,7 @@ impl PassboltSession {
     }
 
     /// Update a user's names or role; `undefined` keeps the value.
-    #[wasm_bindgen(js_name = "updateUser")]
+    #[wasm_bindgen(js_name = "updateUser", unchecked_return_type = "User")]
     pub async fn update_user(
         &self,
         id: String,
@@ -647,7 +650,10 @@ impl PassboltSession {
     }
 
     /// Preview the impact of deleting a user.
-    #[wasm_bindgen(js_name = "deleteUserDryRun")]
+    #[wasm_bindgen(
+        js_name = "deleteUserDryRun",
+        unchecked_return_type = "UserDeleteDryRun"
+    )]
     pub async fn delete_user_dry_run(&self, id: String) -> Result<JsValue, JsError> {
         let dry_run = self
             .client
@@ -658,7 +664,7 @@ impl PassboltSession {
     }
 
     /// Get the currently logged-in user.
-    #[wasm_bindgen(js_name = "getMe")]
+    #[wasm_bindgen(js_name = "getMe", unchecked_return_type = "User")]
     pub async fn get_me(&self) -> Result<JsValue, JsError> {
         let me = self.client.get_me().await.map_err(to_js_error)?;
         to_js_value(&me)
@@ -666,7 +672,10 @@ impl PassboltSession {
 
     /// What blocks deleting the user: what they alone own or manage, as `{ resources, folders, groups,
     /// groups_to_delete }`.
-    #[wasm_bindgen(js_name = "userDeleteBlockers")]
+    #[wasm_bindgen(
+        js_name = "userDeleteBlockers",
+        unchecked_return_type = "DeleteBlockers"
+    )]
     pub async fn user_delete_blockers(&self, id: String) -> Result<JsValue, JsError> {
         let blockers = self
             .client
@@ -702,7 +711,7 @@ impl PassboltSession {
     // ── Groups ───────────────────────────────────────────────────────────
 
     /// List all groups.
-    #[wasm_bindgen(js_name = "listGroups")]
+    #[wasm_bindgen(js_name = "listGroups", unchecked_return_type = "Group[]")]
     pub async fn list_groups(&self) -> Result<JsValue, JsError> {
         let groups = self
             .client
@@ -713,14 +722,14 @@ impl PassboltSession {
     }
 
     /// Get a group by ID.
-    #[wasm_bindgen(js_name = "getGroup")]
+    #[wasm_bindgen(js_name = "getGroup", unchecked_return_type = "Group")]
     pub async fn get_group(&self, id: String) -> Result<JsValue, JsError> {
         let group = self.client.get_group(&id).await.map_err(to_js_error)?;
         to_js_value(&group)
     }
 
     /// Create a group; a manager is also a member.
-    #[wasm_bindgen(js_name = "createGroup")]
+    #[wasm_bindgen(js_name = "createGroup", unchecked_return_type = "Group")]
     pub async fn create_group(
         &self,
         name: String,
@@ -741,7 +750,7 @@ impl PassboltSession {
     /// Rename a group and change its members: the removed ones first, then the added ones,
     /// who get the secrets of the group's resources. Giving a user the role they have, or
     /// removing a non-member, is an error.
-    #[wasm_bindgen(js_name = "updateGroup")]
+    #[wasm_bindgen(js_name = "updateGroup", unchecked_return_type = "Group")]
     pub async fn update_group(
         &self,
         id: String,
@@ -787,7 +796,10 @@ impl PassboltSession {
     }
 
     /// Preview the impact of deleting a group.
-    #[wasm_bindgen(js_name = "deleteGroupDryRun")]
+    #[wasm_bindgen(
+        js_name = "deleteGroupDryRun",
+        unchecked_return_type = "GroupDeleteDryRun"
+    )]
     pub async fn delete_group_dry_run(&self, id: String) -> Result<JsValue, JsError> {
         let dry_run = self
             .client
@@ -799,7 +811,10 @@ impl PassboltSession {
 
     /// What blocks deleting the group: what it alone owns, as `{ resources, folders, groups,
     /// groups_to_delete }`.
-    #[wasm_bindgen(js_name = "groupDeleteBlockers")]
+    #[wasm_bindgen(
+        js_name = "groupDeleteBlockers",
+        unchecked_return_type = "DeleteBlockers"
+    )]
     pub async fn group_delete_blockers(&self, id: String) -> Result<JsValue, JsError> {
         let blockers = self
             .client
