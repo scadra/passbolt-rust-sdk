@@ -465,7 +465,7 @@ impl PassboltSession {
     // ── Favorites ────────────────────────────────────────────────────────
 
     /// Add a resource to the favorites; the favorite's `id` removes it.
-    #[wasm_bindgen(js_name = "addFavorite")]
+    #[wasm_bindgen(js_name = "addFavorite", unchecked_return_type = "Favorite")]
     pub async fn add_favorite(&self, resource_id: String) -> Result<JsValue, JsError> {
         let favorite = self
             .client
@@ -850,14 +850,14 @@ impl PassboltSession {
     // ── Tags ─────────────────────────────────────────────────────────────
 
     /// List all tags.
-    #[wasm_bindgen(js_name = "getTags")]
+    #[wasm_bindgen(js_name = "getTags", unchecked_return_type = "Tag[]")]
     pub async fn get_tags(&self) -> Result<JsValue, JsError> {
         let tags = self.client.get_tags().await.map_err(to_js_error)?;
         to_js_value(&tags)
     }
 
     /// Add a tag to a resource, keeping its other tags; returns the resource's tags.
-    #[wasm_bindgen(js_name = "addTagToResource")]
+    #[wasm_bindgen(js_name = "addTagToResource", unchecked_return_type = "Tag[]")]
     pub async fn add_tag_to_resource(
         &self,
         resource_id: String,
@@ -872,7 +872,7 @@ impl PassboltSession {
     }
 
     /// Replace all the tags of a resource; returns its tags.
-    #[wasm_bindgen(js_name = "setResourceTags")]
+    #[wasm_bindgen(js_name = "setResourceTags", unchecked_return_type = "Tag[]")]
     pub async fn set_resource_tags(
         &self,
         resource_id: String,
@@ -887,7 +887,7 @@ impl PassboltSession {
     }
 
     /// Rename a tag.
-    #[wasm_bindgen(js_name = "renameTag")]
+    #[wasm_bindgen(js_name = "renameTag", unchecked_return_type = "Tag")]
     pub async fn rename_tag(&self, id: String, slug: String) -> Result<JsValue, JsError> {
         let tag = self
             .client
@@ -906,7 +906,7 @@ impl PassboltSession {
     // ── Comments ─────────────────────────────────────────────────────────
 
     /// Get comments for a resource.
-    #[wasm_bindgen(js_name = "getComments")]
+    #[wasm_bindgen(js_name = "getComments", unchecked_return_type = "Comment[]")]
     pub async fn get_comments(&self, resource_id: String) -> Result<JsValue, JsError> {
         let comments = self
             .client
@@ -917,7 +917,7 @@ impl PassboltSession {
     }
 
     /// Create a comment on a resource.
-    #[wasm_bindgen(js_name = "createComment")]
+    #[wasm_bindgen(js_name = "createComment", unchecked_return_type = "Comment")]
     pub async fn create_comment(
         &self,
         resource_id: String,
@@ -941,7 +941,7 @@ impl PassboltSession {
     // ── Sharing ──────────────────────────────────────────────────────────
 
     /// Search for users and groups (AROs) for sharing.
-    #[wasm_bindgen(js_name = "searchAros")]
+    #[wasm_bindgen(js_name = "searchAros", unchecked_return_type = "Aro[]")]
     pub async fn search_aros(&self, search: String) -> Result<JsValue, JsError> {
         let aros = self
             .client
@@ -955,7 +955,10 @@ impl PassboltSession {
 
     /// The password expiry settings: `{ id, default_expiry_period, policy_override,
     /// automatic_expiry, automatic_update }`, the period in days.
-    #[wasm_bindgen(js_name = "getPasswordExpirySettings")]
+    #[wasm_bindgen(
+        js_name = "getPasswordExpirySettings",
+        unchecked_return_type = "PasswordExpirySettings"
+    )]
     pub async fn get_password_expiry_settings(&self) -> Result<JsValue, JsError> {
         let settings = self
             .client
@@ -966,10 +969,13 @@ impl PassboltSession {
     }
 
     /// Create or update the password expiry settings (admin).
-    #[wasm_bindgen(js_name = "savePasswordExpirySettings")]
+    #[wasm_bindgen(
+        js_name = "savePasswordExpirySettings",
+        unchecked_return_type = "PasswordExpirySettings"
+    )]
     pub async fn save_password_expiry_settings(
         &self,
-        settings: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "PasswordExpirySettings")] settings: JsValue,
     ) -> Result<JsValue, JsError> {
         let settings: passbolt_sdk::types::PasswordExpirySettings =
             serde_wasm_bindgen::from_value(settings)
@@ -994,14 +1000,20 @@ impl PassboltSession {
     // ── Resource types and metadata settings ─────────────────────────────
 
     /// The resource types of the server, with the JSON Schemas of their `definition`.
-    #[wasm_bindgen(js_name = "listResourceTypes")]
+    #[wasm_bindgen(
+        js_name = "listResourceTypes",
+        unchecked_return_type = "ResourceType[]"
+    )]
     pub async fn list_resource_types(&self) -> Result<JsValue, JsError> {
         let resource_types = self.client.resource_types().await.map_err(to_js_error)?;
         to_js_value(&*resource_types)
     }
 
     /// Which metadata versions the organization creates and allows.
-    #[wasm_bindgen(js_name = "getMetadataTypesSettings")]
+    #[wasm_bindgen(
+        js_name = "getMetadataTypesSettings",
+        unchecked_return_type = "MetadataTypesSettings"
+    )]
     pub async fn get_metadata_types_settings(&self) -> Result<JsValue, JsError> {
         let settings = self
             .client
@@ -1012,10 +1024,13 @@ impl PassboltSession {
     }
 
     /// Save the metadata types settings (admin).
-    #[wasm_bindgen(js_name = "saveMetadataTypesSettings")]
+    #[wasm_bindgen(
+        js_name = "saveMetadataTypesSettings",
+        unchecked_return_type = "MetadataTypesSettings"
+    )]
     pub async fn save_metadata_types_settings(
         &self,
-        settings: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "MetadataTypesSettings")] settings: JsValue,
     ) -> Result<JsValue, JsError> {
         let settings: passbolt_sdk::types::MetadataTypesSettings =
             serde_wasm_bindgen::from_value(settings)
@@ -1029,7 +1044,10 @@ impl PassboltSession {
     }
 
     /// How metadata keys are used: `{ allow_usage_of_personal_keys, zero_knowledge_key_share }`.
-    #[wasm_bindgen(js_name = "getMetadataKeysSettings")]
+    #[wasm_bindgen(
+        js_name = "getMetadataKeysSettings",
+        unchecked_return_type = "MetadataKeysSettings"
+    )]
     pub async fn get_metadata_keys_settings(&self) -> Result<JsValue, JsError> {
         let settings = self
             .client
@@ -1040,8 +1058,14 @@ impl PassboltSession {
     }
 
     /// Save the metadata keys settings (admin).
-    #[wasm_bindgen(js_name = "saveMetadataKeysSettings")]
-    pub async fn save_metadata_keys_settings(&self, settings: JsValue) -> Result<JsValue, JsError> {
+    #[wasm_bindgen(
+        js_name = "saveMetadataKeysSettings",
+        unchecked_return_type = "MetadataKeysSettings"
+    )]
+    pub async fn save_metadata_keys_settings(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "MetadataKeysSettings")] settings: JsValue,
+    ) -> Result<JsValue, JsError> {
         let settings: passbolt_sdk::types::MetadataKeysSettings =
             serde_wasm_bindgen::from_value(settings)
                 .map_err(|error| JsError::new(&format!("Invalid settings: {error}")))?;
