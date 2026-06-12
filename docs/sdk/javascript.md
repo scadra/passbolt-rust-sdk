@@ -80,5 +80,23 @@ Errors are thrown as `Error` with the message of the SDK.
 Stateless helpers, outside a session: `encryptMessage(plaintext, publicKeys)`,
 `decryptMessage(armored, privateKey, passphrase)`, `getKeyFingerprint(privateKey)`.
 
-The objects returned and taken follow the Passbolt API (`folder_parent_id`, `groups_users`…); the
-declarations type them as `any` for now.
+## Types
+
+The declarations type what each method takes and returns, with the field names of the Passbolt
+API (`folder_parent_id`, `groups_users`…), `null` for an absent value and dates as RFC 3339
+strings:
+
+```ts
+import { PassboltSession } from "@switch-case/passbolt-sdk";
+import type { LoginOptions, NewResource, Resource, ResourceView } from "@switch-case/passbolt-sdk";
+
+const options: LoginOptions = { totpCode: "123456" };
+const session = await PassboltSession.login(serverUrl, privateKey, passphrase, options);
+const views: ResourceView[] = await session.listResourceViews(undefined, false);
+const created: Resource = await session.createResource({ name: "GitHub" } satisfies NewResource);
+```
+
+Main types: `Resource`, `ResourceView`, `SecretData`, `NewResource`, `ResourceChanges`, `Folder`,
+`FolderTreeNode`, `User`, `Group`, `Permission`, `DeleteBlockers`, `Tag`, `Comment`, `Favorite`,
+`Aro`, `ResourceType`, `PasswordExpirySettings`, `MetadataTypesSettings`, `MetadataKeysSettings`,
+`LoginOptions`, `ServerKey`.

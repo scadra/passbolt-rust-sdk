@@ -34,6 +34,11 @@ cargo test -p passbolt-wasm --target wasm32-unknown-unknown   # in Node
 The second needs Node and the `wasm-bindgen-test-runner` of the `wasm-bindgen` version in
 `Cargo.lock` (`cargo install wasm-bindgen-cli --version <version>`).
 
+In a container whose checkout is a folder shared with the host (Docker on macOS), the build may
+read files that just changed in an older version: `can't find crate` errors, or tests of code
+that is not there any more. Build with a target folder inside the container, and start it afresh
+when that happens: `CARGO_TARGET_DIR=/tmp/passbolt-target cargo test --workspace`.
+
 ## Tests
 
 `cargo test` runs everything that needs no server:

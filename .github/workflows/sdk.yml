@@ -250,6 +250,13 @@ jobs:
           npm init -y > /dev/null
           npm install --no-audit --no-fund ../../dist/*.tgz
           cp ../../packaging/smoke/smoke.cjs . && node smoke.cjs
+      # The declarations type what the session takes and returns: a typed use must compile.
+      - name: TypeScript types
+        working-directory: build/smoke
+        run: |
+          npm install --no-audit --no-fund typescript@5.8.3
+          cp ../../packaging/smoke/smoke.ts .
+          npx tsc --strict --noEmit --target es2022 --lib esnext --module nodenext smoke.ts
       - uses: actions/upload-artifact@v4
         with:
           name: sdk-js

@@ -45,4 +45,13 @@ out empty.
 | Swift package | `packaging/swift/Package.swift`, an XCFramework for devices and simulators |
 
 The smoke tests in `packaging/smoke/` install each package and call it: the library loads and a
-Rust error reaches the language as its own error.
+Rust error reaches the language as its own error. For TypeScript, `smoke.ts` is also compiled with
+`tsc --strict` against the installed npm package.
+
+## TypeScript types
+
+The objects the JavaScript session takes and returns are declared in
+`crates/passbolt-wasm/src/types.d.ts`, from the SDK structures as serde serializes them: an
+`Option` not skipped is `T | null`, a field skipped when empty is optional, a date is an RFC 3339
+`string`. Each method names its types with `unchecked_return_type` and `unchecked_param_type`.
+A change to a serialized SDK structure needs the same change there.
