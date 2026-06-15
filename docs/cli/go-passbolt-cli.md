@@ -36,8 +36,10 @@ Where go-passbolt-cli would weaken the account or lose data:
   does.
 - `delete user` and `delete group` first check what the user or group alone owns, and refuse
   until `--transfer-to` gives it to someone.
-- `export keepass` refuses an empty password, keeps the folders as groups, and derives the KDBX
-  3.1 key with 60,000 rounds instead of 6,000.
+- `export keepass` writes the file as the browser extension does: the folders as groups below a
+  `passbolt export` group, the other URIs, the expiry date and the icon of each resource, and a
+  KDBX 3.1 key derived with 300,000 rounds instead of 6,000. It also takes `--keyfile` and
+  `--format kdbx|kdbx-others`.
 - `list resource` lists every resource type, and skips a resource that cannot be read (a secret
   that does not decrypt…) with a `Warning: resource <id> skipped: …` line, where go-passbolt-cli
   stops with an error.
