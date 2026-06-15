@@ -20,9 +20,9 @@ use passbolt_sdk::types::Folder;
 use secrecy::{ExposeSecret, SecretString};
 use std::path::PathBuf;
 
-use crate::keepass::export::{export_keepass, KdbxVersion};
+use crate::keepass::export::{export_keepass, Credentials, KdbxVersion, TotpFormat};
 use crate::util::output;
-use crate::util::password::read_password;
+use crate::util::password::prompt_secret;
 use crate::Client;
 
 #[derive(Args, Debug)]
@@ -64,9 +64,16 @@ pub struct KeepassArgs {
     )]
     pub file: PathBuf,
     /// Password for the `KeePass` File, if empty prompts interactively (reads stdin when it is
-    /// not a terminal). An empty password is refused: the file would have no credentials
+    /// not a terminal) unless a key file is given; an empty answer locks it without password
     #[arg(short = 'p', long)]
     pub password: Option<String>,
+    /// Key file locking the `KeePass` File, with the password or alone
+    #[arg(long)]
+    pub keyfile: Option<PathBuf>,
+    /// Where entries keep their TOTP: kdbx (the `TimeOtp` fields of `KeePass`) or kdbx-others
+    /// (an otpauth URI in an otp field, as `KeePassXC`)
+    #[arg(long, default_value = "kdbx-others", value_parser = TotpFormat::parse)]
+    pub format: TotpFormat,
     /// KDBX format version: v3 (AES-KDF, KDBX 3.1) or v4 (Argon2, KDBX 4)
     #[arg(long, default_value = "v3", value_parser = KdbxVersion::parse)]
     pub kdbx_version: KdbxVersion,
@@ -156,17 +163,33 @@ pub async fn run(args: &ExportArgs, client: &Client, workers: usize, json: bool)
     match &args.format {
         ExportFormat::Csv(csv) => export_csv(csv, client, workers, json).await,
         ExportFormat::Keepass(keepass) => {
+            let keyfile = keepass
+                .keyfile
+                .as_ref()
+                .map(|path| {
+                    std::fs::read(path).with_context(|| format!("Cannot read {}", path.display()))
+                })
+                .transpose()?
+                .map(zeroize::Zeroizing::new);
             let master_password = match keepass.password.as_deref() {
                 Some(password) if !password.is_empty() => {
                     SecretString::new(password.to_owned().into())
                 }
-                _ => read_password("Enter KeePass Password:")?,
+                _ if keyfile.is_some() => SecretString::default(),
+                // An empty answer locks the file without password; a closed stdin fails.
+                _ => SecretString::new(prompt_secret("Enter KeePass Password:")?.into()),
+            };
+            let credentials = Credentials {
+                password: Some(master_password.expose_secret())
+                    .filter(|password| !password.is_empty()),
+                keyfile: keyfile.as_deref().map(Vec::as_slice),
             };
             export_keepass(
                 client,
                 &keepass.file,
-                master_password.expose_secret(),
+                &credentials,
                 keepass.kdbx_version,
+                keepass.format,
                 keepass.folder_id.as_deref(),
                 workers,
             )

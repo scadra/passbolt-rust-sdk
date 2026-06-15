@@ -106,7 +106,10 @@ pub fn read(file: &[u8], password: Option<&str>, keyfile: Option<&[u8]>) -> Resu
 }
 
 /// SHA-256(SHA-256(password) ‖ key file key), of nothing without either.
-fn composite_key(password: Option<&str>, keyfile: Option<&[u8]>) -> Result<Zeroizing<[u8; 32]>> {
+pub fn composite_key(
+    password: Option<&str>,
+    keyfile: Option<&[u8]>,
+) -> Result<Zeroizing<[u8; 32]>> {
     let mut hasher = Sha256::new();
     if let Some(password) = password {
         hasher.update(sha256(password.as_bytes()));
