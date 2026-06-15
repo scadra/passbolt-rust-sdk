@@ -189,6 +189,37 @@ fn a_kdbx_file_is_imported_into_its_root_group_folder(
     assert_eq!(imported, passwords);
 }
 
+/// An empty password locks nothing, as the browser extension writes it: the file imports back
+/// without credentials.
+#[test]
+fn a_keepass_export_without_password_imports_back() {
+    let prefix = unique_name("kdbx-round-trip");
+    let folder = create_folder(&format!("{prefix} folder"), &[]);
+    let _resource = create_resource(
+        &format!("{prefix} one"),
+        "round-trip-password",
+        &["--folder-parent-id", &folder.id],
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("export.kdbx");
+    passbolt()
+        .args(["export", "keepass", "-f", file.to_str().unwrap()])
+        .args(["--folder-id", &folder.id])
+        .write_stdin("\n")
+        .assert()
+        .success();
+
+    let (report, _import_folder) = import(&file, &["--no-tags"]);
+
+    assert_eq!(report["errors"], serde_json::json!([]), "{report}");
+    let passwords: Vec<Value> = listed(&prefix)
+        .into_iter()
+        .map(|resource| resource["password"].clone())
+        .collect();
+    // The original and its imported copy.
+    assert_eq!(passwords, ["round-trip-password", "round-trip-password"]);
+}
+
 #[test]
 fn a_kdbx_file_with_a_wrong_password_is_refused() {
     let file = Path::new(env!("CARGO_MANIFEST_DIR"))

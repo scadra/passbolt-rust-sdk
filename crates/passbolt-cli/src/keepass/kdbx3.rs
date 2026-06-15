@@ -10,8 +10,8 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-//! KDBX 3.1 writer, the format go-passbolt-cli writes by default: AES-KDF, AES-256-CBC,
-//! `GZip`, a hashed block stream and Salsa20 protected values, as `KeePass` 2.x writes it.
+//! KDBX 3.1 writer, the format the browser extension writes: AES-KDF, AES-256-CBC, `GZip`, a
+//! hashed block stream and Salsa20 protected values, as `KeePass` 2.x writes it.
 
 use aes::cipher::{generic_array::GenericArray, BlockEncrypt, KeyInit, KeyIvInit, StreamCipher};
 use aes::Aes256;
@@ -35,8 +35,8 @@ const AES256_CIPHER_ID: [u8; 16] = [
 const GZIP_COMPRESSION: u32 = 1;
 const SALSA20_INNER_STREAM: u32 = 2;
 const SALSA20_NONCE: [u8; 8] = [0xE8, 0x30, 0x09, 0x4B, 0x97, 0x20, 0x5D, 0x2A];
-/// AES-KDF rounds: `KeePass` 2.x's default, ten times go-passbolt-cli's 6000.
-pub const TRANSFORM_ROUNDS: u64 = 60_000;
+/// AES-KDF rounds, as the browser extension writes them.
+pub const TRANSFORM_ROUNDS: u64 = 300_000;
 const BLOCK_SIZE: usize = 1024 * 1024;
 const GROUP_ICON: &str = "48";
 const NO_UUID: &str = "AAAAAAAAAAAAAAAAAAAAAA==";
@@ -83,8 +83,12 @@ impl Seeds {
     }
 }
 
-/// Write `root` as a KDBX 3.1 database named `Passbolt Export`, locked by `password`.
-pub fn write_kdbx3(output: &mut dyn Write, password: &str, root: &KeePassGroup) -> Result<()> {
+/// Write `root` as a KDBX 3.1 database named `passbolt export`, locked by `composite_key`.
+pub fn write_kdbx3(
+    output: &mut dyn Write,
+    composite_key: &[u8; 32],
+    root: &KeePassGroup,
+) -> Result<()> {
     let seeds = Seeds::random();
     let header = header(&seeds, TRANSFORM_ROUNDS)?;
     let header_hash = sha256(&header);
@@ -103,7 +107,7 @@ pub fn write_kdbx3(output: &mut dyn Write, password: &str, root: &KeePassGroup) 
     let mut payload = Zeroizing::new(seeds.stream_start_bytes.to_vec());
     write_hashed_blocks(&mut payload, &compressed)?;
 
-    let master_key = master_key(password, &seeds, TRANSFORM_ROUNDS);
+    let master_key = master_key(composite_key, &seeds, TRANSFORM_ROUNDS);
     let encrypted = cbc::Encryptor::<Aes256>::new(
         GenericArray::from_slice(master_key.as_ref()),
         GenericArray::from_slice(&seeds.encryption_iv),
@@ -157,11 +161,13 @@ pub fn header(seeds: &Seeds, transform_rounds: u64) -> Result<Vec<u8>> {
     Ok(header)
 }
 
-/// SHA-256(seed ‖ AES-KDF(SHA-256(SHA-256(password)))): the key of the payload.
-fn master_key(password: &str, seeds: &Seeds, transform_rounds: u64) -> Zeroizing<[u8; 32]> {
-    let password_hash = Zeroizing::new(sha256(password.as_bytes()));
-    let composite_key = Zeroizing::new(sha256(password_hash.as_ref()));
-    let transformed_key = aes_kdf(&composite_key, &seeds.transform_seed, transform_rounds);
+/// SHA-256(seed ‖ AES-KDF(composite key)): the key of the payload.
+fn master_key(
+    composite_key: &[u8; 32],
+    seeds: &Seeds,
+    transform_rounds: u64,
+) -> Zeroizing<[u8; 32]> {
+    let transformed_key = aes_kdf(composite_key, &seeds.transform_seed, transform_rounds);
 
     let mut hasher = Sha256::new();
     hasher.update(seeds.master_seed);
@@ -270,18 +276,19 @@ impl XmlWriter {
         self.element("UUID", &encoded);
     }
 
-    fn times(&mut self) {
+    /// The times of a group or an entry; without `expiry`, it never expires.
+    fn times(&mut self, expiry: Option<&chrono::DateTime<chrono::Utc>>) {
         let now = self.now.clone();
         self.open("Times");
-        for tag in [
-            "CreationTime",
-            "LastModificationTime",
-            "LastAccessTime",
-            "ExpiryTime",
-        ] {
+        for tag in ["CreationTime", "LastModificationTime", "LastAccessTime"] {
             self.element(tag, &now);
         }
-        self.element("Expires", "False");
+        let expiry_time = expiry.map_or_else(
+            || now.clone(),
+            |expiry| expiry.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        );
+        self.element("ExpiryTime", &expiry_time);
+        self.element("Expires", if expiry.is_some() { "True" } else { "False" });
         self.element("UsageCount", "0");
         self.element("LocationChanged", &now);
         self.close("Times");
@@ -329,7 +336,7 @@ impl XmlWriter {
         self.element("Name", &group.name);
         self.element("Notes", "");
         self.element("IconID", GROUP_ICON);
-        self.times();
+        self.times(None);
         self.element("IsExpanded", "True");
         self.element("DefaultAutoTypeSequence", "");
         self.element("EnableAutoType", "null");
@@ -347,19 +354,22 @@ impl XmlWriter {
     fn entry(&mut self, entry: &KeePassEntry) {
         self.open("Entry");
         self.uuid();
-        self.element("IconID", "0");
+        self.element("IconID", &entry.icon_id.unwrap_or(0).to_string());
         self.element("ForegroundColor", "");
-        self.element("BackgroundColor", "");
+        self.element(
+            "BackgroundColor",
+            entry.background_color.as_deref().unwrap_or_default(),
+        );
         self.element("OverrideURL", "");
         self.element("Tags", "");
-        self.times();
-        for field in entry.fields() {
+        self.times(entry.expiry.as_ref());
+        for field in &entry.fields {
             self.open("String");
-            self.element("Key", field.key);
+            self.element("Key", &field.key);
             if field.protected {
-                self.protected_value(field.value);
+                self.protected_value(&field.value);
             } else {
-                self.element("Value", field.value);
+                self.element("Value", &field.value);
             }
             self.close("String");
         }
@@ -401,29 +411,47 @@ fn push_escaped(xml: &mut String, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keepass::export::CustomField;
+    use crate::keepass::export::EntryField;
+    use crate::keepass::kdbx::{self, composite_key};
     use keepass::config::{
         CompressionConfig, DatabaseVersion, InnerCipherConfig, KdfConfig, OuterCipherConfig,
     };
     use keepass::db::{Database, Entry, Group, Node, NodeRef, Value};
     use keepass::DatabaseKey;
 
-    fn entry(title: &str) -> KeePassEntry {
-        KeePassEntry {
-            title: title.into(),
-            username: format!("{title}-user"),
-            url: format!("https://{title}.test"),
-            password: format!("{title}-password"),
-            notes: format!("{title} notes"),
-            otp: None,
-            custom_fields: Vec::new(),
+    fn field(key: &str, value: &str, protected: bool) -> EntryField {
+        EntryField {
+            key: key.into(),
+            value: value.into(),
+            protected,
         }
     }
 
-    fn written(root: &KeePassGroup, password: &str) -> Vec<u8> {
+    fn entry(title: &str) -> KeePassEntry {
+        KeePassEntry {
+            fields: vec![
+                field("Title", title, false),
+                field("UserName", &format!("{title}-user"), false),
+                field("Password", &format!("{title}-password"), true),
+                field("URL", &format!("https://{title}.test"), false),
+                field("Notes", &format!("{title} notes"), false),
+            ],
+            ..KeePassEntry::default()
+        }
+    }
+
+    fn written_with(
+        root: &KeePassGroup,
+        password: Option<&str>,
+        keyfile: Option<&[u8]>,
+    ) -> Vec<u8> {
         let mut file = Vec::new();
-        write_kdbx3(&mut file, password, root).unwrap();
+        write_kdbx3(&mut file, &composite_key(password, keyfile).unwrap(), root).unwrap();
         file
+    }
+
+    fn written(root: &KeePassGroup, password: &str) -> Vec<u8> {
+        written_with(root, Some(password), None)
     }
 
     fn opened(root: &KeePassGroup) -> Database {
@@ -478,7 +506,7 @@ mod tests {
         field(3, &[1, 0, 0, 0]);
         field(4, &[1; 32]);
         field(5, &[2; 32]);
-        field(6, &60_000u64.to_le_bytes());
+        field(6, &300_000u64.to_le_bytes());
         field(7, &[3; 16]);
         field(8, &[4; 32]);
         field(9, &[5; 32]);
@@ -489,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn test_written_file_has_the_go_passbolt_cli_v3_settings() {
+    fn test_written_file_has_the_browser_extension_v3_settings() {
         let database = opened(&KeePassGroup::named("root"));
 
         assert_eq!(database.config.version, DatabaseVersion::KDB3(1));
@@ -511,12 +539,12 @@ mod tests {
     }
 
     #[test]
-    fn test_written_file_is_named_passbolt_export_with_a_root_group() {
+    fn test_written_file_is_named_passbolt_export() {
         let database = opened(&KeePassGroup::named("root"));
 
         assert_eq!(
             database.meta.database_name.as_deref(),
-            Some("Passbolt Export")
+            Some("passbolt export")
         );
         assert_eq!(database.root.name, "root");
     }
@@ -548,17 +576,11 @@ mod tests {
     fn test_written_file_protects_the_otp_and_the_custom_fields() {
         let mut root = KeePassGroup::named("root");
         let mut bank = entry("bank");
-        bank.otp = Some("otpauth://totp/a:b?secret=JBSWY3DP".into());
-        bank.custom_fields = vec![
-            CustomField {
-                name: "Account".into(),
-                value: "42".into(),
-            },
-            CustomField {
-                name: "PIN".into(),
-                value: "1234".into(),
-            },
-        ];
+        bank.fields.extend([
+            field("otp", "otpauth://totp/a:b?secret=JBSWY3DP", true),
+            field("Account", "42", true),
+            field("PIN", "1234", true),
+        ]);
         root.entries.push(bank);
 
         let database = opened(&root);
@@ -628,7 +650,7 @@ mod tests {
     fn test_written_file_escapes_the_markup_characters() {
         let mut root = KeePassGroup::named("<root & 'co'>");
         let mut marked = entry("x");
-        marked.notes = "a < b && \"c\" > d\r\nline".into();
+        marked.fields[4].value = "a < b && \"c\" > d\r\nline".into();
         root.entries.push(marked);
 
         let database = opened(&root);
@@ -647,7 +669,7 @@ mod tests {
         OsRng.fill_bytes(&mut noise);
         let notes = BASE64.encode(noise);
         let mut large = entry("large");
-        large.notes = notes.clone();
+        large.fields[4].value.clone_from(&notes);
         root.entries.push(large);
 
         let database = opened(&root);
@@ -686,6 +708,61 @@ mod tests {
             xml.contains(&format!("<HeaderHash>{expected}</HeaderHash>")),
             "{xml}"
         );
+    }
+
+    #[test]
+    fn test_written_file_without_credentials_reads_back() {
+        let mut root = KeePassGroup::named("root");
+        root.entries.push(entry("open"));
+
+        let read = kdbx::read(&written_with(&root, None, None), None, None).unwrap();
+
+        assert_eq!(
+            read.entries[0].field("Password").unwrap().value.as_str(),
+            "open-password"
+        );
+    }
+
+    #[test]
+    fn test_written_file_with_a_key_file_reads_back() {
+        let keyfile = b"any key file content";
+        let root = KeePassGroup::named("locked");
+
+        let file = written_with(&root, Some("master"), Some(keyfile));
+
+        assert_eq!(
+            kdbx::read(&file, Some("master"), Some(keyfile))
+                .unwrap()
+                .name,
+            "locked"
+        );
+        assert!(kdbx::read(&file, Some("master"), None).is_err());
+    }
+
+    #[test]
+    fn test_written_file_keeps_the_expiry_and_the_icon() {
+        let mut root = KeePassGroup::named("root");
+        let mut expiring = entry("expiring");
+        expiring.expiry = chrono::DateTime::parse_from_rfc3339("2030-01-31T12:00:00Z")
+            .ok()
+            .map(|expiry| expiry.with_timezone(&chrono::Utc));
+        expiring.icon_id = Some(4);
+        expiring.background_color = Some("#FF0000".into());
+        root.entries.push(expiring);
+        root.entries.push(entry("plain"));
+
+        let read = kdbx::read(&written(&root, "master"), Some("master"), None).unwrap();
+
+        let (expiring, plain) = (&read.entries[0], &read.entries[1]);
+        assert!(expiring.expires);
+        assert_eq!(
+            expiring.expiry_time.map(|time| time.to_string()),
+            Some("2030-01-31 12:00:00".into())
+        );
+        assert_eq!(expiring.icon_id, Some(4));
+        assert_eq!(expiring.background_color.as_deref(), Some("#FF0000"));
+        assert!(!plain.expires);
+        assert_eq!(plain.background_color, None);
     }
 
     #[rstest::rstest]

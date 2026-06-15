@@ -10,21 +10,38 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
+//! Exporting a KDBX file as the browser extension writes it: one group per folder below a
+//! `passbolt export` group, one entry per resource.
+
 use anyhow::{Context, Result};
 use secstr::SecStr;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::util::resources::custom_fields;
 use crate::Client;
+use passbolt_sdk::exchange::export::external_resources;
+use passbolt_sdk::exchange::external::ExternalResource;
 use passbolt_sdk::resource::view::ResourceView;
-use passbolt_sdk::types::{Folder, TotpData};
+use passbolt_sdk::types::Folder;
 
-pub const DATABASE_NAME: &str = "Passbolt Export";
-pub const ROOT_GROUP_NAME: &str = "root";
+pub const DATABASE_NAME: &str = "passbolt export";
+pub const ROOT_GROUP_NAME: &str = DATABASE_NAME;
 
-const STANDARD_FIELDS: [&str; 6] = ["Title", "UserName", "URL", "Password", "Notes", "otp"];
+/// The fields an entry has whatever the resource; a custom field takes another name.
+const ENTRY_FIELDS: [&str; 10] = [
+    "Title",
+    "URL",
+    "UserName",
+    "Notes",
+    "otp",
+    "TimeOtp-Secret-Base32",
+    "TimeOtp-Algorithm",
+    "TimeOtp-Length",
+    "TimeOtp-Period",
+    "Password",
+];
+const ICON_TYPE_KEEPASS_ICON_SET: &str = "keepass-icon-set";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KdbxVersion {
@@ -44,17 +61,45 @@ impl KdbxVersion {
     }
 }
 
+/// Where an entry keeps its TOTP.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TotpFormat {
+    /// `kdbx`: the `TimeOtp-*` fields of `KeePass`.
+    KeePass,
+    /// `kdbx-others`: an `otpauth://` URI in an `otp` field, as `KeePassXC` keeps it.
+    Others,
+}
+
+impl TotpFormat {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "kdbx" => Ok(Self::KeePass),
+            "kdbx-others" => Ok(Self::Others),
+            _ => Err(format!(
+                "invalid format {value:?}: must be kdbx or kdbx-others"
+            )),
+        }
+    }
+}
+
+/// How the export file is locked: a password, a key file, both or neither.
+pub struct Credentials<'a> {
+    pub password: Option<&'a str>,
+    pub keyfile: Option<&'a [u8]>,
+}
+
 /// Export Passbolt resources to a `KeePass` KDBX file, preserving folder hierarchy.
 ///
 /// If `folder_id` is provided, only resources inside that folder subtree are exported.
 /// The resources are listed as `list resource` lists them, their secrets decrypted by
 /// `workers` threads (0 = one per CPU). A resource that cannot be decrypted is reported
-/// and skipped, as go-passbolt-cli does.
+/// and skipped.
 pub async fn export_keepass(
     client: &Client,
     output_path: &Path,
-    password: &str,
+    credentials: &Credentials<'_>,
     version: KdbxVersion,
+    totp_format: TotpFormat,
     folder_id: Option<&str>,
     workers: usize,
 ) -> Result<()> {
@@ -64,92 +109,112 @@ pub async fn export_keepass(
     println!("Getting Resources...");
     let (views, folders) = crate::cli::export::exported(client, folder_id, workers).await?;
 
-    let (entries, skipped) = collect_entries(&views);
+    let (entries, skipped, renamed) = collect_entries(&views, &folders, totp_format);
     for reason in &skipped {
         println!("\n{reason}");
+    }
+    for field in &renamed {
+        eprintln!(
+            "Warning: the custom field {:?} of {} is exported as {:?}",
+            field.original_key, field.resource_name, field.new_key
+        );
     }
     let root = build_tree(entries, &folders);
 
     match version {
-        KdbxVersion::V3 => save_replacing(output_path, |file| {
-            super::kdbx3::write_kdbx3(file, password, &root)
-                .with_context(|| format!("Cannot write KDBX to {}", output_path.display()))
-        }),
-        KdbxVersion::V4 => write_kdbx4(output_path, password, &root),
+        KdbxVersion::V3 => {
+            let composite_key =
+                super::kdbx::composite_key(credentials.password, credentials.keyfile)?;
+            save_replacing(output_path, |file| {
+                super::kdbx3::write_kdbx3(file, &composite_key, &root)
+                    .with_context(|| format!("Cannot write KDBX to {}", output_path.display()))
+            })
+        }
+        KdbxVersion::V4 => write_kdbx4(output_path, credentials, &root),
     }?;
 
     println!("Done");
     Ok(())
 }
 
+/// A custom field exported under another name, its own being taken.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RenamedField {
+    pub resource_name: String,
+    pub original_key: String,
+    pub new_key: String,
+}
+
+type FolderEntries = Vec<(Option<String>, KeePassEntry)>;
+
 /// The entries of the decrypted views, with their folder; the views that could not be
-/// decrypted are skipped, the reasons returned instead.
-fn collect_entries(views: &[ResourceView]) -> (Vec<(Option<String>, KeePassEntry)>, Vec<String>) {
-    let mut entries = Vec::with_capacity(views.len());
-    let mut skipped = Vec::new();
-    for view in views {
-        match &view.error {
-            None => entries.push((view.folder_parent_id.clone(), build_entry(view))),
-            Some(error) => skipped.push(format!(
-                "Skipping Export of Resource {} {} Because of: {error}",
-                view.id, view.name
-            )),
-        }
-    }
-    (entries, skipped)
+/// decrypted are skipped, the reasons returned instead, with the renamed custom fields.
+fn collect_entries(
+    views: &[ResourceView],
+    folders: &[Folder],
+    totp_format: TotpFormat,
+) -> (FolderEntries, Vec<String>, Vec<RenamedField>) {
+    let (readable, unreadable): (Vec<&ResourceView>, Vec<&ResourceView>) =
+        views.iter().partition(|view| view.error.is_none());
+    let skipped = unreadable
+        .iter()
+        .map(|view| {
+            format!(
+                "Skipping Export of Resource {} {} Because of: {}",
+                view.id,
+                view.name,
+                view.error.as_deref().unwrap_or_default()
+            )
+        })
+        .collect();
+    let readable: Vec<ResourceView> = readable.into_iter().cloned().collect();
+    let mut renamed = Vec::new();
+    let entries = readable
+        .iter()
+        .zip(external_resources(&readable, folders))
+        .map(|(view, resource)| {
+            let entry = build_entry(&resource, totp_format, &mut renamed);
+            (view.folder_parent_id.clone(), entry)
+        })
+        .collect();
+    (entries, skipped, renamed)
 }
 
-/// Intermediate plaintext representation; zeroized on drop so decrypted
-/// passwords do not linger in the heap after the KDBX file is written.
-#[derive(ZeroizeOnDrop)]
-pub struct KeePassEntry {
-    pub title: String,
-    pub username: String,
-    pub url: String,
-    pub password: String,
-    pub notes: String,
-    pub otp: Option<String>,
-    pub custom_fields: Vec<CustomField>,
-}
-
-#[derive(Zeroize)]
-pub struct CustomField {
-    pub name: String,
+/// A string field of an entry; zeroized on drop so decrypted secrets do not linger in the
+/// heap after the KDBX file is written.
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct EntryField {
+    pub key: String,
     pub value: String,
-}
-
-/// A string field of an entry, in the order `KeePass` lists them.
-pub struct EntryField<'a> {
-    pub key: &'a str,
-    pub value: &'a str,
+    #[zeroize(skip)]
     pub protected: bool,
 }
 
+/// An entry: its string fields in the order `KeePass` lists them, its expiry and its icon.
+#[derive(Default)]
+pub struct KeePassEntry {
+    pub fields: Vec<EntryField>,
+    pub expiry: Option<chrono::DateTime<chrono::Utc>>,
+    pub icon_id: Option<u32>,
+    /// `#RRGGBB`.
+    pub background_color: Option<String>,
+}
+
 impl KeePassEntry {
-    pub fn fields(&self) -> Vec<EntryField<'_>> {
-        let field = |key, value, protected| EntryField {
-            key,
-            value,
+    #[must_use]
+    pub fn field(&self, key: &str) -> Option<&str> {
+        self.fields
+            .iter()
+            .find(|field| field.key == key)
+            .map(|field| field.value.as_str())
+    }
+
+    fn set(&mut self, key: &str, value: &str, protected: bool) {
+        self.fields.push(EntryField {
+            key: key.to_owned(),
+            value: value.to_owned(),
             protected,
-        };
-        let mut fields = vec![
-            field("Title", self.title.as_str(), false),
-            field("UserName", self.username.as_str(), false),
-            field("URL", self.url.as_str(), false),
-            field("Password", self.password.as_str(), true),
-            field("Notes", self.notes.as_str(), false),
-        ];
-        if let Some(otp) = &self.otp {
-            fields.push(field("otp", otp.as_str(), true));
-        }
-        for custom_field in &self.custom_fields {
-            fields.push(field(
-                custom_field.name.as_str(),
-                custom_field.value.as_str(),
-                true,
-            ));
-        }
-        fields
+        });
     }
 }
 
@@ -170,106 +235,132 @@ impl KeePassGroup {
     }
 }
 
-fn build_entry(view: &ResourceView) -> KeePassEntry {
-    // The v5 note is the secret description, after the public one.
-    let notes = [view.description.as_str(), view.note().unwrap_or_default()]
-        .into_iter()
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let otp = view
-        .secret
-        .as_ref()
-        .and_then(|secret| secret.get("totp"))
-        .and_then(|totp| serde_json::from_value::<TotpData>(totp.clone()).ok())
-        .and_then(|totp| build_otpauth(&view.name, &view.username, &view.uri, &totp));
-
-    KeePassEntry {
-        title: view.name.clone(),
-        username: view.username.clone(),
-        url: view.uri.clone(),
-        password: view.password.clone().unwrap_or_default(),
-        notes,
-        otp,
-        custom_fields: entry_custom_fields(view),
-    }
-}
-
-/// The custom fields, each named after its key. A name taken by a standard field or an
-/// earlier custom field gets a ` (2)`, ` (3)`… suffix: a `KeePass` entry has unique keys.
-fn entry_custom_fields(view: &ResourceView) -> Vec<CustomField> {
-    let secret_side = view
-        .secret
-        .as_ref()
-        .and_then(|secret| secret.get("custom_fields"));
-    let mut taken: HashSet<String> = STANDARD_FIELDS.iter().map(|&name| name.into()).collect();
-    custom_fields(view.metadata.get("custom_fields"), secret_side)
-        .into_iter()
-        .filter(|(name, _)| !name.is_empty())
-        .map(|(name, value)| CustomField {
-            name: unique_field_name(&name, &mut taken),
-            value,
-        })
-        .collect()
-}
-
-fn unique_field_name(name: &str, taken: &mut HashSet<String>) -> String {
-    let mut candidate = name.to_owned();
-    let mut index = 2;
-    while !taken.insert(candidate.clone()) {
-        candidate = format!("{name} ({index})");
-        index += 1;
-    }
-    candidate
-}
-
-/// Normalise a base32 secret: uppercase, strip spaces and `=` padding,
-/// which the Key URI format omits.
-fn normalize_base32(secret: &str) -> String {
-    secret
-        .trim()
-        .to_uppercase()
-        .replace(' ', "")
-        .trim_end_matches('=')
-        .to_owned()
-}
-
-/// Percent-encode everything but the RFC 3986 unreserved characters.
-fn percent_encode(value: &str) -> String {
-    const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(char::from(byte));
+/// The entry of `resource`: the title, user name, password, URL and notes, its TOTP, its
+/// other URLs as `KP2A_URL` fields, then its custom fields, protected.
+fn build_entry(
+    resource: &ExternalResource,
+    totp_format: TotpFormat,
+    renamed: &mut Vec<RenamedField>,
+) -> KeePassEntry {
+    let mut entry = KeePassEntry::default();
+    entry.set("Title", &resource.name, false);
+    entry.set(
+        "UserName",
+        resource.username.as_deref().unwrap_or_default(),
+        false,
+    );
+    entry.set("Password", &resource.secret_clear, true);
+    entry.set(
+        "URL",
+        resource
+            .uris
+            .first()
+            .map(String::as_str)
+            .unwrap_or_default(),
+        false,
+    );
+    entry.set(
+        "Notes",
+        resource.description.as_deref().unwrap_or_default(),
+        false,
+    );
+    set_totp(&mut entry, resource, totp_format);
+    for (index, uri) in resource.uris.iter().enumerate().skip(1) {
+        let key = if index == 1 {
+            "KP2A_URL".to_owned()
         } else {
-            encoded.push('%');
-            encoded.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
-            encoded.push(char::from(HEX_DIGITS[usize::from(byte & 0x0F)]));
+            format!("KP2A_URL_{index}")
+        };
+        entry.set(&key, uri, false);
+    }
+    for field in &resource.custom_fields {
+        let original_key = field.metadata_key.clone().unwrap_or_default();
+        let key = free_field_name(&entry, &original_key);
+        if key != original_key {
+            renamed.push(RenamedField {
+                resource_name: resource.name.clone(),
+                original_key,
+                new_key: key.clone(),
+            });
+        }
+        let value = field
+            .secret_value
+            .as_ref()
+            .or(field.metadata_value.as_ref())
+            .map(|value| {
+                value
+                    .as_str()
+                    .map_or_else(|| value.to_string(), String::from)
+            })
+            .unwrap_or_default();
+        entry.set(&key, &value, true);
+    }
+    entry.expiry = resource
+        .expired
+        .as_deref()
+        .and_then(|expired| chrono::DateTime::parse_from_rfc3339(expired).ok())
+        .map(|expired| expired.with_timezone(&chrono::Utc));
+    if let Some(icon) = &resource.icon {
+        if icon.get("type").and_then(serde_json::Value::as_str) == Some(ICON_TYPE_KEEPASS_ICON_SET)
+        {
+            entry.icon_id = icon
+                .get("value")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok());
+        }
+        entry.background_color = icon
+            .get("background_color")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from);
+    }
+    entry
+}
+
+fn set_totp(entry: &mut KeePassEntry, resource: &ExternalResource, totp_format: TotpFormat) {
+    let Some(totp) = &resource.totp else {
+        return;
+    };
+    match totp_format {
+        TotpFormat::KeePass => {
+            // SHA256 → HMAC-SHA-256
+            let algorithm = totp.algorithm.as_deref().unwrap_or("SHA1");
+            let (family, size) = algorithm.split_at(algorithm.len().min(3));
+            entry.set(
+                "TimeOtp-Secret-Base32",
+                totp.secret_key.as_deref().unwrap_or_default(),
+                true,
+            );
+            entry.set("TimeOtp-Algorithm", &format!("HMAC-{family}-{size}"), false);
+            entry.set(
+                "TimeOtp-Length",
+                &totp.digits.unwrap_or(6).to_string(),
+                false,
+            );
+            entry.set(
+                "TimeOtp-Period",
+                &totp.period.unwrap_or(30).to_string(),
+                false,
+            );
+        }
+        TotpFormat::Others => {
+            if let Some(uri) = resource.totp_uri() {
+                entry.set("otp", &uri, true);
+            }
         }
     }
-    encoded
 }
 
-/// Build an `otpauth://totp/issuer:account` URI (Google Key URI format) for the
-/// `KeePass` OTP plugin, or `None` without a secret key. As go-passbolt-cli, the issuer is
-/// the URI, else the title; the account is the username, else the title.
-fn build_otpauth(title: &str, username: &str, url: &str, totp: &TotpData) -> Option<String> {
-    let secret = normalize_base32(totp.secret_key.as_deref().unwrap_or(""));
-    if secret.is_empty() {
-        return None;
+/// `key`, else `key (1)`, `key (2)`… when an entry field or a field of `entry` has it.
+fn free_field_name(entry: &KeePassEntry, key: &str) -> String {
+    let taken = |name: &str| ENTRY_FIELDS.contains(&name) || entry.field(name).is_some();
+    if !taken(key) {
+        return key.to_owned();
     }
-    let issuer = if url.is_empty() { title } else { url };
-    let account = if username.is_empty() { title } else { username };
-    let label = format!("{}:{}", percent_encode(issuer), percent_encode(account));
-    let algorithm = percent_encode(&totp.algorithm.as_deref().unwrap_or("SHA1").to_uppercase());
-    let digits = totp.digits.unwrap_or(6);
-    let period = totp.period.unwrap_or(30);
-
-    Some(format!(
-        "otpauth://totp/{label}?secret={}&issuer={}&algorithm={algorithm}&digits={digits}&period={period}",
-        percent_encode(&secret),
-        percent_encode(issuer)
-    ))
+    let mut index = 1;
+    while taken(&format!("{key} ({index})")) {
+        index += 1;
+    }
+    format!("{key} ({index})")
 }
 
 /// The `root` group: the entries without folder and one sub-group per folder, nested as
@@ -303,14 +394,23 @@ fn build_tree(entries: Vec<(Option<String>, KeePassEntry)>, folders: &[Folder]) 
     root
 }
 
-fn write_kdbx4(path: &Path, password: &str, root: &KeePassGroup) -> Result<()> {
+fn write_kdbx4(path: &Path, credentials: &Credentials<'_>, root: &KeePassGroup) -> Result<()> {
     use keepass::{config::DatabaseConfig, db::Database, DatabaseKey};
 
+    let mut key = DatabaseKey::new();
+    if let Some(password) = credentials.password {
+        key = key.with_password(password);
+    }
+    if let Some(mut keyfile) = credentials.keyfile {
+        key = key.with_keyfile(&mut keyfile)?;
+    }
+    if credentials.password.is_none() && credentials.keyfile.is_none() {
+        anyhow::bail!("A KDBX 4 file needs a password or a key file");
+    }
     let mut database = Database::new(DatabaseConfig::default());
     database.meta.database_name = Some(DATABASE_NAME.into());
     database.root = keepass_group(root);
 
-    let key = DatabaseKey::new().with_password(password);
     save_replacing(path, |file| {
         database
             .save(file, key)
@@ -324,14 +424,23 @@ fn keepass_group(group: &KeePassGroup) -> keepass::db::Group {
     let mut converted = Group::new(&group.name);
     for entry in &group.entries {
         let mut converted_entry = Entry::new();
-        for field in entry.fields() {
+        for field in &entry.fields {
             let value = if field.protected {
-                Value::Protected(SecStr::from(field.value))
+                Value::Protected(SecStr::from(field.value.as_str()))
             } else {
-                Value::Unprotected(field.value.to_owned())
+                Value::Unprotected(field.value.clone())
             };
-            converted_entry.fields.insert(field.key.to_owned(), value);
+            converted_entry.fields.insert(field.key.clone(), value);
         }
+        if let Some(expiry) = entry.expiry {
+            converted_entry.times.expires = true;
+            converted_entry.times.set_expiry(expiry.naive_utc());
+        }
+        converted_entry.icon_id = entry.icon_id.map(|icon_id| icon_id as usize);
+        converted_entry.background_color = entry
+            .background_color
+            .as_deref()
+            .and_then(|color| color.parse().ok());
         converted.children.push(Node::Entry(converted_entry));
     }
     for child in &group.groups {
@@ -417,7 +526,8 @@ mod tests {
     use super::*;
     use keepass::db::{Database, Node, Value};
     use keepass::DatabaseKey;
-    use passbolt_sdk::types::{Resource, ResourceMetadata, ResourceType};
+    use passbolt_sdk::exchange::external::totp_with_defaults;
+    use passbolt_sdk::types::{CustomField, Resource, ResourceType};
     use rstest::rstest;
     use serde_json::json;
 
@@ -429,7 +539,7 @@ mod tests {
             uri: None,
             description: None,
             folder_parent_id: None,
-            resource_type_id: None,
+            resource_type_id: Some("password-and-description-id".into()),
             created: None,
             modified: None,
             created_by: None,
@@ -463,23 +573,45 @@ mod tests {
         }
     }
 
-    fn make_totp(secret: &str) -> TotpData {
-        serde_json::from_value(json!({
-            "secret_key": secret, "algorithm": "SHA1", "digits": 6, "period": 30
-        }))
-        .unwrap()
+    fn make_entry(title: &str) -> KeePassEntry {
+        let mut entry = KeePassEntry::default();
+        entry.set("Title", title, false);
+        entry.set("Password", &format!("{title}-password"), true);
+        entry
     }
 
-    fn make_entry(title: &str) -> KeePassEntry {
-        KeePassEntry {
-            title: title.into(),
-            username: String::new(),
-            url: String::new(),
-            password: format!("{title}-password"),
-            notes: String::new(),
-            otp: None,
-            custom_fields: Vec::new(),
+    fn external(name: &str) -> ExternalResource {
+        ExternalResource {
+            name: name.into(),
+            username: Some("ada".into()),
+            uris: vec!["https://a.test".into()],
+            description: Some("notes".into()),
+            secret_clear: "secret".into(),
+            ..ExternalResource::default()
         }
+    }
+
+    fn text_field(key: &str, value: &str) -> CustomField {
+        CustomField {
+            id: key.into(),
+            field_type: "text".into(),
+            metadata_key: Some(key.into()),
+            metadata_value: None,
+            secret_key: None,
+            secret_value: Some(json!(value)),
+        }
+    }
+
+    fn entry_of(resource: &ExternalResource, totp_format: TotpFormat) -> KeePassEntry {
+        build_entry(resource, totp_format, &mut Vec::new())
+    }
+
+    fn field_triples(entry: &KeePassEntry) -> Vec<(&str, &str, bool)> {
+        entry
+            .fields
+            .iter()
+            .map(|field| (field.key.as_str(), field.value.as_str(), field.protected))
+            .collect()
     }
 
     fn folder_ids<'a>(folders: &[&'a Folder]) -> Vec<&'a str> {
@@ -498,59 +630,17 @@ mod tests {
         group
             .entries
             .iter()
-            .map(|entry| entry.title.as_str())
+            .map(|entry| entry.field("Title").unwrap())
             .collect()
     }
 
     fn types() -> Vec<ResourceType> {
-        [
-            "password-string",
-            "password-and-description",
-            "v5-default",
-            "v5-default-with-totp",
-        ]
-        .into_iter()
-        .map(|slug| ResourceType {
-            id: format!("{slug}-id"),
-            slug: slug.into(),
+        vec![ResourceType {
+            id: "password-and-description-id".into(),
+            slug: "password-and-description".into(),
             name: None,
             definition: None,
-        })
-        .collect()
-    }
-
-    fn typed_resource(name: &str, slug: &str) -> Resource {
-        Resource {
-            resource_type_id: Some(format!("{slug}-id")),
-            ..make_resource(name)
-        }
-    }
-
-    fn view_of(resource: Resource, secret: &str) -> ResourceView {
-        ResourceView::new(resource, None, &types())
-            .unwrap()
-            .with_secret(secret)
-            .unwrap()
-    }
-
-    fn v5_view_of(metadata: serde_json::Value, secret: &serde_json::Value) -> ResourceView {
-        let metadata: ResourceMetadata = serde_json::from_value(metadata).unwrap();
-        ResourceView::new(
-            typed_resource("ignored", "v5-default-with-totp"),
-            Some(metadata),
-            &types(),
-        )
-        .unwrap()
-        .with_secret(&secret.to_string())
-        .unwrap()
-    }
-
-    fn field_pairs(entry: &KeePassEntry) -> Vec<(&str, &str, bool)> {
-        entry
-            .fields()
-            .into_iter()
-            .map(|field| (field.key, field.value, field.protected))
-            .collect()
+        }]
     }
 
     #[test]
@@ -560,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn test_kdbx_version_parse_rejects_others_as_go_passbolt_cli() {
+    fn test_kdbx_version_parse_rejects_others() {
         assert_eq!(
             KdbxVersion::parse("4"),
             Err(r#"invalid kdbx-version "4": must be v3 or v4"#.to_string())
@@ -568,62 +658,129 @@ mod tests {
     }
 
     #[rstest]
-    #[case::already_aligned("JBSWY3DPEHPK3PXP", "JBSWY3DPEHPK3PXP")]
-    #[case::padding_removed("JBSWY3D=", "JBSWY3D")]
-    #[case::lowercase("jbswy3dp", "JBSWY3DP")]
-    #[case::spaces("JBSWY 3DP", "JBSWY3DP")]
-    #[case::empty("", "")]
-    fn test_normalize_base32(#[case] secret: &str, #[case] expected: &str) {
-        assert_eq!(normalize_base32(secret), expected);
+    #[case::keepass("kdbx", Ok(TotpFormat::KeePass))]
+    #[case::others("kdbx-others", Ok(TotpFormat::Others))]
+    #[case::unknown("csv", Err(r#"invalid format "csv": must be kdbx or kdbx-others"#.to_string()))]
+    fn test_totp_format_parse(#[case] value: &str, #[case] expected: Result<TotpFormat, String>) {
+        assert_eq!(TotpFormat::parse(value), expected);
     }
 
-    #[rstest]
-    #[case::issuer_is_the_uri(
-        "MyService",
-        "alice",
-        "https://my.test",
-        make_totp("JBSWY3DPEHPK3PXP"),
-        "otpauth://totp/https%3A%2F%2Fmy.test:alice?secret=JBSWY3DPEHPK3PXP&issuer=https%3A%2F%2Fmy.test&algorithm=SHA1&digits=6&period=30"
-    )]
-    #[case::issuer_falls_back_to_the_title(
-        "Fallback",
-        "bob",
-        "",
-        make_totp("JBSWY3DP"),
-        "otpauth://totp/Fallback:bob?secret=JBSWY3DP&issuer=Fallback&algorithm=SHA1&digits=6&period=30"
-    )]
-    #[case::special_characters(
-        "A&B?C#D:E/F G",
-        "me&you?#a:b/c",
-        "",
-        make_totp("jbswy3d="),
-        "otpauth://totp/A%26B%3FC%23D%3AE%2FF%20G:me%26you%3F%23a%3Ab%2Fc?secret=JBSWY3D&issuer=A%26B%3FC%23D%3AE%2FF%20G&algorithm=SHA1&digits=6&period=30"
-    )]
-    #[case::defaults(
-        "My Service",
-        "",
-        "",
-        TotpData { secret_key: Some("JBSWY3DP".into()), ..make_totp("") },
-        "otpauth://totp/My%20Service:My%20Service?secret=JBSWY3DP&issuer=My%20Service&algorithm=SHA1&digits=6&period=30"
-    )]
-    fn test_build_otpauth(
-        #[case] title: &str,
-        #[case] username: &str,
-        #[case] url: &str,
-        #[case] totp: TotpData,
-        #[case] expected: &str,
-    ) {
+    #[test]
+    fn test_an_entry_lists_the_fields_of_the_resource_in_order() {
+        let entry = entry_of(&external("site"), TotpFormat::Others);
+
         assert_eq!(
-            build_otpauth(title, username, url, &totp).as_deref(),
-            Some(expected)
+            field_triples(&entry),
+            [
+                ("Title", "site", false),
+                ("UserName", "ada", false),
+                ("Password", "secret", true),
+                ("URL", "https://a.test", false),
+                ("Notes", "notes", false),
+            ]
         );
     }
 
+    #[test]
+    fn test_the_other_uris_become_kp2a_url_fields() {
+        let resource = ExternalResource {
+            uris: vec![
+                "https://1.test".into(),
+                "https://2.test".into(),
+                "https://3.test".into(),
+            ],
+            ..external("site")
+        };
+
+        let entry = entry_of(&resource, TotpFormat::Others);
+
+        assert_eq!(entry.field("URL"), Some("https://1.test"));
+        assert_eq!(entry.field("KP2A_URL"), Some("https://2.test"));
+        assert_eq!(entry.field("KP2A_URL_2"), Some("https://3.test"));
+    }
+
     #[rstest]
-    #[case::empty("")]
-    #[case::only_padding(" = ")]
-    fn test_build_otpauth_skips_a_totp_without_secret_key(#[case] secret: &str) {
-        assert_eq!(build_otpauth("name", "", "", &make_totp(secret)), None);
+    #[case::keepass(TotpFormat::KeePass, &[
+        ("TimeOtp-Secret-Base32", "JBSWY3DP", true),
+        ("TimeOtp-Algorithm", "HMAC-SHA-256", false),
+        ("TimeOtp-Length", "8", false),
+        ("TimeOtp-Period", "60", false),
+    ])]
+    #[case::others(TotpFormat::Others, &[(
+        "otp",
+        "otpauth://totp/site%3Aada?secret=JBSWY3DP&issuer=https%253A%252F%252Fa.test&algorithm=SHA256&digits=8&period=60",
+        true,
+    )])]
+    fn test_the_totp_is_written_in_the_fields_of_the_format(
+        #[case] totp_format: TotpFormat,
+        #[case] expected: &[(&str, &str, bool)],
+    ) {
+        let resource = ExternalResource {
+            totp: Some(totp_with_defaults(
+                "JBSWY3DP",
+                Some("SHA256".into()),
+                Some(8),
+                Some(60),
+            )),
+            ..external("site")
+        };
+
+        let entry = entry_of(&resource, totp_format);
+
+        assert_eq!(field_triples(&entry)[5..], *expected);
+    }
+
+    #[test]
+    fn test_custom_fields_are_protected_and_renamed_when_their_name_is_taken() {
+        let resource = ExternalResource {
+            custom_fields: vec![
+                text_field("Account", "42"),
+                text_field("Password", "custom"),
+                text_field("Account", "43"),
+            ],
+            ..external("bank")
+        };
+        let mut renamed = Vec::new();
+
+        let entry = build_entry(&resource, TotpFormat::Others, &mut renamed);
+
+        assert_eq!(
+            field_triples(&entry)[5..],
+            [
+                ("Account", "42", true),
+                ("Password (1)", "custom", true),
+                ("Account (1)", "43", true),
+            ]
+        );
+        assert_eq!(
+            renamed[0],
+            RenamedField {
+                resource_name: "bank".into(),
+                original_key: "Password".into(),
+                new_key: "Password (1)".into(),
+            }
+        );
+        assert_eq!(renamed.len(), 2);
+    }
+
+    #[test]
+    fn test_the_expiry_and_the_icon_are_kept() {
+        let resource = ExternalResource {
+            expired: Some("2030-01-31T12:00:00+00:00".into()),
+            icon: Some(
+                json!({"type": "keepass-icon-set", "value": 4, "background_color": "#FF0000"}),
+            ),
+            ..external("site")
+        };
+
+        let entry = entry_of(&resource, TotpFormat::Others);
+
+        assert_eq!(
+            entry.expiry.map(|expiry| expiry.to_rfc3339()),
+            Some("2030-01-31T12:00:00+00:00".into())
+        );
+        assert_eq!(entry.icon_id, Some(4));
+        assert_eq!(entry.background_color.as_deref(), Some("#FF0000"));
     }
 
     #[rstest]
@@ -647,10 +804,10 @@ mod tests {
     }
 
     #[test]
-    fn test_build_tree_puts_everything_in_a_root_group() {
+    fn test_build_tree_puts_everything_in_the_passbolt_export_group() {
         let root = build_tree(vec![(None, make_entry("loose"))], &[]);
 
-        assert_eq!(root.name, "root");
+        assert_eq!(root.name, "passbolt export");
         assert_eq!(entry_titles(&root), ["loose"]);
     }
 
@@ -697,150 +854,20 @@ mod tests {
     }
 
     #[test]
-    fn test_build_entry_takes_the_password_and_the_description() {
-        let view = view_of(
-            typed_resource("name", "password-and-description"),
-            r#"{"password":"p4ss","description":"notes"}"#,
-        );
-
-        let entry = build_entry(&view);
-
-        assert_eq!(
-            (entry.password.as_str(), entry.notes.as_str()),
-            ("p4ss", "notes")
-        );
-    }
-
-    #[test]
-    fn test_build_entry_keeps_a_password_string_that_looks_like_json() {
-        let view = view_of(typed_resource("name", "password-string"), "{}");
-
-        assert_eq!(build_entry(&view).password, "{}");
-    }
-
-    #[test]
-    fn test_build_entry_never_uses_a_secret_without_password_as_password() {
-        let view = view_of(
-            typed_resource("name", "v5-default"),
-            r#"{"object_type":"PASSBOLT_SECRET_DATA","description":"a note"}"#,
-        );
-
-        let entry = build_entry(&view);
-
-        assert_eq!(entry.password, "");
-        assert_eq!(entry.notes, "a note");
-    }
-
-    #[test]
-    fn test_build_entry_exports_custom_fields_as_protected_fields() {
-        let view = v5_view_of(
-            json!({
-                "name": "bank",
-                "custom_fields": [
-                    {"id": "c1", "type": "text", "metadata_key": "Account"},
-                    {"id": "c2", "type": "text", "metadata_key": "Branch", "metadata_value": "Main"},
-                ],
-            }),
-            &json!({
-                "object_type": "PASSBOLT_SECRET_DATA",
-                "password": "p",
-                "custom_fields": [{"id": "c1", "type": "text", "secret_value": "42"}],
-            }),
-        );
-
-        let entry = build_entry(&view);
-
-        assert_eq!(
-            field_pairs(&entry)[5..],
-            [("Account", "42", true), ("Branch", "Main", true)]
-        );
-    }
-
-    #[test]
-    fn test_build_entry_renames_custom_fields_with_a_taken_name() {
-        let view = v5_view_of(
-            json!({
-                "name": "bank",
-                "custom_fields": [
-                    {"id": "c1", "type": "text", "metadata_key": "Password"},
-                    {"id": "c2", "type": "text", "metadata_key": "Code"},
-                    {"id": "c3", "type": "text", "metadata_key": "Code"},
-                    {"id": "c4", "type": "text", "metadata_key": ""},
-                ],
-            }),
-            &json!({
-                "object_type": "PASSBOLT_SECRET_DATA",
-                "password": "real",
-                "custom_fields": [
-                    {"id": "c1", "type": "text", "secret_value": "custom"},
-                    {"id": "c2", "type": "text", "secret_value": "one"},
-                    {"id": "c3", "type": "text", "secret_value": "two"},
-                    {"id": "c4", "type": "text", "secret_value": "nameless"},
-                ],
-            }),
-        );
-
-        let entry = build_entry(&view);
-
-        assert_eq!(entry.password, "real");
-        assert_eq!(
-            field_pairs(&entry)[5..],
-            [
-                ("Password (2)", "custom", true),
-                ("Code", "one", true),
-                ("Code (2)", "two", true)
-            ]
-        );
-    }
-
-    #[test]
-    fn test_build_entry_builds_the_otp_from_the_uri() {
-        let view = v5_view_of(
-            json!({"name": "site", "username": "me", "uris": ["https://site.test"]}),
-            &json!({
-                "object_type": "PASSBOLT_SECRET_DATA",
-                "password": "p",
-                "totp": {"secret_key": "JBSWY3DP", "algorithm": "SHA256", "digits": 8, "period": 60},
-            }),
-        );
-
-        let entry = build_entry(&view);
-
-        assert_eq!(
-            entry.otp.as_deref(),
-            Some("otpauth://totp/https%3A%2F%2Fsite.test:me?secret=JBSWY3DP&issuer=https%3A%2F%2Fsite.test&algorithm=SHA256&digits=8&period=60")
-        );
-    }
-
-    #[test]
-    fn test_entry_fields_list_the_standard_fields_first() {
-        let mut entry = make_entry("title");
-        entry.otp = Some("otpauth://x".into());
-
-        assert_eq!(
-            field_pairs(&entry),
-            [
-                ("Title", "title", false),
-                ("UserName", "", false),
-                ("URL", "", false),
-                ("Password", "title-password", true),
-                ("Notes", "", false),
-                ("otp", "otpauth://x", true),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_collect_entries_skips_failures_with_the_go_message() {
+    fn test_collect_entries_skips_failures_with_their_reason() {
+        let decrypted = ResourceView::new(make_resource("decrypted"), None, &types())
+            .unwrap()
+            .with_secret(r#"{"password":"p4ss","description":"notes"}"#)
+            .unwrap();
         let broken = ResourceView::new(make_resource("broken"), None, &types())
             .unwrap()
             .with_error(&passbolt_sdk::PassboltError::Other("no key".into()));
-        let views = vec![view_of(make_resource("decrypted"), "secret"), broken];
 
-        let (entries, skipped) = collect_entries(&views);
+        let (entries, skipped, _) = collect_entries(&[decrypted, broken], &[], TotpFormat::Others);
 
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].1.title, "decrypted");
+        assert_eq!(entries[0].1.field("Password"), Some("p4ss"));
+        assert_eq!(entries[0].1.field("Notes"), Some("notes"));
         assert_eq!(
             skipped,
             ["Skipping Export of Resource broken-id broken Because of: no key"]
@@ -851,17 +878,18 @@ mod tests {
     fn test_write_kdbx4_writes_the_tree() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("export.kdbx");
-        let mut root = KeePassGroup::named("root");
+        let mut root = KeePassGroup::named(ROOT_GROUP_NAME);
         let mut folder = KeePassGroup::named("folder");
         let mut entry = make_entry("nested");
-        entry.custom_fields.push(CustomField {
-            name: "Account".into(),
-            value: "42".into(),
-        });
+        entry.set("Account", "42", true);
         folder.entries.push(entry);
         root.groups.push(folder);
+        let credentials = Credentials {
+            password: Some("master"),
+            keyfile: None,
+        };
 
-        write_kdbx4(&path, "master", &root).unwrap();
+        write_kdbx4(&path, &credentials, &root).unwrap();
 
         let database = Database::open(
             &mut std::fs::File::open(&path).unwrap(),
@@ -874,9 +902,8 @@ mod tests {
         );
         assert_eq!(
             database.meta.database_name.as_deref(),
-            Some("Passbolt Export")
+            Some("passbolt export")
         );
-        assert_eq!(database.root.name, "root");
         let Some(Node::Group(folder)) = database.root.children.first() else {
             panic!("no folder group");
         };
@@ -884,11 +911,31 @@ mod tests {
             panic!("no entry");
         };
         assert_eq!(entry.get_password(), Some("nested-password"));
-        assert_eq!(entry.get("Account"), Some("42"));
         assert!(matches!(
             entry.fields.get("Account"),
             Some(Value::Protected(_))
         ));
+    }
+
+    #[test]
+    fn test_write_kdbx4_refuses_a_file_without_credentials() {
+        let directory = tempfile::tempdir().unwrap();
+        let credentials = Credentials {
+            password: None,
+            keyfile: None,
+        };
+
+        let error = write_kdbx4(
+            &directory.path().join("export.kdbx"),
+            &credentials,
+            &KeePassGroup::named(ROOT_GROUP_NAME),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "A KDBX 4 file needs a password or a key file"
+        );
     }
 
     #[test]
