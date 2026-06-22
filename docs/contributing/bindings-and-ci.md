@@ -54,4 +54,15 @@ The objects the JavaScript session takes and returns are declared in
 `crates/passbolt-wasm/src/types.d.ts`, from the SDK structures as serde serializes them: an
 `Option` not skipped is `T | null`, a field skipped when empty is optional, a date is an RFC 3339
 `string`. Each method names its types with `unchecked_return_type` and `unchecked_param_type`.
-A change to a serialized SDK structure needs the same change there.
+
+A change to a serialized SDK structure needs the same change there, which the CI checks: the
+`typescript_samples` example prints the SDK fixtures, serialized as the session returns them,
+typed with these declarations, and `tsc --strict` refuses a missing field, an unknown one or a
+wrong type. Locally:
+
+```bash
+mkdir -p /tmp/types
+cargo run -q -p passbolt-wasm --example typescript_samples > /tmp/types/samples.ts
+cp crates/passbolt-wasm/src/types.d.ts /tmp/types/
+npx tsc --strict --noEmit --target es2022 --module nodenext /tmp/types/samples.ts
+```

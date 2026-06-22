@@ -257,6 +257,13 @@ jobs:
           npm install --no-audit --no-fund typescript@5.8.3
           cp ../../packaging/smoke/smoke.ts .
           npx tsc --strict --noEmit --target es2022 --lib esnext --module nodenext smoke.ts
+      # The declarations against the SDK: its fixtures, serialized as the session returns them.
+      - name: TypeScript types match the SDK
+        run: |
+          mkdir -p build/types
+          cargo run -q --locked -p passbolt-wasm --example typescript_samples > build/types/samples.ts
+          cp crates/passbolt-wasm/src/types.d.ts build/types/
+          build/smoke/node_modules/.bin/tsc --strict --noEmit --target es2022 --module nodenext build/types/samples.ts
       - uses: actions/upload-artifact@v4
         with:
           name: sdk-js
