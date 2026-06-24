@@ -213,17 +213,17 @@ fn verify_pins_the_server_key_and_saves_nothing_else() {
 }
 
 #[test]
-fn keepass_export_refuses_an_empty_master_password() {
+fn keepass_export_refuses_a_closed_stdin_as_password() {
     let directory = tempfile::tempdir().unwrap();
     let file = directory.path().join("export.kdbx");
 
-    // As go-passbolt-cli, an empty --password prompts; the empty answer is refused.
+    // An empty --password prompts; an empty answer locks nothing, a closed stdin is no answer.
     passbolt()
         .args(["export", "keepass", "-f", file.to_str().unwrap(), "-p", ""])
-        .write_stdin("\n")
+        .write_stdin("")
         .assert()
         .failure()
-        .stderr(contains("Empty password"));
+        .stderr(contains("EOF"));
 
     assert!(!file.exists());
 }
