@@ -81,4 +81,4 @@ jobs:
       - name: gitleaks
         run: >
           docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.24.0
-          git /repo --config /repo/.gitleaks.toml --redact --no-banner
+          git /repo --config /repo/.gitleaks.toml --redact --no-banner --verbose

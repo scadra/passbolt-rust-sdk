@@ -61,8 +61,8 @@ type follows the fields and the server's default version when not given. `update
 
 **Errors.** Rust returns `PassboltError`; JavaScript throws an `Error` with the message; the FFI
 bindings raise the `PassboltFfiError` of the language (`PassboltFfiException` in Kotlin), whose
-variants say what failed: `Auth`, `Crypto`, `Api` (with the HTTP status), `NotFound`,
-`Transport`, `Config`, `InvalidArgument`, `Other`.
+variants say what failed: `Auth`, `Crypto`, `Api` (with the HTTP `status`), `NotFound`,
+`Transport`, `Config`, `InvalidArgument`, `Other`. Each carries the `reason` of the failure.
 
 ## What the API covers
 

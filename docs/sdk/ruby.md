@@ -36,7 +36,7 @@ end
 begin
   PassboltFfi.get_key_fingerprint("not a key")
 rescue PassboltFfi::PassboltFfiError::Crypto => error
-  puts "not a key: #{error.message}"
+  puts "not a key: #{error.reason}"
 end
 ```
 
