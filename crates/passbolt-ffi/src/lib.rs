@@ -222,12 +222,12 @@ impl PassboltClient {
         let http_config = build_http_config(&options);
         let config = build_sdk_config(server_url, private_key_armored, passphrase, options);
         let mfa_provider = totp_provider(&config).map_err(|error| PassboltFfiError::Config {
-            message: error.to_string(),
+            reason: error.to_string(),
         })?;
         RUNTIME.block_on(async {
             let http =
                 NativeHttpClient::new(&http_config).map_err(|error| PassboltFfiError::Config {
-                    message: error.to_string(),
+                    reason: error.to_string(),
                 })?;
 
             let client = Client::login(
@@ -1027,7 +1027,7 @@ pub fn fetch_server_key(
     RUNTIME.block_on(async {
         let http =
             NativeHttpClient::new(&http_config).map_err(|error| PassboltFfiError::Config {
-                message: error.to_string(),
+                reason: error.to_string(),
             })?;
         let (fingerprint, armored_key) =
             passbolt_sdk::auth::fetch_server_key(&http, server_url.trim_end_matches('/'))
@@ -1045,13 +1045,13 @@ pub fn fetch_server_key(
 /// Decrypt a PGP-armored message with a private key.
 fn to_json<T: serde::Serialize>(value: &T) -> Result<String, PassboltFfiError> {
     serde_json::to_string(value).map_err(|error| PassboltFfiError::Other {
-        message: format!("Cannot write JSON: {error}"),
+        reason: format!("Cannot write JSON: {error}"),
     })
 }
 
 fn from_json<T: serde::de::DeserializeOwned>(json: &str) -> Result<T, PassboltFfiError> {
     serde_json::from_str(json).map_err(|error| PassboltFfiError::InvalidArgument {
-        message: format!("Invalid JSON: {error}"),
+        reason: format!("Invalid JSON: {error}"),
     })
 }
 
@@ -1063,12 +1063,12 @@ pub fn decrypt_message(
 ) -> Result<Vec<u8>, PassboltFfiError> {
     let key = passbolt_sdk::crypto::parse_private_key(&private_key_armored).map_err(|error| {
         PassboltFfiError::Crypto {
-            message: error.to_string(),
+            reason: error.to_string(),
         }
     })?;
     passbolt_sdk::crypto::decrypt_message(&armored_message, &key.key, &passphrase).map_err(
         |error| PassboltFfiError::Crypto {
-            message: error.to_string(),
+            reason: error.to_string(),
         },
     )
 }
@@ -1085,12 +1085,12 @@ pub fn encrypt_message(
         .map(|armored_key| passbolt_sdk::crypto::parse_public_key(armored_key))
         .collect();
     let keys = parsed.map_err(|error| PassboltFfiError::Crypto {
-        message: error.to_string(),
+        reason: error.to_string(),
     })?;
     let key_refs: Vec<_> = keys.iter().collect();
     passbolt_sdk::crypto::encrypt_message(&plaintext, &key_refs).map_err(|error| {
         PassboltFfiError::Crypto {
-            message: error.to_string(),
+            reason: error.to_string(),
         }
     })
 }
@@ -1100,7 +1100,7 @@ pub fn encrypt_message(
 pub fn get_key_fingerprint(private_key_armored: String) -> Result<String, PassboltFfiError> {
     let key = passbolt_sdk::crypto::parse_private_key(&private_key_armored).map_err(|error| {
         PassboltFfiError::Crypto {
-            message: error.to_string(),
+            reason: error.to_string(),
         }
     })?;
     Ok(key.fingerprint.clone())

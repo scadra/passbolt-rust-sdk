@@ -44,8 +44,8 @@ do {
     let client = try PassboltClient.loginWithConfig(
         serverUrl: serverUrl, privateKeyArmored: privateKey, passphrase: passphrase, options: options)
     _ = client
-} catch PassboltFfiError.Auth(let message) {
-    print("login refused: \(message)")
+} catch PassboltFfiError.Auth(let reason) {
+    print("login refused: \(reason)")
 }
 ```
 

@@ -72,7 +72,7 @@ client.share_resource(created.id, [user_id], [], 7)
 try:
     passbolt_ffi.get_key_fingerprint("not a key")
 except passbolt_ffi.PassboltFfiError.Crypto as error:
-    print("not a key:", error)
+    print("not a key:", error.reason)
 except passbolt_ffi.PassboltFfiError.Api as error:
     print("the server answered", error.status)
 ```
