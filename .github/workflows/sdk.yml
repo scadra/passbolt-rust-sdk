@@ -379,6 +379,9 @@ jobs:
           pkg=build/go/passbolt-sdk-go
           mkdir -p "$pkg" dist
           find bindings/go \( -name '*.go' -o -name '*.h' \) -exec cp {} "$pkg/" \;
+          # The link files join the package the generator wrote.
+          package=$(sed -n 's/^package //p' "$pkg"/*.go | head -n 1)
+          test -n "$package"
           printf 'module github.com/passbolt/passbolt-sdk-go\n\ngo 1.21\n' > "$pkg/go.mod"
           declare -A platform=(
             [x86_64-unknown-linux-gnu]=linux_amd64 [aarch64-unknown-linux-gnu]=linux_arm64
@@ -391,7 +394,7 @@ jobs:
             {
               echo "//go:build ${p%_*} && ${p#*_}"
               echo
-              echo "package passbolt"
+              echo "package $package"
               echo
               echo "// #cgo LDFLAGS: -L\${SRCDIR}/lib/$p -lpassbolt_ffi $(cat "native/native-$target/native-static-libs.txt")"
               echo 'import "C"'
