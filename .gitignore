@@ -55,3 +55,6 @@ Thumbs.db
 node_modules/
 /packaging/android/build
 /packaging/android/.gradle
+/website/node_modules
+/website/build
+/website/.docusaurus
