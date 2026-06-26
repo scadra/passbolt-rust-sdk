@@ -80,3 +80,14 @@ fails.
 starts with a front matter (`title`, `sidebar_position`), each folder has a `README.md` (its
 index) and a `_category_.json` (its label and position in the sidebar). Link pages by their
 relative `.md` path.
+
+`website/` builds the site from `docs/`; `.github/workflows/docs.yml` builds it on each change, a
+broken link or anchor failing the build, and publishes it to GitHub Pages from `master`. To preview
+a change:
+
+```bash
+cd website
+npm ci
+npm start          # http://localhost:3000, reloaded on each save
+npm run build      # what the CI checks
+```

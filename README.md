@@ -75,7 +75,8 @@ prints the same output: see [Coming from go-passbolt-cli](docs/cli/go-passbolt-c
 
 ## Documentation
 
-The documentation is in [`docs/`](docs/README.md):
+The documentation is in [`docs/`](docs/README.md), also published as a site on
+[GitHub Pages](https://scadra.github.io/passbolt-rust-sdk/):
 
 - [Installation](docs/getting-started/installation.md) and [quick start](docs/getting-started/quick-start.md)
 - [CLI](docs/cli/README.md): [configuration](docs/cli/configuration.md),
