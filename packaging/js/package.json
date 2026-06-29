@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "description": "Passbolt SDK — JavaScript and TypeScript bindings of the Rust SDK (WebAssembly)",
   "license": "AGPL-3.0-or-later",
-  "repository": "github:scadra/passbolt-rust",
+  "repository": "github:scadra/passbolt-rust-sdk",
   "files": ["bundler", "node", "README.md"],
   "main": "./node/passbolt_wasm.js",
   "module": "./bundler/passbolt_wasm.js",

@@ -16,7 +16,7 @@ version="$2"
 sdk="$3"
 kotlin="$4"
 out="$(realpath -m "$5")"
-repository="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-scadra/passbolt-rust}"
+repository="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-scadra/passbolt-rust-sdk}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
