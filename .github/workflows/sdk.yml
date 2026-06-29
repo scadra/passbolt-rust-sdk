@@ -649,11 +649,17 @@ jobs:
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@release/v1
 
+  # Trusted Publishing: nuget.org trusts this workflow and its `nuget` environment, and gives a
+  # short-lived key to the profile of NUGET_USER.
   publish-nuget:
     name: Publish NuGet
     needs: release-check
     if: vars.PUBLISH_NUGET == 'true'
     runs-on: ubuntu-latest
+    environment: nuget
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/setup-dotnet@v4
         with:
@@ -662,15 +668,24 @@ jobs:
         with:
           name: sdk-dotnet
           path: dist
+      - id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ vars.NUGET_USER }}
       - run: dotnet nuget push dist/*.nupkg --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
 
+  # Trusted Publishing: rubygems.org trusts this workflow and its `rubygems` environment.
   publish-rubygems:
     name: Publish RubyGems
     needs: release-check
     if: vars.PUBLISH_RUBYGEMS == 'true'
     runs-on: ubuntu-latest
+    environment: rubygems
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: ruby/setup-ruby@v1
         with:
@@ -679,9 +694,8 @@ jobs:
         with:
           name: sdk-ruby
           path: dist
+      - uses: rubygems/configure-rubygems-credentials@v1.0.0
       - run: for gem in dist/*.gem; do gem push "$gem"; done
-        env:
-          GEM_HOST_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
 
   # The Java jar and the Android AAR, signed, through the Central Portal API.
   publish-maven:
