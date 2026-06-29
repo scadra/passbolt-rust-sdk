@@ -9,7 +9,7 @@
     <NoWarn>$(NoWarn);CS1591;CS8632;CS0105</NoWarn>
     <EnableDefaultNoneItems>false</EnableDefaultNoneItems>
     <PackageId>SwitchCase.Passbolt.Sdk</PackageId>
-    <RepositoryUrl>https://github.com/scadra/passbolt-rust</RepositoryUrl>
+    <RepositoryUrl>https://github.com/scadra/passbolt-rust-sdk</RepositoryUrl>
     <Version>0.0.0</Version>
     <Description>Passbolt SDK — .NET bindings of the Rust SDK</Description>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>

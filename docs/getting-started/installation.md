@@ -24,8 +24,8 @@ sudo install passbolt-cli-<version>-x86_64-unknown-linux-gnu/passbolt /usr/local
 Rust 1.88 or later; no OpenSSL needed.
 
 ```bash
-git clone https://github.com/scadra/passbolt-rust.git
-cd passbolt-rust
+git clone https://github.com/scadra/passbolt-rust-sdk.git
+cd passbolt-rust-sdk
 cargo build --release
 sudo install target/release/passbolt /usr/local/bin/
 ```
