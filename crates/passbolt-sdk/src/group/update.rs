@@ -137,7 +137,8 @@ async fn secrets_needed<H: HttpClient>(
             plaintexts.insert(resource_id.clone(), client.decrypt_text(encrypted)?);
         }
         if !public_keys.contains_key(&user_id) {
-            let (public_key, _) = document::public_key_of(&client.get_user(&user_id).await?)?;
+            let (public_key, _) =
+                document::public_key_of(client.openpgp(), &client.get_user(&user_id).await?)?;
             public_keys.insert(user_id.clone(), public_key);
         }
         secrets.push(GroupSecretPayload {

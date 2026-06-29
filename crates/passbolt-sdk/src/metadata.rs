@@ -14,11 +14,10 @@
 
 use std::collections::HashMap;
 
-use pgp::composed::{SignedPublicKey, SignedSecretKey};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 
-use crate::crypto::{self, SessionKey, Signer};
+use crate::crypto::{self, OpenPgp, PrivateKey, PublicKey, SessionKey, Signer};
 use crate::error::{CryptoError, PassboltError};
 use crate::types::{MetadataKey, Resource, ResourceMetadata};
 
@@ -35,14 +34,14 @@ struct MetadataPrivateKeyData {
 }
 
 struct MetadataPrivateKey {
-    key: SignedSecretKey,
+    key: PrivateKey,
     passphrase: SecretString,
 }
 
 /// The shared metadata key new metadata is encrypted with.
 struct ActiveMetadataKey {
     id: String,
-    public_key: SignedPublicKey,
+    public_key: PublicKey,
 }
 
 /// Shared metadata private keys the user holds a share of, by metadata key id,
@@ -81,7 +80,7 @@ impl MetadataKeys {
     pub fn decrypt(
         keys: &[MetadataKey],
         user_id: &str,
-        user_key: &SignedSecretKey,
+        user_key: &PrivateKey,
         user_passphrase: &str,
     ) -> Result<Self, PassboltError> {
         let mut decrypted_keys = HashMap::new();
@@ -97,10 +96,10 @@ impl MetadataKeys {
                 .map_err(|error| {
                     CryptoError::Decrypt(format!("metadata key {} share: {error}", metadata_key.id))
                 })?;
-            let private_key = parse_private_key_data(metadata_key, &plaintext)?;
+            let private_key = parse_private_key_data(user_key.openpgp(), metadata_key, &plaintext)?;
             decrypted_keys.insert(metadata_key.id.clone(), private_key);
         }
-        let active = active_key(keys, &decrypted_keys)?;
+        let active = active_key(user_key.openpgp(), keys, &decrypted_keys)?;
         let unshared_key = active.is_none()
             && keys
                 .iter()
@@ -147,18 +146,16 @@ impl MetadataKeys {
 
     /// The active key, the one new shared metadata is encrypted for.
     #[must_use]
-    pub fn active_public_key(&self) -> Option<&SignedPublicKey> {
+    pub fn active_public_key(&self) -> Option<&PublicKey> {
         self.active.as_ref().map(|active| &active.public_key)
     }
 
     /// Fingerprint of the active key, the one new shared metadata is encrypted for.
     #[must_use]
     pub fn active_fingerprint(&self) -> Option<String> {
-        use pgp::types::KeyDetails;
-
         self.active
             .as_ref()
-            .map(|active| hex::encode_upper(active.public_key.fingerprint().as_bytes()))
+            .map(|active| active.public_key.fingerprint.clone())
     }
 
     /// The number of keys the user can decrypt metadata with.
@@ -178,6 +175,7 @@ impl MetadataKeys {
 /// extension picks it: metadata encrypted for a key the user cannot decrypt would be lost to
 /// them.
 fn active_key(
+    openpgp: &OpenPgp,
     keys: &[MetadataKey],
     held: &HashMap<String, MetadataPrivateKey>,
 ) -> Result<Option<ActiveMetadataKey>, PassboltError> {
@@ -196,7 +194,7 @@ fn active_key(
     })?;
     Ok(Some(ActiveMetadataKey {
         id: metadata_key.id.clone(),
-        public_key: crypto::parse_public_key(armored_key)?,
+        public_key: openpgp.parse_public_key(armored_key)?,
     }))
 }
 
@@ -206,7 +204,7 @@ fn active_key(
 pub fn encrypt_for_user(
     metadata: &ResourceMetadata,
     user: &Signer<'_>,
-    user_public_key: &SignedPublicKey,
+    user_public_key: &PublicKey,
     gpgkey_id: &str,
 ) -> Result<EncryptedMetadata, PassboltError> {
     let plaintext = serde_json::to_string(metadata)?;
@@ -223,6 +221,7 @@ pub fn encrypt_for_user(
 
 /// The share must hold the private part of the metadata key it is attached to.
 fn parse_private_key_data(
+    openpgp: &OpenPgp,
     metadata_key: &MetadataKey,
     plaintext: &[u8],
 ) -> Result<MetadataPrivateKey, PassboltError> {
@@ -234,7 +233,7 @@ fn parse_private_key_data(
     if data.object_type != PRIVATE_KEY_OBJECT_TYPE {
         return Err(invalid(format!("unexpected object_type {}", data.object_type)).into());
     }
-    let private_key = crypto::parse_private_key(&data.armored_key)?;
+    let private_key = openpgp.parse_private_key(&data.armored_key)?;
     let fingerprints_match = private_key
         .fingerprint
         .eq_ignore_ascii_case(&data.fingerprint)
@@ -246,7 +245,7 @@ fn parse_private_key_data(
         return Err(invalid("fingerprint mismatch".into()).into());
     }
     Ok(MetadataPrivateKey {
-        key: private_key.key.clone(),
+        key: private_key,
         passphrase: data.passphrase,
     })
 }
@@ -256,7 +255,7 @@ fn parse_private_key_data(
 /// `user_key` metadata is encrypted for the user, `shared_key` metadata for `metadata_key_id`.
 pub fn decrypt_resource_metadata(
     resource: &Resource,
-    user_key: &SignedSecretKey,
+    user_key: &PrivateKey,
     user_passphrase: &str,
     shared_keys: &MetadataKeys,
 ) -> Result<Option<ResourceMetadata>, PassboltError> {
@@ -276,7 +275,7 @@ pub fn decrypt_resource_metadata(
 /// when it was not known, to save it.
 pub fn decrypt_resource_metadata_with_session_keys(
     resource: &Resource,
-    user_key: &SignedSecretKey,
+    user_key: &PrivateKey,
     user_passphrase: &str,
     shared_keys: &MetadataKeys,
     session_keys: &SessionKeys,
@@ -288,9 +287,12 @@ pub fn decrypt_resource_metadata_with_session_keys(
         CryptoError::Decrypt(format!("resource {} metadata: {reason}", resource.id))
     };
     // A stale session key (the metadata changed since) falls back to the keys.
-    let known = session_keys
-        .get(&resource.id)
-        .and_then(|session_key| crypto::decrypt_with_session_key(armored, session_key).ok());
+    let known = session_keys.get(&resource.id).and_then(|session_key| {
+        user_key
+            .openpgp()
+            .decrypt_with_session_key(armored, session_key)
+            .ok()
+    });
     let (plaintext, new_session_key) = if let Some(plaintext) = known {
         (plaintext, None)
     } else {
@@ -377,7 +379,7 @@ impl SessionKeys {
     #[must_use]
     pub fn decrypt(
         bundles: &[SessionKeysBundle],
-        user_key: &SignedSecretKey,
+        user_key: &PrivateKey,
         user_passphrase: &str,
     ) -> Self {
         let mut session_keys = Self::default();

@@ -119,7 +119,7 @@ fn multiline_text_keeps_its_line_endings() {
     let message = passbolt_sdk::crypto::sign_and_encrypt(
         "line one\nline two",
         &[passbolt_sdk::crypto::Signer {
-            key: &signer.key,
+            key: &signer,
             passphrase: ADA.passphrase,
         }],
         &[&passbolt_sdk::crypto::parse_public_key(ADA.public).unwrap()],
@@ -147,7 +147,7 @@ fn the_session_key_of_a_seipd_v2_message_is_read_by_openpgp_js() {
     let erin = crypto::parse_private_key(ERIN.private).unwrap();
 
     let (_, session_key) =
-        crypto::decrypt_message_keeping_session_key(&message, &erin.key, ERIN.passphrase).unwrap();
+        crypto::decrypt_message_keeping_session_key(&message, &erin, ERIN.passphrase).unwrap();
 
     let read = openpgp_js(
         "verify.mjs",
@@ -167,7 +167,7 @@ fn a_seipd_v2_message_is_read_by_openpgp_js() {
     let message = crypto::sign_and_encrypt(
         "line one\nline two",
         &[crypto::Signer {
-            key: &signer.key,
+            key: &signer,
             passphrase: ADA.passphrase,
         }],
         &[&crypto::parse_public_key(erin_asking_for_seipd_v2).unwrap()],

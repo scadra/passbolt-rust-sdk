@@ -30,7 +30,7 @@ fn session_key_of(resource: &Resource) -> String {
     let metadata_key = crypto::parse_private_key(METADATA.private).unwrap();
     let (_, session_key) = crypto::decrypt_message_keeping_session_key(
         resource.armored_metadata().unwrap(),
-        &metadata_key.key,
+        &metadata_key,
         METADATA.passphrase,
     )
     .unwrap();

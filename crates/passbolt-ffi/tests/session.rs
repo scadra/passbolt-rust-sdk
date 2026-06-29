@@ -199,7 +199,7 @@ impl Respond for DecryptingServer {
         let token = body
             .pointer("/gpg_auth/server_verify_token")
             .and_then(Value::as_str)
-            .and_then(|token| crypto::decrypt_message(token, &server_key.key, "").ok());
+            .and_then(|token| crypto::decrypt_message(token, &server_key, "").ok());
         token.map_or_else(
             || ResponseTemplate::new(400).set_body_json(envelope(&Value::Null)),
             |token| {

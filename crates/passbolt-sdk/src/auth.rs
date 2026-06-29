@@ -14,9 +14,7 @@ use percent_encoding::percent_decode_str;
 use serde_json::Value;
 use zeroize::Zeroize;
 
-use crate::crypto::{
-    decrypt_message, encrypt_message, parse_public_key, public_key_fingerprint, PrivateKey,
-};
+use crate::crypto::{decrypt_message, encrypt_message, OpenPgp, PrivateKey};
 use crate::error::{AuthError, PassboltError};
 use crate::http::{HttpClient, HttpResponse};
 
@@ -88,7 +86,7 @@ pub async fn login<H: HttpClient>(
 
     // Step 2: decrypt the challenge
     let decrypted =
-        decrypt_message(&encrypted_challenge, &private_key.key, passphrase).map_err(|error| {
+        decrypt_message(&encrypted_challenge, private_key, passphrase).map_err(|error| {
             AuthError::LoginFailed(format!("Failed to decrypt server challenge: {error}"))
         })?;
     let token = String::from_utf8(decrypted)
@@ -257,6 +255,7 @@ const VERIFY_TOKEN_VERSION: &str = "gpgauthv1.3.0";
 pub async fn fetch_server_key<H: HttpClient>(
     http: &H,
     base_url: &str,
+    openpgp: &OpenPgp,
 ) -> Result<(String, String), PassboltError> {
     let response = http
         .get(&format!("{base_url}/auth/verify.json"), &[])
@@ -269,9 +268,11 @@ pub async fn fetch_server_key<H: HttpClient>(
             .ok_or_else(|| AuthError::LoginFailed(format!("the server sent no {name}")))
     };
     let (claimed_fingerprint, armored_key) = (field("fingerprint")?, field("keydata")?);
-    let fingerprint = public_key_fingerprint(&armored_key).map_err(|error| {
-        AuthError::LoginFailed(format!("the server key is unreadable: {error}"))
-    })?;
+    let fingerprint = openpgp
+        .public_key_fingerprint(&armored_key)
+        .map_err(|error| {
+            AuthError::LoginFailed(format!("the server key is unreadable: {error}"))
+        })?;
     if !claimed_fingerprint.eq_ignore_ascii_case(&fingerprint) {
         return Err(AuthError::ServerIdentityMismatch(format!(
             "the server announces the fingerprint {claimed_fingerprint} for a key of fingerprint \
@@ -330,16 +331,23 @@ pub async fn verify_server<H: HttpClient>(
 pub async fn check_server_identity<H: HttpClient>(
     http: &H,
     base_url: &str,
-    user_fingerprint: &str,
+    user_key: &PrivateKey,
     server_public_key: &str,
     token: &str,
     encrypted_token: &str,
 ) -> Result<(), PassboltError> {
     if !server_public_key.is_empty() {
-        let server_key = parse_public_key(server_public_key)?;
+        let server_key = user_key.openpgp().parse_public_key(server_public_key)?;
         let token = new_verify_token();
         let encrypted_token = encrypt_message(token.as_bytes(), &[&server_key])?;
-        return verify_server(http, base_url, user_fingerprint, &encrypted_token, &token).await;
+        return verify_server(
+            http,
+            base_url,
+            &user_key.fingerprint,
+            &encrypted_token,
+            &token,
+        )
+        .await;
     }
     if token.is_empty() && encrypted_token.is_empty() {
         return Ok(());
@@ -350,7 +358,14 @@ pub async fn check_server_identity<H: HttpClient>(
         )
         .into());
     }
-    verify_server(http, base_url, user_fingerprint, encrypted_token, token).await
+    verify_server(
+        http,
+        base_url,
+        &user_key.fingerprint,
+        encrypted_token,
+        token,
+    )
+    .await
 }
 
 #[cfg(test)]

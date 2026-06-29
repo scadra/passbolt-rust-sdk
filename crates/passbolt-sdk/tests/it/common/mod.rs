@@ -58,6 +58,7 @@ pub fn ada_config() -> SdkConfig {
         metadata_key_fingerprint: String::new(),
         server_verify_enc_token: String::new(),
         server_verify_token: String::new(),
+        openpgp: passbolt_sdk::OpenPgp::default(),
     }
 }
 

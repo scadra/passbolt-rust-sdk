@@ -395,7 +395,7 @@ async fn encrypt_for_users_with_access<H: HttpClient>(
     users
         .iter()
         .map(|user| {
-            let (public_key, _) = document::public_key_of(user)?;
+            let (public_key, _) = document::public_key_of(client.openpgp(), user)?;
             Ok(SecretPayload {
                 user_id: user.id.clone(),
                 data: crypto::sign_and_encrypt(

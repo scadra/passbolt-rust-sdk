@@ -117,6 +117,7 @@ fn build_sdk_config(
         metadata_key_fingerprint,
         server_verify_enc_token: String::new(),
         server_verify_token: String::new(),
+        openpgp: passbolt_sdk::OpenPgp::default(),
     }
 }
 
@@ -191,10 +192,13 @@ impl PassboltSession {
     #[wasm_bindgen(js_name = "fetchServerKey", unchecked_return_type = "ServerKey")]
     pub async fn fetch_server_key(server_url: String) -> Result<JsValue, JsError> {
         let http = WasmHttpClient::new();
-        let (fingerprint, armored_key) =
-            passbolt_sdk::auth::fetch_server_key(&http, server_url.trim_end_matches('/'))
-                .await
-                .map_err(to_js_error)?;
+        let (fingerprint, armored_key) = passbolt_sdk::auth::fetch_server_key(
+            &http,
+            server_url.trim_end_matches('/'),
+            &passbolt_sdk::OpenPgp::default(),
+        )
+        .await
+        .map_err(to_js_error)?;
         to_js_value(&serde_json::json!({ "fingerprint": fingerprint, "armoredKey": armored_key }))
     }
 
@@ -1102,7 +1106,7 @@ pub fn decrypt_message(
 ) -> Result<Vec<u8>, JsError> {
     let key = passbolt_sdk::crypto::parse_private_key(private_key_armored)
         .map_err(|error| JsError::new(&error.to_string()))?;
-    passbolt_sdk::crypto::decrypt_message(armored_message, &key.key, passphrase)
+    passbolt_sdk::crypto::decrypt_message(armored_message, &key, passphrase)
         .map_err(|error| JsError::new(&error.to_string()))
 }
 

@@ -239,7 +239,8 @@ async fn secrets_for<H: HttpClient>(
         .ok_or_else(|| PassboltError::NotFound(format!("Secret of resource {}", resource.id)))?;
     let mut secrets = Vec::with_capacity(user_ids.len());
     for user_id in user_ids {
-        let (public_key, _) = document::public_key_of(&client.get_user(user_id).await?)?;
+        let (public_key, _) =
+            document::public_key_of(client.openpgp(), &client.get_user(user_id).await?)?;
         secrets.push(SecretPayload {
             user_id: user_id.clone(),
             data: crypto::sign_and_encrypt(&plaintext, &[client.user_signer()], &[&public_key])?,

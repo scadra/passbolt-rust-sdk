@@ -617,6 +617,7 @@ impl Config {
             metadata_key_fingerprint: self.metadata_key_fingerprint.clone(),
             server_verify_enc_token: self.server_verify_enc_token.clone(),
             server_verify_token: self.server_verify_token.clone(),
+            openpgp: passbolt_sdk::OpenPgp::default(),
         })
     }
 

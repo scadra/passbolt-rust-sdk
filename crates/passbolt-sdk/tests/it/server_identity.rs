@@ -10,7 +10,7 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use passbolt_sdk::{auth, AuthError, PassboltError, PassboltSdk, SdkConfig};
+use passbolt_sdk::{auth, AuthError, OpenPgp, PassboltError, PassboltSdk, SdkConfig};
 
 use crate::common::*;
 
@@ -132,7 +132,9 @@ async fn an_incomplete_stored_verification_asks_to_verify_again() {
 async fn the_server_key_is_fetched_with_its_fingerprint() {
     let fake = FakePassbolt::new();
 
-    let (fingerprint, armored_key) = auth::fetch_server_key(&fake, BASE_URL).await.unwrap();
+    let (fingerprint, armored_key) = auth::fetch_server_key(&fake, BASE_URL, &OpenPgp::default())
+        .await
+        .unwrap();
 
     assert_eq!(fingerprint, SERVER.fingerprint());
     assert_eq!(armored_key, SERVER.public);
@@ -145,7 +147,9 @@ async fn a_server_key_announced_with_another_fingerprint_is_refused() {
     verify["fingerprint"] = ADA.fingerprint().into();
     fake.on("GET", "/auth/verify.json", verify);
 
-    let error = auth::fetch_server_key(&fake, BASE_URL).await.unwrap_err();
+    let error = auth::fetch_server_key(&fake, BASE_URL, &OpenPgp::default())
+        .await
+        .unwrap_err();
 
     assert!(
         matches!(
