@@ -13,6 +13,8 @@ totp = ["dep:totp-rs"]
 full = ["native", "totp"]
 # Interop tests with OpenPGP.js: needs node and `npm ci --prefix tests/interop`.
 interop = []
+# The OpenPGP.js engine, run in an embedded QuickJS.
+openpgpjs = ["dep:rquickjs", "dep:aes", "dep:aes-gcm", "dep:cbc", "dep:ctr", "dep:hkdf", "dep:sha2"]
 
 [dependencies]
 # Errors
@@ -51,6 +53,17 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "rustls-tls-nati
 
 # TOTP (gated behind totp feature)
 totp-rs = { version = "5", features = ["serde_support", "gen_secret"], optional = true }
+
+# OpenPGP.js engine (gated behind openpgpjs feature): QuickJS and the WebCrypto it needs.
+# In the browser, the engine runs on the OpenPGP.js of the page instead.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rquickjs = { version = "0.14", features = ["parallel"], optional = true }
+aes = { version = "0.8", optional = true }
+aes-gcm = { version = "0.10", optional = true }
+cbc = { version = "0.1", features = ["alloc"], optional = true }
+ctr = { version = "0.9", optional = true }
+hkdf = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
 
 # In the browser, rPGP reads the clock and the randomness through the Web APIs.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

@@ -12,6 +12,8 @@
 
 //! `OpenPGP` operations, run by the engine a key was read with: rpgp unless another is chosen.
 
+#[cfg(all(feature = "openpgpjs", not(target_arch = "wasm32")))]
+mod openpgpjs;
 mod rpgp;
 
 use std::any::Any;
@@ -19,6 +21,8 @@ use std::sync::Arc;
 
 use zeroize::{Zeroize, Zeroizing};
 
+#[cfg(all(feature = "openpgpjs", not(target_arch = "wasm32")))]
+pub use self::openpgpjs::OpenPgpJs;
 pub use self::rpgp::Rpgp;
 use crate::error::CryptoError;
 
@@ -95,6 +99,13 @@ impl OpenPgp {
     #[must_use]
     pub fn rpgp() -> Self {
         Self::new(Rpgp)
+    }
+
+    /// The OpenPGP.js engine, the library of the browser extension, in a JavaScript runtime
+    /// of its own.
+    #[cfg(all(feature = "openpgpjs", not(target_arch = "wasm32")))]
+    pub fn openpgpjs() -> Result<Self, CryptoError> {
+        Ok(Self::new(OpenPgpJs::new()?))
     }
 
     #[must_use]
