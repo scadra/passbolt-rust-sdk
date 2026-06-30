@@ -5,9 +5,15 @@ sidebar_position: 10
 
 # Swift (iOS)
 
-The `PassboltSDK-ios-<version>.zip` of a release is a Swift package: the Swift bindings over an
-XCFramework for devices (arm64) and simulators (arm64, x86_64), iOS 15 or later. Unzip it and
-add it to your project as a local package, product `PassboltSDK`.
+The Swift bindings over an XCFramework for devices (arm64) and simulators (arm64, x86_64), iOS 15
+or later. In Xcode, File → Add Package Dependencies, or in `Package.swift`:
+
+```swift
+.package(url: "https://github.com/scadra/passbolt-sdk-swift", from: "0.1.0")
+```
+
+then the product `PassboltSDK`. The `PassboltSDK-ios-<version>.zip` of each release is the same
+package with the XCFramework inside, to add as a local package.
 
 ## Log in and list
 

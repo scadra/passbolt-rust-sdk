@@ -59,5 +59,5 @@ concept; each [language page](../sdk/README.md) tells how to use them.
 | Android | Maven `io.github.scadra:passbolt-sdk-android` (AAR) |
 | .NET | NuGet `SwitchCase.Passbolt.Sdk` |
 | Ruby | RubyGems `switch-case-passbolt-sdk` |
-| Go | `passbolt-sdk-go-<version>.tar.gz` of the release |
-| Swift (iOS) | `PassboltSDK-ios-<version>.zip` of the release (Swift package and XCFramework) |
+| Go | `github.com/scadra/passbolt-sdk-go` |
+| Swift (iOS) | Swift package `https://github.com/scadra/passbolt-sdk-swift` |

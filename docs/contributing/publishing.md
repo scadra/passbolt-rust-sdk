@@ -20,9 +20,15 @@ A registry without its variable is skipped.
 
 `MAVEN_GROUP` defaults to `io.github.scadra`, a namespace Central verifies through GitHub;
 `CRATES_PREFIX` to `switch-case`. The package names of the other registries are in `packaging/` and
-`crates/passbolt-ffi/pyproject.toml`. Go and Swift have no registry: their packages are a Git tag of a
-repository holding the content of `passbolt-sdk-go-<version>.tar.gz` and of `Package.swift` with the
-XCFramework.
+`crates/passbolt-ffi/pyproject.toml`.
+
+Go and SwiftPM install from a Git repository rather than a registry: a release commits the package
+to its repository and tags it, with the secret `SDK_REPOSITORIES_TOKEN`.
+
+| Variable | Repository (variable to change it) | Tag |
+|---|---|---|
+| `PUBLISH_GO` | `scadra/passbolt-sdk-go` (`GO_REPOSITORY`): the module, static libraries included | `v<version>` |
+| `PUBLISH_SWIFT` | `scadra/passbolt-sdk-swift` (`SWIFT_REPOSITORY`): `Package.swift` and the bindings; the XCFramework stays in the release, `Package.swift` naming its URL and checksum | `<version>` |
 
 ## Setting up each registry
 
@@ -42,6 +48,8 @@ the environment of the table.
   `switch-case-passbolt-sdk`.
 - **Maven Central**: sign in to central.sonatype.com with GitHub, which verifies
   `io.github.scadra`; a user token; a GPG signing key, its public part sent to `keys.openpgp.org`.
+- **Go and Swift repositories**: two repositories, and a fine-grained personal access token with
+  "Contents: read and write" on both, as `SDK_REPOSITORIES_TOKEN`.
 - **crates.io**: a verified e-mail, and an API token with the `publish-new` and `publish-update`
   scopes for `switch-case-passbolt-*`. Once the crates exist, Trusted Publishing can replace it.
 

@@ -34,6 +34,9 @@ env:
   CARGO_NDK: 4.1.2
   JNA: 5.14.0
   GRADLE: 8.11.1
+  # The repositories Go and SwiftPM install from; the Go module path is the Go one's.
+  GO_REPOSITORY: ${{ vars.GO_REPOSITORY || 'scadra/passbolt-sdk-go' }}
+  SWIFT_REPOSITORY: ${{ vars.SWIFT_REPOSITORY || 'scadra/passbolt-sdk-swift' }}
 
 jobs:
   version:
@@ -382,7 +385,7 @@ jobs:
           # The link files join the package the generator wrote.
           package=$(sed -n 's/^package //p' "$pkg"/*.go | head -n 1)
           test -n "$package"
-          printf 'module github.com/passbolt/passbolt-sdk-go\n\ngo 1.21\n' > "$pkg/go.mod"
+          printf 'module github.com/%s\n\ngo 1.21\n' "$GO_REPOSITORY" > "$pkg/go.mod"
           declare -A platform=(
             [x86_64-unknown-linux-gnu]=linux_amd64 [aarch64-unknown-linux-gnu]=linux_arm64
             [x86_64-apple-darwin]=darwin_amd64 [aarch64-apple-darwin]=darwin_arm64
@@ -405,8 +408,9 @@ jobs:
       - name: Smoke test
         run: |
           mkdir -p build/smoke && cd build/smoke
-          printf 'module smoke\n\ngo 1.21\n\nrequire github.com/passbolt/passbolt-sdk-go v0.0.0\n\nreplace github.com/passbolt/passbolt-sdk-go => ../go/passbolt-sdk-go\n' > go.mod
-          printf 'package main\n\nimport _ "github.com/passbolt/passbolt-sdk-go"\n\nfunc main() {}\n' > main.go
+          module="github.com/$GO_REPOSITORY"
+          printf 'module smoke\n\ngo 1.21\n\nrequire %s v0.0.0\n\nreplace %s => ../go/passbolt-sdk-go\n' "$module" "$module" > go.mod
+          printf 'package main\n\nimport _ "%s"\n\nfunc main() {}\n' "$module" > main.go
           CGO_ENABLED=1 go build -o smoke . && ./smoke
       - uses: actions/upload-artifact@v4
         with:
@@ -508,6 +512,8 @@ jobs:
           cp bindings/swift/passbolt_ffi.swift "$pkg/Sources/PassboltSDK/"
           cp packaging/swift/Package.swift LICENSE "$pkg/"
           (cd build && zip -qry "../dist/PassboltSDK-ios-${{ needs.version.outputs.sdk }}.zip" PassboltSDK)
+          # The XCFramework alone, attached to the release: the Swift package repository points at it.
+          (cd "$pkg" && zip -qry "../../dist/passbolt_ffiFFI.xcframework.zip" passbolt_ffiFFI.xcframework)
       - name: Smoke test
         working-directory: build/PassboltSDK
         run: xcodebuild build -scheme PassboltSDK -destination 'generic/platform=iOS Simulator' -quiet
@@ -749,3 +755,73 @@ jobs:
       - run: bash scripts/publish-crates.sh "${{ vars.CRATES_PREFIX || 'switch-case' }}"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # Go installs from a Git repository: each release commits the module to GO_REPOSITORY and tags it.
+  publish-go:
+    name: Publish Go module
+    needs: [version, release-check]
+    if: vars.PUBLISH_GO == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-go
+          path: dist
+      - name: Commit and tag the module
+        env:
+          TOKEN: ${{ secrets.SDK_REPOSITORIES_TOKEN }}
+          VERSION: ${{ needs.version.outputs.sdk }}
+        run: |
+          git clone "https://x-access-token:${TOKEN}@github.com/${GO_REPOSITORY}.git" module
+          find module -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          tar xzf "dist/passbolt-sdk-go-${VERSION}.tar.gz" -C module --strip-components=1
+          cd module
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B main
+          git add -A
+          git commit -m "passbolt-sdk-go v${VERSION}, from ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
+          git tag "v${VERSION}"
+          git push origin main "v${VERSION}"
+
+  # SwiftPM installs from a Git repository with Package.swift at its root: each release commits the
+  # bindings and a Package.swift pointing at the XCFramework of the GitHub release, with its
+  # checksum, to SWIFT_REPOSITORY and tags it.
+  publish-swift:
+    name: Publish Swift package
+    needs: [version, release-check]
+    if: vars.PUBLISH_SWIFT == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-ios
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: bindings
+          path: bindings
+      - name: Commit and tag the package
+        env:
+          TOKEN: ${{ secrets.SDK_REPOSITORIES_TOKEN }}
+          VERSION: ${{ needs.version.outputs.sdk }}
+        run: |
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/passbolt_ffiFFI.xcframework.zip"
+          checksum=$(sha256sum dist/passbolt_ffiFFI.xcframework.zip | cut -d' ' -f1)
+          git clone "https://x-access-token:${TOKEN}@github.com/${SWIFT_REPOSITORY}.git" package
+          find package -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          mkdir -p package/Sources/PassboltSDK
+          cp bindings/swift/passbolt_ffi.swift package/Sources/PassboltSDK/
+          cp LICENSE package/
+          sed 's#\.binaryTarget(name: "passbolt_ffiFFI", path: "passbolt_ffiFFI.xcframework")#.binaryTarget(name: "passbolt_ffiFFI", url: "'"$url"'", checksum: "'"$checksum"'")#' \
+            packaging/swift/Package.swift > package/Package.swift
+          grep -q "$checksum" package/Package.swift
+          cd package
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B main
+          git add -A
+          git commit -m "PassboltSDK ${VERSION}, from ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
+          git tag "${VERSION}"
+          git push origin main "${VERSION}"
