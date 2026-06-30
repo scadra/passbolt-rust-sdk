@@ -34,6 +34,9 @@ env:
   CARGO_NDK: 4.1.2
   JNA: 5.14.0
   GRADLE: 8.11.1
+  # The repositories Go and SwiftPM install from; the Go module path is the Go one's.
+  GO_REPOSITORY: ${{ vars.GO_REPOSITORY || 'scadra/passbolt-sdk-go' }}
+  SWIFT_REPOSITORY: ${{ vars.SWIFT_REPOSITORY || 'scadra/passbolt-sdk-swift' }}
 
 jobs:
   version:
@@ -382,7 +385,7 @@ jobs:
           # The link files join the package the generator wrote.
           package=$(sed -n 's/^package //p' "$pkg"/*.go | head -n 1)
           test -n "$package"
-          printf 'module github.com/passbolt/passbolt-sdk-go\n\ngo 1.21\n' > "$pkg/go.mod"
+          printf 'module github.com/%s\n\ngo 1.21\n' "$GO_REPOSITORY" > "$pkg/go.mod"
           declare -A platform=(
             [x86_64-unknown-linux-gnu]=linux_amd64 [aarch64-unknown-linux-gnu]=linux_arm64
             [x86_64-apple-darwin]=darwin_amd64 [aarch64-apple-darwin]=darwin_arm64
@@ -405,8 +408,9 @@ jobs:
       - name: Smoke test
         run: |
           mkdir -p build/smoke && cd build/smoke
-          printf 'module smoke\n\ngo 1.21\n\nrequire github.com/passbolt/passbolt-sdk-go v0.0.0\n\nreplace github.com/passbolt/passbolt-sdk-go => ../go/passbolt-sdk-go\n' > go.mod
-          printf 'package main\n\nimport _ "github.com/passbolt/passbolt-sdk-go"\n\nfunc main() {}\n' > main.go
+          module="github.com/$GO_REPOSITORY"
+          printf 'module smoke\n\ngo 1.21\n\nrequire %s v0.0.0\n\nreplace %s => ../go/passbolt-sdk-go\n' "$module" "$module" > go.mod
+          printf 'package main\n\nimport _ "%s"\n\nfunc main() {}\n' "$module" > main.go
           CGO_ENABLED=1 go build -o smoke . && ./smoke
       - uses: actions/upload-artifact@v4
         with:
@@ -508,6 +512,8 @@ jobs:
           cp bindings/swift/passbolt_ffi.swift "$pkg/Sources/PassboltSDK/"
           cp packaging/swift/Package.swift LICENSE "$pkg/"
           (cd build && zip -qry "../dist/PassboltSDK-ios-${{ needs.version.outputs.sdk }}.zip" PassboltSDK)
+          # The XCFramework alone, attached to the release: the Swift package repository points at it.
+          (cd "$pkg" && zip -qry "../../dist/passbolt_ffiFFI.xcframework.zip" passbolt_ffiFFI.xcframework)
       - name: Smoke test
         working-directory: build/PassboltSDK
         run: xcodebuild build -scheme PassboltSDK -destination 'generic/platform=iOS Simulator' -quiet
