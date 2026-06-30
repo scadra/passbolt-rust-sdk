@@ -5,15 +5,21 @@ sidebar_position: 8
 
 # Go
 
-The `passbolt-sdk-go-<version>.tar.gz` of a release is a Go module,
-`github.com/passbolt/passbolt-sdk-go`, holding the bindings and the static library of Linux
+The module `github.com/scadra/passbolt-sdk-go` holds the bindings and the static library of Linux
 (x86_64, aarch64) and macOS (Intel, Apple silicon), linked with cgo. Windows is not covered.
 
 ```bash
-tar xzf passbolt-sdk-go-0.1.0.tar.gz
-go mod edit -require github.com/passbolt/passbolt-sdk-go@v0.0.0 \
-            -replace github.com/passbolt/passbolt-sdk-go=./passbolt-sdk-go
+go get github.com/scadra/passbolt-sdk-go@v0.1.0
 CGO_ENABLED=1 go build
+```
+
+The same module is the `passbolt-sdk-go-<version>.tar.gz` of each release, for a build without
+network access:
+
+```bash
+tar xzf passbolt-sdk-go-0.1.0.tar.gz
+go mod edit -require github.com/scadra/passbolt-sdk-go@v0.0.0 \
+            -replace github.com/scadra/passbolt-sdk-go=./passbolt-sdk-go
 ```
 
 ## Log in and list
@@ -26,7 +32,7 @@ import (
 	"fmt"
 	"os"
 
-	passbolt "github.com/passbolt/passbolt-sdk-go"
+	passbolt "github.com/scadra/passbolt-sdk-go"
 )
 
 func main() {
