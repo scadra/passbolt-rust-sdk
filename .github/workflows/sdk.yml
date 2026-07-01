@@ -633,7 +633,8 @@ jobs:
         with:
           name: sdk-js
           path: dist
-      - run: npm publish --access public --provenance dist/*.tgz
+      # `./`: without it, npm reads `dist/<file>` as the GitHub repository `dist/<file>`.
+      - run: npm publish --access public --provenance ./dist/*.tgz
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
