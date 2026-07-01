@@ -9,7 +9,7 @@ The module `github.com/scadra/passbolt-sdk-go` holds the bindings and the static
 (x86_64, aarch64) and macOS (Intel, Apple silicon), linked with cgo. Windows is not covered.
 
 ```bash
-go get github.com/scadra/passbolt-sdk-go@v0.1.0
+go get github.com/scadra/passbolt-sdk-go@v0.1.1
 CGO_ENABLED=1 go build
 ```
 
@@ -17,7 +17,7 @@ The same module is the `passbolt-sdk-go-<version>.tar.gz` of each release, for a
 network access:
 
 ```bash
-tar xzf passbolt-sdk-go-0.1.0.tar.gz
+tar xzf passbolt-sdk-go-0.1.1.tar.gz
 go mod edit -require github.com/scadra/passbolt-sdk-go@v0.0.0 \
             -replace github.com/scadra/passbolt-sdk-go=./passbolt-sdk-go
 ```

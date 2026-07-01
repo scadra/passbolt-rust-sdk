@@ -8,7 +8,7 @@ The bindings call the library through JNA, which an AAR file does not bring alon
 
 ```kotlin
 dependencies {
-    implementation(files("libs/passbolt-sdk-android-0.1.0.aar"))
+    implementation(files("libs/passbolt-sdk-android-0.1.1.aar"))
     implementation("net.java.dev.jna:jna:5.14.0@aar")
 }
 ```
