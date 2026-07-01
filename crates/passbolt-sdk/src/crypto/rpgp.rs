@@ -24,7 +24,7 @@ use pgp::crypto::sym::SymmetricKeyAlgorithm;
 use pgp::packet::{DataMode, Features, ProtectedDataConfig, SymEncryptedProtectedDataConfig};
 use pgp::types::{DecryptionKey, EskType, KeyDetails, KeyVersion, Password, PkeskVersion};
 
-use super::{key_of, Engine, KeyHandle, SessionKey};
+use super::{key_of, ready, CryptoFuture, Engine, KeyHandle, SessionKey};
 use crate::error::CryptoError;
 
 /// The rpgp engine, the default one.
@@ -47,52 +47,63 @@ impl Engine for Rpgp {
         Ok((Arc::new(key), fingerprint))
     }
 
-    fn decrypt(
-        &self,
-        armored_message: &str,
-        private_key: &KeyHandle,
-        passphrase: &str,
-    ) -> Result<Vec<u8>, CryptoError> {
-        decrypt_message(armored_message, key_of(private_key)?, passphrase)
+    fn decrypt<'a>(
+        &'a self,
+        armored_message: &'a str,
+        private_key: &'a KeyHandle,
+        passphrase: &'a str,
+    ) -> CryptoFuture<'a, Vec<u8>> {
+        ready(key_of(private_key).and_then(|key| decrypt_message(armored_message, key, passphrase)))
     }
 
-    fn decrypt_keeping_session_key(
-        &self,
-        armored_message: &str,
-        private_key: &KeyHandle,
-        passphrase: &str,
-    ) -> Result<(Vec<u8>, SessionKey), CryptoError> {
-        decrypt_message_keeping_session_key(armored_message, key_of(private_key)?, passphrase)
+    fn decrypt_keeping_session_key<'a>(
+        &'a self,
+        armored_message: &'a str,
+        private_key: &'a KeyHandle,
+        passphrase: &'a str,
+    ) -> CryptoFuture<'a, (Vec<u8>, SessionKey)> {
+        ready(
+            key_of(private_key).and_then(|key| {
+                decrypt_message_keeping_session_key(armored_message, key, passphrase)
+            }),
+        )
     }
 
-    fn decrypt_with_session_key(
-        &self,
-        armored_message: &str,
-        session_key: &SessionKey,
-    ) -> Result<Vec<u8>, CryptoError> {
-        decrypt_with_session_key(armored_message, session_key)
+    fn decrypt_with_session_key<'a>(
+        &'a self,
+        armored_message: &'a str,
+        session_key: &'a SessionKey,
+    ) -> CryptoFuture<'a, Vec<u8>> {
+        ready(decrypt_with_session_key(armored_message, session_key))
     }
 
-    fn encrypt(&self, plaintext: &[u8], recipients: &[&KeyHandle]) -> Result<String, CryptoError> {
-        encrypt_message(plaintext, &public_keys(recipients)?)
+    fn encrypt<'a>(
+        &'a self,
+        plaintext: &'a [u8],
+        recipients: &'a [&'a KeyHandle],
+    ) -> CryptoFuture<'a, String> {
+        ready(public_keys(recipients).and_then(|keys| encrypt_message(plaintext, &keys)))
     }
 
-    fn sign_and_encrypt(
-        &self,
-        plaintext: &str,
-        signers: &[(&KeyHandle, &str)],
-        recipients: &[&KeyHandle],
-    ) -> Result<String, CryptoError> {
-        let signers = signers
-            .iter()
-            .map(|(key, passphrase)| {
-                Ok(SigningKey {
-                    key: key_of(key)?,
-                    passphrase,
+    fn sign_and_encrypt<'a>(
+        &'a self,
+        plaintext: &'a str,
+        signers: &'a [(&'a KeyHandle, &'a str)],
+        recipients: &'a [&'a KeyHandle],
+    ) -> CryptoFuture<'a, String> {
+        let signed = || {
+            let signers = signers
+                .iter()
+                .map(|(key, passphrase)| {
+                    Ok(SigningKey {
+                        key: key_of(key)?,
+                        passphrase,
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>, CryptoError>>()?;
-        sign_and_encrypt(plaintext, &signers, &public_keys(recipients)?)
+                .collect::<Result<Vec<_>, CryptoError>>()?;
+            sign_and_encrypt(plaintext, &signers, &public_keys(recipients)?)
+        };
+        ready(signed())
     }
 }
 

@@ -10,6 +10,7 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
+use futures_executor::block_on;
 use passbolt_sdk::crypto;
 use passbolt_sdk::resource::list::list_resources;
 use passbolt_sdk::types::Resource;
@@ -28,11 +29,11 @@ fn shared_resource() -> Resource {
 /// The session key of `resource`'s metadata, as a bundle stores it.
 fn session_key_of(resource: &Resource) -> String {
     let metadata_key = crypto::parse_private_key(METADATA.private).unwrap();
-    let (_, session_key) = crypto::decrypt_message_keeping_session_key(
+    let (_, session_key) = block_on(crypto::decrypt_message_keeping_session_key(
         resource.armored_metadata().unwrap(),
         &metadata_key,
         METADATA.passphrase,
-    )
+    ))
     .unwrap();
     session_key.to_passbolt_string()
 }

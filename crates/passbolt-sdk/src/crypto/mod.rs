@@ -20,6 +20,8 @@ mod rpgp;
 mod engine_tests;
 
 use std::any::Any;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use zeroize::{Zeroize, Zeroizing};
@@ -32,12 +34,22 @@ use crate::error::CryptoError;
 /// What an engine keeps of a key it read.
 pub type KeyHandle = Arc<dyn Any + Send + Sync>;
 
+/// The result of a message operation, which engines running in the browser give later.
+pub type CryptoFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, CryptoError>> + Send + 'a>>;
+
+/// The result of an operation an engine ran at once.
+pub fn ready<'a, T: Send + 'a>(result: Result<T, CryptoError>) -> CryptoFuture<'a, T> {
+    Box::pin(std::future::ready(result))
+}
+
 /// An `OpenPGP` implementation, writing and reading messages as the browser extension does.
 ///
 /// Decrypted text literals come back with LF line endings, binary literals as they are.
 /// Messages are written for the newest valid encryption subkey of each recipient (else its
 /// primary key), as SEIPD v2 only when every recipient asks for it; revoked and expired keys
 /// are refused.
+///
+/// Keys are read at once; message operations may complete later, in the browser.
 pub trait Engine: Send + Sync {
     /// The name the engine is chosen by.
     fn name(&self) -> &'static str;
@@ -48,38 +60,42 @@ pub trait Engine: Send + Sync {
     /// Read and check an armored public key; its fingerprint in upper-case hexadecimal.
     fn parse_public_key(&self, armored: &str) -> Result<(KeyHandle, String), CryptoError>;
 
-    fn decrypt(
-        &self,
-        armored_message: &str,
-        private_key: &KeyHandle,
-        passphrase: &str,
-    ) -> Result<Vec<u8>, CryptoError>;
+    fn decrypt<'a>(
+        &'a self,
+        armored_message: &'a str,
+        private_key: &'a KeyHandle,
+        passphrase: &'a str,
+    ) -> CryptoFuture<'a, Vec<u8>>;
 
     /// Decrypt, giving the session key of the message too.
-    fn decrypt_keeping_session_key(
-        &self,
-        armored_message: &str,
-        private_key: &KeyHandle,
-        passphrase: &str,
-    ) -> Result<(Vec<u8>, SessionKey), CryptoError>;
+    fn decrypt_keeping_session_key<'a>(
+        &'a self,
+        armored_message: &'a str,
+        private_key: &'a KeyHandle,
+        passphrase: &'a str,
+    ) -> CryptoFuture<'a, (Vec<u8>, SessionKey)>;
 
-    fn decrypt_with_session_key(
-        &self,
-        armored_message: &str,
-        session_key: &SessionKey,
-    ) -> Result<Vec<u8>, CryptoError>;
+    fn decrypt_with_session_key<'a>(
+        &'a self,
+        armored_message: &'a str,
+        session_key: &'a SessionKey,
+    ) -> CryptoFuture<'a, Vec<u8>>;
 
     /// Encrypt `plaintext` for `recipients`, as a binary literal.
-    fn encrypt(&self, plaintext: &[u8], recipients: &[&KeyHandle]) -> Result<String, CryptoError>;
+    fn encrypt<'a>(
+        &'a self,
+        plaintext: &'a [u8],
+        recipients: &'a [&'a KeyHandle],
+    ) -> CryptoFuture<'a, String>;
 
     /// Sign `plaintext` with every `(private key, passphrase)`, then encrypt it for `recipients`,
     /// as a UTF-8 text literal; every signature covers the literal data.
-    fn sign_and_encrypt(
-        &self,
-        plaintext: &str,
-        signers: &[(&KeyHandle, &str)],
-        recipients: &[&KeyHandle],
-    ) -> Result<String, CryptoError>;
+    fn sign_and_encrypt<'a>(
+        &'a self,
+        plaintext: &'a str,
+        signers: &'a [(&'a KeyHandle, &'a str)],
+        recipients: &'a [&'a KeyHandle],
+    ) -> CryptoFuture<'a, String>;
 }
 
 /// The key an engine read, `Err` for a key another engine read.
@@ -139,13 +155,14 @@ impl OpenPgp {
         Ok(self.parse_public_key(armored)?.fingerprint)
     }
 
-    pub fn decrypt_with_session_key(
+    pub async fn decrypt_with_session_key(
         &self,
         armored_message: &str,
         session_key: &SessionKey,
     ) -> Result<Vec<u8>, CryptoError> {
         self.0
             .decrypt_with_session_key(armored_message, session_key)
+            .await
     }
 }
 
@@ -205,7 +222,7 @@ pub fn public_key_fingerprint(armored: &str) -> Result<String, CryptoError> {
     OpenPgp::default().public_key_fingerprint(armored)
 }
 
-pub fn decrypt_message(
+pub async fn decrypt_message(
     armored_message: &str,
     private_key: &PrivateKey,
     passphrase: &str,
@@ -214,20 +231,21 @@ pub fn decrypt_message(
         .openpgp
         .0
         .decrypt(armored_message, &private_key.handle, passphrase)
+        .await
 }
 
 /// Decrypt with `private_key`, and give the session key of the message, to decrypt it again
 /// without the costly public key operation.
-pub fn decrypt_message_keeping_session_key(
+pub async fn decrypt_message_keeping_session_key(
     armored_message: &str,
     private_key: &PrivateKey,
     passphrase: &str,
 ) -> Result<(Vec<u8>, SessionKey), CryptoError> {
-    private_key.openpgp.0.decrypt_keeping_session_key(
-        armored_message,
-        &private_key.handle,
-        passphrase,
-    )
+    private_key
+        .openpgp
+        .0
+        .decrypt_keeping_session_key(armored_message, &private_key.handle, passphrase)
+        .await
 }
 
 /// The engine of `recipients`, which all keys of a message must share.
@@ -239,9 +257,12 @@ fn engine_of<'a>(recipients: &[&'a PublicKey]) -> Result<&'a OpenPgp, CryptoErro
 }
 
 /// Encrypt `plaintext` for `recipients`, as a binary literal.
-pub fn encrypt_message(plaintext: &[u8], recipients: &[&PublicKey]) -> Result<String, CryptoError> {
+pub async fn encrypt_message(
+    plaintext: &[u8],
+    recipients: &[&PublicKey],
+) -> Result<String, CryptoError> {
     let handles: Vec<&KeyHandle> = recipients.iter().map(|key| &key.handle).collect();
-    engine_of(recipients)?.0.encrypt(plaintext, &handles)
+    engine_of(recipients)?.0.encrypt(plaintext, &handles).await
 }
 
 /// A key able to sign: a private key and its passphrase.
@@ -254,7 +275,7 @@ pub struct Signer<'a> {
 ///
 /// Passbolt clients sign secrets with the user key, shared metadata with the metadata key too.
 /// Every signature covers the literal data, as `OpenPGP.js` and gopenpgp write and check them.
-pub fn sign_and_encrypt(
+pub async fn sign_and_encrypt(
     plaintext: &str,
     signers: &[Signer<'_>],
     recipients: &[&PublicKey],
@@ -267,6 +288,7 @@ pub fn sign_and_encrypt(
     engine_of(recipients)?
         .0
         .sign_and_encrypt(plaintext, &signers, &handles)
+        .await
 }
 
 /// The symmetric key of one message, as Passbolt stores it: `<algorithm id>:<hex key>`.
@@ -360,9 +382,9 @@ mod tests {
         assert_eq!(public_key_fingerprint(SERVER_PUBLIC).unwrap(), fingerprint);
     }
 
-    #[test]
-    fn test_a_message_needs_a_recipient() {
-        assert!(encrypt_message(b"secret", &[]).is_err());
+    #[tokio::test]
+    async fn test_a_message_needs_a_recipient() {
+        assert!(encrypt_message(b"secret", &[]).await.is_err());
     }
 
     #[test]

@@ -1070,11 +1070,15 @@ pub fn decrypt_message(
             reason: error.to_string(),
         }
     })?;
-    passbolt_sdk::crypto::decrypt_message(&armored_message, &key, &passphrase).map_err(|error| {
-        PassboltFfiError::Crypto {
+    RUNTIME
+        .block_on(passbolt_sdk::crypto::decrypt_message(
+            &armored_message,
+            &key,
+            &passphrase,
+        ))
+        .map_err(|error| PassboltFfiError::Crypto {
             reason: error.to_string(),
-        }
-    })
+        })
 }
 
 /// Encrypt a plaintext message for one or more PGP public keys.
@@ -1092,11 +1096,11 @@ pub fn encrypt_message(
         reason: error.to_string(),
     })?;
     let key_refs: Vec<_> = keys.iter().collect();
-    passbolt_sdk::crypto::encrypt_message(&plaintext, &key_refs).map_err(|error| {
-        PassboltFfiError::Crypto {
+    RUNTIME
+        .block_on(passbolt_sdk::crypto::encrypt_message(&plaintext, &key_refs))
+        .map_err(|error| PassboltFfiError::Crypto {
             reason: error.to_string(),
-        }
-    })
+        })
 }
 
 /// Parse a PGP private key and return its fingerprint (hex uppercase).

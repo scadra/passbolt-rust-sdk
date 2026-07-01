@@ -17,6 +17,7 @@
 // WASM is single-threaded: futures don't need Send.
 #![allow(clippy::future_not_send)]
 
+use futures_executor::block_on;
 use passbolt_wasm::{encrypt_message, get_key_fingerprint, PassboltSession};
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
@@ -61,7 +62,8 @@ impl Passbolt {
     /// client keeps them: without the session cookie, the server answers 403.
     fn new() -> Self {
         let token = format!("gpgauthv1.3.0|36|{}|gpgauthv1.3.0", uuid::Uuid::new_v4());
-        let challenge = encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()]).unwrap();
+        let challenge =
+            block_on(encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()])).unwrap();
         let factory = js_sys::Function::new_with_args(
             "challenge, userId, armoredKey, fingerprint, routes",
             r#"

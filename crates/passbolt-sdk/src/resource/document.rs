@@ -122,7 +122,7 @@ pub async fn encrypt_metadata<H: HttpClient>(
     let user = client.user_signer();
     if personal {
         let (public_key, gpgkey_id) = public_key_of(client.openpgp(), me)?;
-        metadata::encrypt_for_user(metadata, &user, &public_key, gpgkey_id)
+        metadata::encrypt_for_user(metadata, &user, &public_key, gpgkey_id).await
     } else {
         client.encrypt_shared_metadata(metadata).await
     }

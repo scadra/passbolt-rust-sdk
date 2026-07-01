@@ -2530,6 +2530,7 @@ name = "passbolt-ffi"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "futures-executor",
  "passbolt-sdk",
  "rstest",
  "secrecy",
@@ -2552,6 +2553,7 @@ dependencies = [
  "cbc",
  "chrono",
  "ctr",
+ "futures-executor",
  "hex",
  "hkdf",
  "percent-encoding",
@@ -2580,6 +2582,7 @@ dependencies = [
 name = "passbolt-wasm"
 version = "0.1.0"
 dependencies = [
+ "futures-executor",
  "getrandom 0.2.17",
  "js-sys",
  "passbolt-sdk",

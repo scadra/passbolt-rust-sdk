@@ -134,7 +134,7 @@ async fn secrets_needed<H: HttpClient>(
                     "The dry-run gave no secret of resource {resource_id}"
                 ))
             })?;
-            plaintexts.insert(resource_id.clone(), client.decrypt_text(encrypted)?);
+            plaintexts.insert(resource_id.clone(), client.decrypt_text(encrypted).await?);
         }
         if !public_keys.contains_key(&user_id) {
             let (public_key, _) =
@@ -146,7 +146,8 @@ async fn secrets_needed<H: HttpClient>(
                 &plaintexts[&resource_id],
                 &[client.user_signer()],
                 &[&public_keys[&user_id]],
-            )?,
+            )
+            .await?,
             resource_id,
             user_id,
         });

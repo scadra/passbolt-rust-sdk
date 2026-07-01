@@ -14,6 +14,7 @@
 //! OpenPGP.js writes, read by the SDK (`tests/interop`, set up with
 //! `npm ci --prefix tests/interop`).
 
+use futures_executor::block_on;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -116,14 +117,14 @@ async fn personal_metadata_and_secrets_are_signed_by_the_user() {
 #[test]
 fn multiline_text_keeps_its_line_endings() {
     let signer = passbolt_sdk::crypto::parse_private_key(ADA.private).unwrap();
-    let message = passbolt_sdk::crypto::sign_and_encrypt(
+    let message = block_on(passbolt_sdk::crypto::sign_and_encrypt(
         "line one\nline two",
         &[passbolt_sdk::crypto::Signer {
             key: &signer,
             passphrase: ADA.passphrase,
         }],
         &[&passbolt_sdk::crypto::parse_public_key(ADA.public).unwrap()],
-    )
+    ))
     .unwrap();
 
     assert_eq!(
@@ -146,8 +147,12 @@ fn the_session_key_of_a_seipd_v2_message_is_read_by_openpgp_js() {
     let message = encrypted_by_openpgp_js("metadata", "seipd_v2");
     let erin = crypto::parse_private_key(ERIN.private).unwrap();
 
-    let (_, session_key) =
-        crypto::decrypt_message_keeping_session_key(&message, &erin, ERIN.passphrase).unwrap();
+    let (_, session_key) = block_on(crypto::decrypt_message_keeping_session_key(
+        &message,
+        &erin,
+        ERIN.passphrase,
+    ))
+    .unwrap();
 
     let read = openpgp_js(
         "verify.mjs",
@@ -164,14 +169,14 @@ fn the_session_key_of_a_seipd_v2_message_is_read_by_openpgp_js() {
 fn a_seipd_v2_message_is_read_by_openpgp_js() {
     let erin_asking_for_seipd_v2 = include_str!("../fixtures/keys/erin_seipd_v2_public.asc");
     let signer = crypto::parse_private_key(ADA.private).unwrap();
-    let message = crypto::sign_and_encrypt(
+    let message = block_on(crypto::sign_and_encrypt(
         "line one\nline two",
         &[crypto::Signer {
             key: &signer,
             passphrase: ADA.passphrase,
         }],
         &[&crypto::parse_public_key(erin_asking_for_seipd_v2).unwrap()],
-    )
+    ))
     .unwrap();
 
     assert_eq!(

@@ -106,6 +106,23 @@ fn parse_typed_secret(
     }
 }
 
+/// The secret of resource `id`, as text.
+async fn decrypt_secret_text(
+    id: &str,
+    encrypted: &str,
+    key: &PrivateKey,
+    passphrase: &str,
+) -> Result<String, PassboltError> {
+    let plaintext = crypto::decrypt_message(encrypted, key, passphrase)
+        .await
+        .map_err(|error| CryptoError::Decrypt(format!("resource {id} secret: {error}")))?;
+    String::from_utf8(plaintext).map_err(|error| {
+        PassboltError::Other(format!(
+            "Secret of resource {id} is not valid UTF-8: {error}"
+        ))
+    })
+}
+
 /// A JSON object secret, or the plain password of a `password-string` type.
 fn parse_secret(plaintext: Vec<u8>) -> Result<SecretData, PassboltError> {
     let text = String::from_utf8(plaintext)
@@ -267,17 +284,18 @@ impl<H: HttpClient> PassboltSdk<H> {
             .and_then(|gpg_key| gpg_key.armored_key.as_deref())
             .ok_or(AuthError::KeyCrossCheckFailed)?;
         let probe = b"passbolt-key-check";
-        let decrypted_probe = self
-            .openpgp()
-            .parse_public_key(armored_key)
-            .and_then(|public_key| crypto::encrypt_message(probe, &[&public_key]))
-            .and_then(|encrypted_probe| {
-                crypto::decrypt_message(
-                    &encrypted_probe,
-                    &self.private_key,
-                    self.passphrase.expose_secret(),
-                )
-            })
+        let round_trip = async {
+            let public_key = self.openpgp().parse_public_key(armored_key)?;
+            let encrypted_probe = crypto::encrypt_message(probe, &[&public_key]).await?;
+            crypto::decrypt_message(
+                &encrypted_probe,
+                &self.private_key,
+                self.passphrase.expose_secret(),
+            )
+            .await
+        };
+        let decrypted_probe = round_trip
+            .await
             .map_err(|_| AuthError::KeyCrossCheckFailed)?;
         if decrypted_probe != probe {
             return Err(AuthError::KeyCrossCheckFailed.into());
@@ -666,12 +684,15 @@ impl<H: HttpClient> PassboltSdk<H> {
         let keys: Vec<MetadataKey> = self
             .get("/metadata/keys.json?contain[metadata_private_keys]=1&filter[deleted]=0")
             .await?;
-        let decrypted_keys = Arc::new(MetadataKeys::decrypt(
-            &keys,
-            &self.user_id,
-            &self.private_key,
-            self.passphrase.expose_secret(),
-        )?);
+        let decrypted_keys = Arc::new(
+            MetadataKeys::decrypt(
+                &keys,
+                &self.user_id,
+                &self.private_key,
+                self.passphrase.expose_secret(),
+            )
+            .await?,
+        );
         // A concurrent caller may have set it first: both decrypted the same keys.
         Ok(Arc::clone(
             self.metadata_keys.get_or_init(|| decrypted_keys),
@@ -697,7 +718,7 @@ impl<H: HttpClient> PassboltSdk<H> {
                 .into());
             }
         }
-        metadata_keys.encrypt(metadata, &self.user_signer())
+        metadata_keys.encrypt(metadata, &self.user_signer()).await
     }
 
     /// The user's session keys bundles, still encrypted.
@@ -729,7 +750,7 @@ impl<H: HttpClient> PassboltSdk<H> {
 
     async fn read_session_keys(&self) -> SessionKeys {
         let bundles = self.session_keys_bundles().await.unwrap_or_default();
-        SessionKeys::decrypt(&bundles, &self.private_key, self.passphrase.expose_secret())
+        SessionKeys::decrypt(&bundles, &self.private_key, self.passphrase.expose_secret()).await
     }
 
     /// Add `new` session keys to the user's latest bundle, created if there is none, then
@@ -798,7 +819,8 @@ impl<H: HttpClient> PassboltSdk<H> {
             &session_keys.bundle_data()?,
             &[self.user_signer()],
             &[&public_key],
-        )?;
+        )
+        .await?;
         let saved: SessionKeysBundle = match session_keys.bundle() {
             Some((id, modified)) => {
                 let body = serde_json::json!({ "data": data, "modified": modified });
@@ -840,7 +862,7 @@ impl<H: HttpClient> PassboltSdk<H> {
             return Ok(None);
         }
         let session_keys = self.session_keys().await;
-        let decrypt = |shared_keys: &MetadataKeys| {
+        let decrypt = async |shared_keys: &MetadataKeys| {
             metadata::decrypt_resource_metadata_with_session_keys(
                 resource,
                 &self.private_key,
@@ -848,17 +870,18 @@ impl<H: HttpClient> PassboltSdk<H> {
                 shared_keys,
                 &session_keys,
             )
+            .await
         };
         let personal = resource.metadata_key_type.as_deref() == Some("user_key");
         // The shared keys are fetched only if the session key is missing or stale.
         if personal || session_keys.get(&resource.id).is_some() {
-            let decrypted = decrypt(&MetadataKeys::default());
+            let decrypted = decrypt(&MetadataKeys::default()).await;
             if personal || decrypted.is_ok() {
                 return decrypted;
             }
         }
         let shared_keys = self.metadata_keys().await?;
-        decrypt(&shared_keys)
+        decrypt(&shared_keys).await
     }
 
     /// Decrypt the `metadata` of a v5 resource; `None` for a v4 resource.
@@ -933,20 +956,6 @@ impl<H: HttpClient> PassboltSdk<H> {
             .collect();
         let key = Arc::new(self.private_key.clone());
         let passphrase = Arc::new(self.passphrase.clone());
-        let decrypt = move |id: String, encrypted: String| {
-            let text = crypto::decrypt_message(&encrypted, &key, passphrase.expose_secret())
-                .map_err(|error| {
-                    CryptoError::Decrypt(format!("resource {id} secret: {error}")).into()
-                })
-                .and_then(|plaintext| {
-                    String::from_utf8(plaintext).map_err(|error| {
-                        PassboltError::Other(format!(
-                            "Secret of resource {id} is not valid UTF-8: {error}"
-                        ))
-                    })
-                });
-            (id, text)
-        };
 
         #[cfg(feature = "native")]
         {
@@ -958,17 +967,25 @@ impl<H: HttpClient> PassboltSdk<H> {
                 workers
             };
             let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
-            let decrypt = Arc::new(decrypt);
+            let runtime = tokio::runtime::Handle::current();
             let mut tasks = JoinSet::new();
             for (id, encrypted) in encrypted_secrets {
                 let permit = Arc::clone(&semaphore)
                     .acquire_owned()
                     .await
                     .map_err(|error| PassboltError::Other(format!("Semaphore error: {error}")))?;
-                let decrypt = Arc::clone(&decrypt);
+                let (key, passphrase, runtime) =
+                    (Arc::clone(&key), Arc::clone(&passphrase), runtime.clone());
+                // Engines of native code decrypt while polled: on a blocking thread.
                 tasks.spawn_blocking(move || {
                     let _permit = permit;
-                    decrypt(id, encrypted)
+                    let text = runtime.block_on(decrypt_secret_text(
+                        &id,
+                        &encrypted,
+                        &key,
+                        passphrase.expose_secret(),
+                    ));
+                    (id, text)
                 });
             }
             let mut texts = HashMap::new();
@@ -983,10 +1000,13 @@ impl<H: HttpClient> PassboltSdk<H> {
         #[cfg(not(feature = "native"))]
         {
             let _ = workers;
-            Ok(encrypted_secrets
-                .into_iter()
-                .map(|(id, encrypted)| decrypt(id, encrypted))
-                .collect())
+            let mut texts = HashMap::new();
+            for (id, encrypted) in encrypted_secrets {
+                let text =
+                    decrypt_secret_text(&id, &encrypted, &key, passphrase.expose_secret()).await;
+                texts.insert(id, text);
+            }
+            Ok(texts)
         }
     }
 
@@ -1153,6 +1173,7 @@ impl<H: HttpClient> PassboltSdk<H> {
             &self.private_key,
             self.passphrase.expose_secret(),
         )
+        .await
         .map_err(|error| CryptoError::Decrypt(format!("resource secret: {error}")))?;
         String::from_utf8(plaintext)
             .map(Some)
@@ -1204,7 +1225,8 @@ impl<H: HttpClient> PassboltSdk<H> {
 
             let public_key = self.openpgp().parse_public_key(armored_key)?;
             let encrypted =
-                crypto::sign_and_encrypt(secret_json, &[self.user_signer()], &[&public_key])?;
+                crypto::sign_and_encrypt(secret_json, &[self.user_signer()], &[&public_key])
+                    .await?;
 
             payloads.push(SecretPayload {
                 user_id: user_id.clone(),
@@ -1397,9 +1419,10 @@ impl<H: HttpClient> PassboltSdk<H> {
     }
 
     /// Decrypt a message encrypted for the user.
-    pub(crate) fn decrypt_text(&self, armored: &str) -> Result<String, PassboltError> {
+    pub(crate) async fn decrypt_text(&self, armored: &str) -> Result<String, PassboltError> {
         let plaintext =
-            crypto::decrypt_message(armored, &self.private_key, self.passphrase.expose_secret())?;
+            crypto::decrypt_message(armored, &self.private_key, self.passphrase.expose_secret())
+                .await?;
         String::from_utf8(plaintext)
             .map_err(|error| PassboltError::Other(format!("Secret is not valid UTF-8: {error}")))
     }

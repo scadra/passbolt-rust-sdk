@@ -46,7 +46,8 @@ pub async fn run(args: &VerifyArgs, config: &Config) -> Result<()> {
     // The token pair go-passbolt-cli checks at each login, proved once here.
     let token = passbolt_sdk::auth::new_verify_token();
     let server_key = openpgp.parse_public_key(&server_public_key)?;
-    let encrypted_token = passbolt_sdk::crypto::encrypt_message(token.as_bytes(), &[&server_key])?;
+    let encrypted_token =
+        passbolt_sdk::crypto::encrypt_message(token.as_bytes(), &[&server_key]).await?;
     passbolt_sdk::auth::verify_server(
         &http,
         &base_url,

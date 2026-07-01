@@ -22,7 +22,7 @@ use rquickjs::{
     CatchResultExt, CaughtError, Context, Ctx, FromJs, Object, Runtime, TypedArray, Value,
 };
 
-use super::{key_of, Engine, KeyHandle, SessionKey};
+use super::{key_of, ready, CryptoFuture, Engine, KeyHandle, SessionKey};
 use crate::error::CryptoError;
 
 const OPENPGP_JS: &str = include_str!("../../../vendor/openpgpjs/openpgp.min.js");
@@ -157,20 +157,9 @@ impl OpenPgpJs {
     }
 }
 
-impl Engine for OpenPgpJs {
-    fn name(&self) -> &'static str {
-        "openpgpjs"
-    }
-
-    fn parse_private_key(&self, armored: &str) -> Result<(KeyHandle, String), CryptoError> {
-        self.read_key("readPrivateKey", armored)
-    }
-
-    fn parse_public_key(&self, armored: &str) -> Result<(KeyHandle, String), CryptoError> {
-        self.read_key("readPublicKey", armored)
-    }
-
-    fn decrypt(
+/// The operations, run at once: `QuickJS` runs the promises of OpenPGP.js to their end.
+impl OpenPgpJs {
+    fn decrypted(
         &self,
         armored_message: &str,
         private_key: &KeyHandle,
@@ -183,7 +172,7 @@ impl Engine for OpenPgpJs {
         })
     }
 
-    fn decrypt_keeping_session_key(
+    fn decrypted_keeping_session_key(
         &self,
         armored_message: &str,
         private_key: &KeyHandle,
@@ -209,7 +198,7 @@ impl Engine for OpenPgpJs {
         })
     }
 
-    fn decrypt_with_session_key(
+    fn decrypted_with_session_key(
         &self,
         armored_message: &str,
         session_key: &SessionKey,
@@ -225,7 +214,11 @@ impl Engine for OpenPgpJs {
         })
     }
 
-    fn encrypt(&self, plaintext: &[u8], recipients: &[&KeyHandle]) -> Result<String, CryptoError> {
+    fn encrypted(
+        &self,
+        plaintext: &[u8],
+        recipients: &[&KeyHandle],
+    ) -> Result<String, CryptoError> {
         let ids = recipients
             .iter()
             .map(|recipient| self.id_of(recipient))
@@ -236,7 +229,7 @@ impl Engine for OpenPgpJs {
         })
     }
 
-    fn sign_and_encrypt(
+    fn signed_and_encrypted(
         &self,
         plaintext: &str,
         signers: &[(&KeyHandle, &str)],
@@ -263,5 +256,62 @@ impl Engine for OpenPgpJs {
                 .map_err(|error| error.to_string())?;
             call(ctx, "signAndEncrypt", (plaintext, signers, ids))
         })
+    }
+}
+
+impl Engine for OpenPgpJs {
+    fn name(&self) -> &'static str {
+        "openpgpjs"
+    }
+
+    fn parse_private_key(&self, armored: &str) -> Result<(KeyHandle, String), CryptoError> {
+        self.read_key("readPrivateKey", armored)
+    }
+
+    fn parse_public_key(&self, armored: &str) -> Result<(KeyHandle, String), CryptoError> {
+        self.read_key("readPublicKey", armored)
+    }
+
+    fn decrypt<'a>(
+        &'a self,
+        armored_message: &'a str,
+        private_key: &'a KeyHandle,
+        passphrase: &'a str,
+    ) -> CryptoFuture<'a, Vec<u8>> {
+        ready(self.decrypted(armored_message, private_key, passphrase))
+    }
+
+    fn decrypt_keeping_session_key<'a>(
+        &'a self,
+        armored_message: &'a str,
+        private_key: &'a KeyHandle,
+        passphrase: &'a str,
+    ) -> CryptoFuture<'a, (Vec<u8>, SessionKey)> {
+        ready(self.decrypted_keeping_session_key(armored_message, private_key, passphrase))
+    }
+
+    fn decrypt_with_session_key<'a>(
+        &'a self,
+        armored_message: &'a str,
+        session_key: &'a SessionKey,
+    ) -> CryptoFuture<'a, Vec<u8>> {
+        ready(self.decrypted_with_session_key(armored_message, session_key))
+    }
+
+    fn encrypt<'a>(
+        &'a self,
+        plaintext: &'a [u8],
+        recipients: &'a [&'a KeyHandle],
+    ) -> CryptoFuture<'a, String> {
+        ready(self.encrypted(plaintext, recipients))
+    }
+
+    fn sign_and_encrypt<'a>(
+        &'a self,
+        plaintext: &'a str,
+        signers: &'a [(&'a KeyHandle, &'a str)],
+        recipients: &'a [&'a KeyHandle],
+    ) -> CryptoFuture<'a, String> {
+        ready(self.signed_and_encrypted(plaintext, signers, recipients))
     }
 }

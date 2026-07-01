@@ -243,7 +243,8 @@ async fn secrets_for<H: HttpClient>(
             document::public_key_of(client.openpgp(), &client.get_user(user_id).await?)?;
         secrets.push(SecretPayload {
             user_id: user_id.clone(),
-            data: crypto::sign_and_encrypt(&plaintext, &[client.user_signer()], &[&public_key])?,
+            data: crypto::sign_and_encrypt(&plaintext, &[client.user_signer()], &[&public_key])
+                .await?,
         });
     }
     Ok(secrets)

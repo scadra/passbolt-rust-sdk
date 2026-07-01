@@ -77,7 +77,7 @@ impl MetadataKeys {
     /// Decrypt the user's share of every metadata key not deleted.
     ///
     /// A key without a share for the user is skipped: in zero-knowledge mode it has not been shared yet.
-    pub fn decrypt(
+    pub async fn decrypt(
         keys: &[MetadataKey],
         user_id: &str,
         user_key: &PrivateKey,
@@ -93,6 +93,7 @@ impl MetadataKeys {
                 continue;
             };
             let plaintext = crypto::decrypt_message(&share.data, user_key, user_passphrase)
+                .await
                 .map_err(|error| {
                     CryptoError::Decrypt(format!("metadata key {} share: {error}", metadata_key.id))
                 })?;
@@ -112,7 +113,7 @@ impl MetadataKeys {
     }
 
     /// Encrypt `metadata` for the active shared key, signed by the user and by that key.
-    pub fn encrypt(
+    pub async fn encrypt(
         &self,
         metadata: &ResourceMetadata,
         user: &Signer<'_>,
@@ -138,7 +139,7 @@ impl MetadataKeys {
         }
         let plaintext = serde_json::to_string(metadata)?;
         Ok(EncryptedMetadata {
-            metadata: crypto::sign_and_encrypt(&plaintext, &signers, &[&active.public_key])?,
+            metadata: crypto::sign_and_encrypt(&plaintext, &signers, &[&active.public_key]).await?,
             metadata_key_id: active.id.clone(),
             metadata_key_type: "shared_key",
         })
@@ -201,7 +202,7 @@ fn active_key(
 /// Encrypt `metadata` for the user's own key, signed by the user.
 ///
 /// `gpgkey_id` is the id of the user's key on the server, sent as `metadata_key_id`.
-pub fn encrypt_for_user(
+pub async fn encrypt_for_user(
     metadata: &ResourceMetadata,
     user: &Signer<'_>,
     user_public_key: &PublicKey,
@@ -213,7 +214,8 @@ pub fn encrypt_for_user(
             &plaintext,
             std::slice::from_ref(user),
             &[user_public_key],
-        )?,
+        )
+        .await?,
         metadata_key_id: gpgkey_id.to_string(),
         metadata_key_type: "user_key",
     })
@@ -253,7 +255,7 @@ fn parse_private_key_data(
 /// Decrypt the `metadata` of a v5 resource; `None` for a v4 resource.
 ///
 /// `user_key` metadata is encrypted for the user, `shared_key` metadata for `metadata_key_id`.
-pub fn decrypt_resource_metadata(
+pub async fn decrypt_resource_metadata(
     resource: &Resource,
     user_key: &PrivateKey,
     user_passphrase: &str,
@@ -265,7 +267,8 @@ pub fn decrypt_resource_metadata(
         user_passphrase,
         shared_keys,
         &SessionKeys::default(),
-    )?;
+    )
+    .await?;
     Ok(decrypted.map(|(metadata, _)| metadata))
 }
 
@@ -273,7 +276,7 @@ pub fn decrypt_resource_metadata(
 ///
 /// Much faster than a public key decryption. Also gives the session key of the metadata
 /// when it was not known, to save it.
-pub fn decrypt_resource_metadata_with_session_keys(
+pub async fn decrypt_resource_metadata_with_session_keys(
     resource: &Resource,
     user_key: &PrivateKey,
     user_passphrase: &str,
@@ -287,12 +290,14 @@ pub fn decrypt_resource_metadata_with_session_keys(
         CryptoError::Decrypt(format!("resource {} metadata: {reason}", resource.id))
     };
     // A stale session key (the metadata changed since) falls back to the keys.
-    let known = session_keys.get(&resource.id).and_then(|session_key| {
-        user_key
+    let known = match session_keys.get(&resource.id) {
+        Some(session_key) => user_key
             .openpgp()
             .decrypt_with_session_key(armored, session_key)
-            .ok()
-    });
+            .await
+            .ok(),
+        None => None,
+    };
     let (plaintext, new_session_key) = if let Some(plaintext) = known {
         (plaintext, None)
     } else {
@@ -307,6 +312,7 @@ pub fn decrypt_resource_metadata_with_session_keys(
         };
         let (plaintext, session_key) =
             crypto::decrypt_message_keeping_session_key(armored, key, passphrase)
+                .await
                 .map_err(|error| failure(error.to_string()))?;
         (plaintext, Some(session_key))
     };
@@ -376,8 +382,7 @@ impl std::fmt::Debug for SessionKeys {
 impl SessionKeys {
     /// Read the bundles, the latest last; one that cannot be read is skipped: session keys are
     /// a cache.
-    #[must_use]
-    pub fn decrypt(
+    pub async fn decrypt(
         bundles: &[SessionKeysBundle],
         user_key: &PrivateKey,
         user_passphrase: &str,
@@ -393,7 +398,8 @@ impl SessionKeys {
                 bundle.id.clone(),
                 bundle.modified.clone().unwrap_or_default(),
             ));
-            let Ok(plaintext) = crypto::decrypt_message(&bundle.data, user_key, user_passphrase)
+            let Ok(plaintext) =
+                crypto::decrypt_message(&bundle.data, user_key, user_passphrase).await
             else {
                 continue;
             };

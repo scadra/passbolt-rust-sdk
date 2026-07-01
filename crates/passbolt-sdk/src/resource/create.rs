@@ -94,7 +94,8 @@ pub async fn create_resource<H: HttpClient>(
         &document::secret_plaintext(&documents.secret)?,
         &[client.user_signer()],
         &[&user_public_key],
-    )?;
+    )
+    .await?;
 
     let mut payload = CreateResourcePayload {
         name: None,

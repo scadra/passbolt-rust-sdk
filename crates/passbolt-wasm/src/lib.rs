@@ -1099,7 +1099,7 @@ impl PassboltSession {
 /// Decrypt a PGP-armored message with a private key.
 /// For progressive openpgp.js replacement.
 #[wasm_bindgen(js_name = "decryptMessage")]
-pub fn decrypt_message(
+pub async fn decrypt_message(
     armored_message: &str,
     private_key_armored: &str,
     passphrase: &str,
@@ -1107,13 +1107,14 @@ pub fn decrypt_message(
     let key = passbolt_sdk::crypto::parse_private_key(private_key_armored)
         .map_err(|error| JsError::new(&error.to_string()))?;
     passbolt_sdk::crypto::decrypt_message(armored_message, &key, passphrase)
+        .await
         .map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// Encrypt a plaintext message for one or more PGP public keys.
 /// Returns the PGP-armored ciphertext.
 #[wasm_bindgen(js_name = "encryptMessage")]
-pub fn encrypt_message(
+pub async fn encrypt_message(
     plaintext: &[u8],
     public_keys_armored: Vec<String>,
 ) -> Result<String, JsError> {
@@ -1124,6 +1125,7 @@ pub fn encrypt_message(
     let keys = parsed.map_err(|error| JsError::new(&error.to_string()))?;
     let key_refs: Vec<_> = keys.iter().collect();
     passbolt_sdk::crypto::encrypt_message(plaintext, &key_refs)
+        .await
         .map_err(|error| JsError::new(&error.to_string()))
 }
 
@@ -1137,6 +1139,7 @@ pub fn get_key_fingerprint(private_key_armored: &str) -> Result<String, JsError>
 
 #[cfg(test)]
 mod tests {
+    use futures_executor::block_on;
     use rstest::rstest;
     use secrecy::ExposeSecret;
     use serde_json::json;
@@ -1233,9 +1236,9 @@ mod tests {
 
     #[test]
     fn test_encrypt_then_decrypt_message_round_trips() {
-        let armored = encrypt_message(b"top secret", vec![SERVER_PUBLIC.into()]).unwrap();
+        let armored = block_on(encrypt_message(b"top secret", vec![SERVER_PUBLIC.into()])).unwrap();
 
-        let plaintext = decrypt_message(&armored, SERVER_PRIVATE, "").unwrap();
+        let plaintext = block_on(decrypt_message(&armored, SERVER_PRIVATE, "")).unwrap();
 
         assert_eq!(plaintext, b"top secret");
     }
@@ -1253,6 +1256,7 @@ mod tests {
 
 #[cfg(all(test, target_arch = "wasm32"))]
 mod wasm_tests {
+    use futures_executor::block_on;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     use super::*;
@@ -1331,7 +1335,8 @@ mod wasm_tests {
     #[wasm_bindgen_test]
     async fn test_login_answers_gpgauth_with_the_provided_csrf_token() {
         let token = format!("gpgauthv1.3.0|36|{}|gpgauthv1.3.0", uuid::Uuid::new_v4());
-        let challenge = encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()]).unwrap();
+        let challenge =
+            block_on(encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()])).unwrap();
         let global = js_sys::global();
         let real_fetch = js_sys::Reflect::get(&global, &"fetch".into()).unwrap();
         js_sys::Reflect::set(&global, &"fetch".into(), &passbolt_fetch(&challenge)).unwrap();
@@ -1358,7 +1363,8 @@ mod wasm_tests {
     /// Run `test` with `fetch` answering as [`passbolt_fetch`] does.
     async fn with_passbolt_fetch<T>(test: impl std::future::Future<Output = T>) -> T {
         let token = format!("gpgauthv1.3.0|36|{}|gpgauthv1.3.0", uuid::Uuid::new_v4());
-        let challenge = encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()]).unwrap();
+        let challenge =
+            block_on(encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()])).unwrap();
         let global = js_sys::global();
         let real_fetch = js_sys::Reflect::get(&global, &"fetch".into()).unwrap();
         js_sys::Reflect::set(&global, &"fetch".into(), &passbolt_fetch(&challenge)).unwrap();
@@ -1445,9 +1451,9 @@ mod wasm_tests {
 
     #[wasm_bindgen_test]
     fn test_decrypt_message_with_wrong_key_is_error() {
-        let armored = encrypt_message(b"for betty", vec![BETTY_PUBLIC.into()]).unwrap();
+        let armored = block_on(encrypt_message(b"for betty", vec![BETTY_PUBLIC.into()])).unwrap();
 
-        let result = decrypt_message(&armored, SERVER_PRIVATE, "");
+        let result = block_on(decrypt_message(&armored, SERVER_PRIVATE, ""));
 
         assert!(result.is_err());
     }

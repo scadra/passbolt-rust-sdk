@@ -39,6 +39,7 @@ uuid = { version = "1", features = ["js"] }
 secrecy = "0.10.3"
 
 [dev-dependencies]
+futures-executor = "0.3"
 rstest = "0.28"
 serde_json = "1"
 wasm-bindgen-test = "0.3"

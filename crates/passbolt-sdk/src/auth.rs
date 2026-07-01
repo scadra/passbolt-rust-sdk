@@ -85,8 +85,9 @@ pub async fn login<H: HttpClient>(
     let encrypted_challenge = decode_auth_token_header(&challenge_encoded)?;
 
     // Step 2: decrypt the challenge
-    let decrypted =
-        decrypt_message(&encrypted_challenge, private_key, passphrase).map_err(|error| {
+    let decrypted = decrypt_message(&encrypted_challenge, private_key, passphrase)
+        .await
+        .map_err(|error| {
             AuthError::LoginFailed(format!("Failed to decrypt server challenge: {error}"))
         })?;
     let token = String::from_utf8(decrypted)
@@ -339,7 +340,7 @@ pub async fn check_server_identity<H: HttpClient>(
     if !server_public_key.is_empty() {
         let server_key = user_key.openpgp().parse_public_key(server_public_key)?;
         let token = new_verify_token();
-        let encrypted_token = encrypt_message(token.as_bytes(), &[&server_key])?;
+        let encrypted_token = encrypt_message(token.as_bytes(), &[&server_key]).await?;
         return verify_server(
             http,
             base_url,

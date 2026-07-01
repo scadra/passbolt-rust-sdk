@@ -12,6 +12,7 @@
 
 //! Test-only PGP keys from `tests/fixtures/keys`.
 
+use futures_executor::block_on;
 use passbolt_sdk::crypto;
 use serde_json::Value;
 
@@ -57,13 +58,22 @@ impl TestKey {
 
     pub fn encrypt(&self, plaintext: &str) -> String {
         let public_key = crypto::parse_public_key(self.public).unwrap();
-        crypto::encrypt_message(plaintext.as_bytes(), &[&public_key]).unwrap()
+        block_on(crypto::encrypt_message(
+            plaintext.as_bytes(),
+            &[&public_key],
+        ))
+        .unwrap()
     }
 
     pub fn decrypt(&self, armored_message: &str) -> String {
         let private_key = crypto::parse_private_key(self.private).unwrap();
         String::from_utf8(
-            crypto::decrypt_message(armored_message, &private_key, self.passphrase).unwrap(),
+            block_on(crypto::decrypt_message(
+                armored_message,
+                &private_key,
+                self.passphrase,
+            ))
+            .unwrap(),
         )
         .unwrap()
     }
@@ -71,8 +81,12 @@ impl TestKey {
     /// Like `decrypt`, `None` when the message is not for this key.
     pub fn try_decrypt(&self, armored_message: &str) -> Option<String> {
         let private_key = crypto::parse_private_key(self.private).unwrap();
-        let plaintext =
-            crypto::decrypt_message(armored_message, &private_key, self.passphrase).ok()?;
+        let plaintext = block_on(crypto::decrypt_message(
+            armored_message,
+            &private_key,
+            self.passphrase,
+        ))
+        .ok()?;
         String::from_utf8(plaintext).ok()
     }
 

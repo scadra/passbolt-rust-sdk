@@ -76,22 +76,23 @@ fn test_what_is_not_a_public_key_is_refused(#[case] armored: &str) {
 #[rstest]
 #[case::binary(b"secret\r\nwith CR LF".as_slice())]
 #[case::empty(b"".as_slice())]
-fn test_binary_data_comes_back_as_it_was(#[case] plaintext: &[u8]) {
+#[tokio::test]
+async fn test_binary_data_comes_back_as_it_was(#[case] plaintext: &[u8]) {
     for openpgp in ENGINES.iter() {
         let (secret, public) = keypair(openpgp, SERVER_PRIVATE, SERVER_PUBLIC);
 
-        let armored = encrypt_message(plaintext, &[&public]).unwrap();
+        let armored = encrypt_message(plaintext, &[&public]).await.unwrap();
 
         assert_eq!(
-            decrypt_message(&armored, &secret, "").unwrap(),
+            decrypt_message(&armored, &secret, "").await.unwrap(),
             plaintext,
             "{openpgp:?}"
         );
     }
 }
 
-#[test]
-fn test_signed_text_comes_back_with_lf_line_endings() {
+#[tokio::test]
+async fn test_signed_text_comes_back_with_lf_line_endings() {
     for openpgp in ENGINES.iter() {
         let (secret, public) = keypair(openpgp, ERIN_PRIVATE, ERIN_PUBLIC);
         let signer = Signer {
@@ -99,28 +100,34 @@ fn test_signed_text_comes_back_with_lf_line_endings() {
             passphrase: ERIN_PASSPHRASE,
         };
 
-        let armored = sign_and_encrypt("line one\r\nline two é", &[signer], &[&public]).unwrap();
+        let armored = sign_and_encrypt("line one\r\nline two é", &[signer], &[&public])
+            .await
+            .unwrap();
 
         assert_eq!(
-            decrypt_message(&armored, &secret, ERIN_PASSPHRASE).unwrap(),
+            decrypt_message(&armored, &secret, ERIN_PASSPHRASE)
+                .await
+                .unwrap(),
             "line one\nline two é".as_bytes(),
             "{openpgp:?}"
         );
     }
 }
 
-#[test]
-fn test_every_recipient_reads_the_message() {
+#[tokio::test]
+async fn test_every_recipient_reads_the_message() {
     for openpgp in ENGINES.iter() {
         let (server_secret, server_public) = keypair(openpgp, SERVER_PRIVATE, SERVER_PUBLIC);
         let (metadata_secret, metadata_public) =
             keypair(openpgp, METADATA_PRIVATE, METADATA_PUBLIC);
 
-        let armored = encrypt_message(b"both", &[&server_public, &metadata_public]).unwrap();
+        let armored = encrypt_message(b"both", &[&server_public, &metadata_public])
+            .await
+            .unwrap();
 
         for secret in [&server_secret, &metadata_secret] {
             assert_eq!(
-                decrypt_message(&armored, secret, "").unwrap(),
+                decrypt_message(&armored, secret, "").await.unwrap(),
                 b"both",
                 "{openpgp:?}"
             );
@@ -128,30 +135,34 @@ fn test_every_recipient_reads_the_message() {
     }
 }
 
-#[test]
-fn test_another_key_does_not_read_the_message() {
+#[tokio::test]
+async fn test_another_key_does_not_read_the_message() {
     for openpgp in ENGINES.iter() {
         let (_, server_public) = keypair(openpgp, SERVER_PRIVATE, SERVER_PUBLIC);
         let (metadata_secret, _) = keypair(openpgp, METADATA_PRIVATE, METADATA_PUBLIC);
 
-        let armored = encrypt_message(b"secret", &[&server_public]).unwrap();
+        let armored = encrypt_message(b"secret", &[&server_public]).await.unwrap();
 
         assert!(
-            decrypt_message(&armored, &metadata_secret, "").is_err(),
+            decrypt_message(&armored, &metadata_secret, "")
+                .await
+                .is_err(),
             "{openpgp:?}"
         );
     }
 }
 
-#[test]
-fn test_a_wrong_passphrase_is_refused_even_after_the_right_one() {
+#[tokio::test]
+async fn test_a_wrong_passphrase_is_refused_even_after_the_right_one() {
     for openpgp in ENGINES.iter() {
         let (secret, public) = keypair(openpgp, ERIN_PRIVATE, ERIN_PUBLIC);
-        let armored = encrypt_message(b"secret", &[&public]).unwrap();
+        let armored = encrypt_message(b"secret", &[&public]).await.unwrap();
 
-        assert!(decrypt_message(&armored, &secret, ERIN_PASSPHRASE).is_ok());
+        assert!(decrypt_message(&armored, &secret, ERIN_PASSPHRASE)
+            .await
+            .is_ok());
         assert!(
-            decrypt_message(&armored, &secret, "wrong").is_err(),
+            decrypt_message(&armored, &secret, "wrong").await.is_err(),
             "{openpgp:?}"
         );
     }
@@ -160,18 +171,23 @@ fn test_a_wrong_passphrase_is_refused_even_after_the_right_one() {
 #[rstest]
 #[case::revoked(REVOKED_PUBLIC)]
 #[case::expired(EXPIRED_PUBLIC)]
-fn test_no_message_is_written_for_an_unusable_key(#[case] public: &str) {
+#[tokio::test]
+async fn test_no_message_is_written_for_an_unusable_key(#[case] public: &str) {
     for openpgp in ENGINES.iter() {
         let key = openpgp.parse_public_key(public).unwrap();
 
-        assert!(encrypt_message(b"secret", &[&key]).is_err(), "{openpgp:?}");
+        assert!(
+            encrypt_message(b"secret", &[&key]).await.is_err(),
+            "{openpgp:?}"
+        );
     }
 }
 
 #[rstest]
 #[case::seipd_v2(SEIPD_V2_MESSAGE, "9:")]
 #[case::gnupg_aead(GNUPG_AEAD_MESSAGE, "7:")]
-fn test_aead_messages_and_their_session_keys_are_read(
+#[tokio::test]
+async fn test_aead_messages_and_their_session_keys_are_read(
     #[case] armored: &str,
     #[case] algorithm: &str,
 ) {
@@ -179,7 +195,9 @@ fn test_aead_messages_and_their_session_keys_are_read(
         let erin = openpgp.parse_private_key(ERIN_PRIVATE).unwrap();
 
         let (plaintext, session_key) =
-            decrypt_message_keeping_session_key(armored, &erin, ERIN_PASSPHRASE).unwrap();
+            decrypt_message_keeping_session_key(armored, &erin, ERIN_PASSPHRASE)
+                .await
+                .unwrap();
         let stored = SessionKey::parse(&session_key.to_passbolt_string()).unwrap();
 
         assert_eq!(plaintext, b"line one\nline two", "{openpgp:?}");
@@ -188,7 +206,10 @@ fn test_aead_messages_and_their_session_keys_are_read(
             "{openpgp:?}"
         );
         assert_eq!(
-            openpgp.decrypt_with_session_key(armored, &stored).unwrap(),
+            openpgp
+                .decrypt_with_session_key(armored, &stored)
+                .await
+                .unwrap(),
             b"line one\nline two",
             "{openpgp:?}"
         );
@@ -198,18 +219,22 @@ fn test_aead_messages_and_their_session_keys_are_read(
 #[rstest]
 #[case::seipd_v1(ERIN_PUBLIC)]
 #[case::seipd_v2(ERIN_SEIPD_V2_PUBLIC)]
-fn test_a_kept_session_key_reads_its_message_only(#[case] public: &str) {
+#[tokio::test]
+async fn test_a_kept_session_key_reads_its_message_only(#[case] public: &str) {
     for openpgp in ENGINES.iter() {
         let (secret, public) = keypair(openpgp, ERIN_PRIVATE, public);
-        let first = encrypt_message(b"first", &[&public]).unwrap();
-        let second = encrypt_message(b"second", &[&public]).unwrap();
+        let first = encrypt_message(b"first", &[&public]).await.unwrap();
+        let second = encrypt_message(b"second", &[&public]).await.unwrap();
 
         let (_, session_key) =
-            decrypt_message_keeping_session_key(&first, &secret, ERIN_PASSPHRASE).unwrap();
+            decrypt_message_keeping_session_key(&first, &secret, ERIN_PASSPHRASE)
+                .await
+                .unwrap();
 
         assert_eq!(
             openpgp
                 .decrypt_with_session_key(&first, &session_key)
+                .await
                 .unwrap(),
             b"first",
             "{openpgp:?}"
@@ -217,23 +242,24 @@ fn test_a_kept_session_key_reads_its_message_only(#[case] public: &str) {
         assert!(
             openpgp
                 .decrypt_with_session_key(&second, &session_key)
+                .await
                 .is_err(),
             "{openpgp:?}"
         );
     }
 }
 
-#[test]
-fn test_a_key_of_another_engine_is_refused() {
+#[tokio::test]
+async fn test_a_key_of_another_engine_is_refused() {
     let [first, second] = [OpenPgp::rpgp(), ENGINES.last().unwrap().clone()];
     if first.name() == second.name() {
         return;
     }
     let secret = first.parse_private_key(SERVER_PRIVATE).unwrap();
     let public = second.parse_public_key(SERVER_PUBLIC).unwrap();
-    let armored = encrypt_message(b"secret", &[&public]).unwrap();
+    let armored = encrypt_message(b"secret", &[&public]).await.unwrap();
 
-    assert!(decrypt_message(&armored, &secret, "").is_ok());
+    assert!(decrypt_message(&armored, &secret, "").await.is_ok());
     assert!(sign_and_encrypt(
         "secret",
         &[Signer {
@@ -242,5 +268,6 @@ fn test_a_key_of_another_engine_is_refused() {
         }],
         &[&public]
     )
+    .await
     .is_err());
 }
