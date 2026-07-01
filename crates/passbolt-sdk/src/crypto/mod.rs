@@ -16,6 +16,9 @@
 mod openpgpjs;
 mod rpgp;
 
+#[cfg(test)]
+mod engine_tests;
+
 use std::any::Any;
 use std::sync::Arc;
 
