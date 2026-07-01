@@ -58,8 +58,8 @@ A publication is final on most registries: a version can be yanked or unlisted, 
 ## Releasing
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 A first job checks the tag names the SDK version; the packages then go to each enabled registry,

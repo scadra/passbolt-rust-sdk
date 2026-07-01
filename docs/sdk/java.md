@@ -9,7 +9,7 @@ sidebar_position: 5
 <dependency>
   <groupId>io.github.scadra</groupId>
   <artifactId>passbolt-sdk</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
 </dependency>
 ```
 

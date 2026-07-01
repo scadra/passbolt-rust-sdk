@@ -9,7 +9,7 @@ The Swift bindings over an XCFramework for devices (arm64) and simulators (arm64
 or later. In Xcode, File → Add Package Dependencies, or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/scadra/passbolt-sdk-swift", from: "0.1.0")
+.package(url: "https://github.com/scadra/passbolt-sdk-swift", from: "0.1.1")
 ```
 
 then the product `PassboltSDK`. The `PassboltSDK-ios-<version>.zip` of each release is the same
