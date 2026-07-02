@@ -13,6 +13,8 @@ totp = ["dep:totp-rs"]
 full = ["native", "totp"]
 # Interop tests with OpenPGP.js: needs node and `npm ci --prefix tests/interop`.
 interop = []
+# The gopenpgp engine, the library of go-passbolt: needs Go to build (`GO`, else `go`).
+gopenpgp = []
 # The OpenPGP.js engine: in an embedded QuickJS, or in WebAssembly the OpenPGP.js of the page.
 openpgpjs = [
     "dep:rquickjs", "dep:aes", "dep:aes-gcm", "dep:cbc", "dep:ctr", "dep:hkdf", "dep:sha2",

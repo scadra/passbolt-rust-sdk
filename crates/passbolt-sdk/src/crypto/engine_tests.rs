@@ -39,6 +39,8 @@ static ENGINES: LazyLock<Vec<OpenPgp>> = LazyLock::new(|| {
         OpenPgp::rpgp(),
         #[cfg(all(feature = "openpgpjs", not(target_arch = "wasm32")))]
         OpenPgp::openpgpjs().unwrap(),
+        #[cfg(all(feature = "gopenpgp", not(target_arch = "wasm32")))]
+        OpenPgp::gopenpgp(),
     ]
 });
 

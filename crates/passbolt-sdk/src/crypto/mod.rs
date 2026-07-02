@@ -12,6 +12,8 @@
 
 //! `OpenPGP` operations, run by the engine a key was read with: rpgp unless another is chosen.
 
+#[cfg(all(feature = "gopenpgp", not(target_arch = "wasm32")))]
+mod gopenpgp;
 #[cfg(feature = "openpgpjs")]
 mod openpgpjs;
 mod rpgp;
@@ -26,6 +28,8 @@ use std::sync::Arc;
 
 use zeroize::{Zeroize, Zeroizing};
 
+#[cfg(all(feature = "gopenpgp", not(target_arch = "wasm32")))]
+pub use self::gopenpgp::Gopenpgp;
 #[cfg(feature = "openpgpjs")]
 pub use self::openpgpjs::OpenPgpJs;
 pub use self::rpgp::Rpgp;
@@ -125,6 +129,13 @@ impl OpenPgp {
     #[cfg(all(feature = "openpgpjs", not(target_arch = "wasm32")))]
     pub fn openpgpjs() -> Result<Self, CryptoError> {
         Ok(Self::new(OpenPgpJs::new()?))
+    }
+
+    /// The gopenpgp engine, the library of go-passbolt, built with Go and linked.
+    #[cfg(all(feature = "gopenpgp", not(target_arch = "wasm32")))]
+    #[must_use]
+    pub fn gopenpgp() -> Self {
+        Self::new(Gopenpgp)
     }
 
     /// The OpenPGP.js engine on `openpgp`, the OpenPGP.js module of the page.
