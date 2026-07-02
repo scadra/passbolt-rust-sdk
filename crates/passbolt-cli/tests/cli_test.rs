@@ -33,9 +33,11 @@ fn test_version_flag() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicates::str::starts_with(
-            "passbolt version 0.1.0 (Built on ",
-        ))
+        .stdout(predicates::str::starts_with(concat!(
+            "passbolt version ",
+            env!("CARGO_PKG_VERSION"),
+            " (Built on "
+        )))
         .stdout(contains(" from Git SHA "));
 }
 
