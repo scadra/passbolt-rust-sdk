@@ -647,3 +647,42 @@ async fn a_change_sends_the_csrf_token_of_the_cookie() {
     let created = &passbolt.received("POST", "/folders.json")[0];
     assert_eq!(created["csrfToken"], "ada-csrf");
 }
+
+/// OpenPGP.js as the interop tests install it (`npm ci --prefix tests/interop`).
+async fn openpgp_js() -> JsValue {
+    let path = format!(
+        "file://{}/../../tests/interop/node_modules/openpgp/dist/node/openpgp.mjs",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let import = js_sys::Function::new_with_args("path", "return import(path)");
+    let module = import.call1(&JsValue::NULL, &path.into()).unwrap();
+    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(module))
+        .await
+        .unwrap()
+}
+
+#[wasm_bindgen_test]
+async fn a_session_on_openpgp_js_reads_what_rpgp_wrote() {
+    let passbolt = Passbolt::new();
+    passbolt.on("GET", "/resource-types.json", &fixture(RESOURCE_TYPES));
+    let options = js_sys::Object::new();
+    js_sys::Reflect::set(&options, &"openpgp".into(), &openpgp_js().await).unwrap();
+    let secret = block_on(encrypt_message(
+        br#"{"password":"s3cret"}"#,
+        vec![ADA_PUBLIC.into()],
+    ))
+    .unwrap();
+
+    // The login decrypts the challenge and checks the key with OpenPGP.js.
+    let session = ok(PassboltSession::login(
+        SERVER_URL.into(),
+        ADA_PRIVATE.into(),
+        ADA_PASSPHRASE.into(),
+        Some(options.unchecked_into()),
+    )
+    .await);
+    let resource = from_json(&json!({"id": RESOURCE_ID, "secrets": [{"data": secret}]}));
+    let decrypted = to_json(&ok(session.decrypt_resource_secret(resource).await));
+
+    assert_eq!(decrypted["password"], "s3cret");
+}

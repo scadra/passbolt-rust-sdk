@@ -38,6 +38,10 @@ getrandom = { version = "0.2", features = ["js"] }
 uuid = { version = "1", features = ["js"] }
 secrecy = "0.10.3"
 
+# In the browser, the OpenPGP.js engine runs on the OpenPGP.js the page gives.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+passbolt-sdk = { path = "../passbolt-sdk", default-features = false, features = ["openpgpjs"] }
+
 [dev-dependencies]
 futures-executor = "0.3"
 rstest = "0.28"

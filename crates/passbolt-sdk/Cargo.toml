@@ -13,8 +13,11 @@ totp = ["dep:totp-rs"]
 full = ["native", "totp"]
 # Interop tests with OpenPGP.js: needs node and `npm ci --prefix tests/interop`.
 interop = []
-# The OpenPGP.js engine, run in an embedded QuickJS.
-openpgpjs = ["dep:rquickjs", "dep:aes", "dep:aes-gcm", "dep:cbc", "dep:ctr", "dep:hkdf", "dep:sha2"]
+# The OpenPGP.js engine: in an embedded QuickJS, or in WebAssembly the OpenPGP.js of the page.
+openpgpjs = [
+    "dep:rquickjs", "dep:aes", "dep:aes-gcm", "dep:cbc", "dep:ctr", "dep:hkdf", "dep:sha2",
+    "dep:wasm-bindgen", "dep:js-sys", "dep:wasm-bindgen-futures", "dep:send_wrapper",
+]
 
 [dependencies]
 # Errors
@@ -68,6 +71,10 @@ sha2 = { version = "0.10", optional = true }
 # In the browser, rPGP reads the clock and the randomness through the Web APIs.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 pgp = { version = "0.21", default-features = false, features = ["wasm"] }
+wasm-bindgen = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+send_wrapper = { version = "0.6", features = ["futures"], optional = true }
 
 [lints]
 workspace = true

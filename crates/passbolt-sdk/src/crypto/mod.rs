@@ -12,7 +12,7 @@
 
 //! `OpenPGP` operations, run by the engine a key was read with: rpgp unless another is chosen.
 
-#[cfg(all(feature = "openpgpjs", not(target_arch = "wasm32")))]
+#[cfg(feature = "openpgpjs")]
 mod openpgpjs;
 mod rpgp;
 
@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use zeroize::{Zeroize, Zeroizing};
 
-#[cfg(all(feature = "openpgpjs", not(target_arch = "wasm32")))]
+#[cfg(feature = "openpgpjs")]
 pub use self::openpgpjs::OpenPgpJs;
 pub use self::rpgp::Rpgp;
 use crate::error::CryptoError;
@@ -125,6 +125,13 @@ impl OpenPgp {
     #[cfg(all(feature = "openpgpjs", not(target_arch = "wasm32")))]
     pub fn openpgpjs() -> Result<Self, CryptoError> {
         Ok(Self::new(OpenPgpJs::new()?))
+    }
+
+    /// The OpenPGP.js engine on `openpgp`, the OpenPGP.js module of the page.
+    #[cfg(all(feature = "openpgpjs", target_arch = "wasm32"))]
+    #[must_use]
+    pub fn openpgpjs(openpgp: &wasm_bindgen::JsValue) -> Self {
+        Self::new(OpenPgpJs::new(openpgp))
     }
 
     #[must_use]

@@ -76,6 +76,16 @@ fn option(options: &JsValue, name: &str) -> Option<JsValue> {
 ///
 /// `SecretData.raw` is not serialized by the SDK, so the password of a
 /// "password-string" resource is folded into `password` here.
+/// The engine of the `openpgp` option: the OpenPGP.js it gives, else rpgp.
+fn openpgp_of(options: &JsValue) -> passbolt_sdk::OpenPgp {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(openpgp) = option(options, "openpgp") {
+        return passbolt_sdk::OpenPgp::openpgpjs(&openpgp);
+    }
+    let _ = options;
+    passbolt_sdk::OpenPgp::default()
+}
+
 #[derive(Serialize)]
 struct JsSecretData {
     password: Option<String>,
@@ -152,6 +162,8 @@ impl PassboltSession {
     ///   then checks the server holds its private key.
     /// - `metadataKeyFingerprint`: the shared metadata key pinned with
     ///   `metadataKeyFingerprint()`; shared metadata is then only encrypted for that key.
+    /// - `openpgp`: the OpenPGP.js module (`import * as openpgp from "openpgp"`), to read and
+    ///   write messages with it, as the browser extension does. Default: rpgp.
     #[wasm_bindgen]
     pub async fn login(
         server_url: String,
@@ -172,13 +184,14 @@ impl PassboltSession {
                 .and_then(|value| value.as_string())
                 .unwrap_or_default()
         };
-        let config = build_sdk_config(
+        let mut config = build_sdk_config(
             server_url,
             private_key_armored,
             passphrase,
             pin("serverPublicKey"),
             pin("metadataKeyFingerprint"),
         );
+        config.openpgp = openpgp_of(&options);
 
         let client = Client::login(http, &config, mfa_provider, 1)
             .await

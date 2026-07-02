@@ -17,6 +17,8 @@ export interface LoginOptions {
   serverPublicKey?: string;
   /** The shared metadata key fingerprint pinned with `metadataKeyFingerprint()`. */
   metadataKeyFingerprint?: string;
+  /** The OpenPGP.js module (`import * as openpgp from "openpgp"`) messages are read and written with. Default: rpgp. */
+  openpgp?: object;
 }
 
 export interface ServerKey {
