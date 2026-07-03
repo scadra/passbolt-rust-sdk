@@ -14,12 +14,13 @@
 //! OpenPGP.js writes, read by the SDK (`tests/interop`, set up with
 //! `npm ci --prefix tests/interop`).
 
+use futures_executor::block_on;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
 use serde_json::{json, Value};
 
-use passbolt_sdk::crypto;
+use passbolt_sdk::{crypto, OpenPgp};
 use rstest::rstest;
 
 use crate::common::keys::TestKey;
@@ -116,14 +117,14 @@ async fn personal_metadata_and_secrets_are_signed_by_the_user() {
 #[test]
 fn multiline_text_keeps_its_line_endings() {
     let signer = passbolt_sdk::crypto::parse_private_key(ADA.private).unwrap();
-    let message = passbolt_sdk::crypto::sign_and_encrypt(
+    let message = block_on(passbolt_sdk::crypto::sign_and_encrypt(
         "line one\nline two",
         &[passbolt_sdk::crypto::Signer {
-            key: &signer.key,
+            key: &signer,
             passphrase: ADA.passphrase,
         }],
         &[&passbolt_sdk::crypto::parse_public_key(ADA.public).unwrap()],
-    )
+    ))
     .unwrap();
 
     assert_eq!(
@@ -132,13 +133,73 @@ fn multiline_text_keeps_its_line_endings() {
     );
 }
 
+/// Every engine built in.
+fn engines() -> Vec<OpenPgp> {
+    vec![
+        OpenPgp::rpgp(),
+        #[cfg(feature = "openpgpjs")]
+        OpenPgp::openpgpjs().unwrap(),
+        #[cfg(feature = "gopenpgp")]
+        OpenPgp::gopenpgp(),
+    ]
+}
+
 #[rstest]
 #[case::seipd_v2("seipd_v2")]
 #[case::gnupg_aead("gnupg_aead")]
-fn aead_messages_of_openpgp_js_are_read(#[case] container: &str) {
+fn aead_messages_of_openpgp_js_are_read_by_every_engine(#[case] container: &str) {
     let message = encrypted_by_openpgp_js(r#"{"password":"s3cr3t"}"#, container);
 
-    assert_eq!(ERIN.decrypt(&message), r#"{"password":"s3cr3t"}"#);
+    for openpgp in engines() {
+        let erin = openpgp.parse_private_key(ERIN.private).unwrap();
+        let plaintext = block_on(crypto::decrypt_message(&message, &erin, ERIN.passphrase));
+
+        assert_eq!(
+            plaintext.unwrap(),
+            br#"{"password":"s3cr3t"}"#,
+            "{openpgp:?}"
+        );
+    }
+}
+
+/// Shared metadata as each engine writes it, signed by the user and the metadata key: read and
+/// checked by OpenPGP.js, and by rpgp.
+#[test]
+fn what_every_engine_signs_is_checked_by_openpgp_js() {
+    for openpgp in engines() {
+        let (ada, metadata) = (
+            openpgp.parse_private_key(ADA.private).unwrap(),
+            openpgp.parse_private_key(METADATA.private).unwrap(),
+        );
+        let signers = [
+            crypto::Signer {
+                key: &ada,
+                passphrase: ADA.passphrase,
+            },
+            crypto::Signer {
+                key: &metadata,
+                passphrase: METADATA.passphrase,
+            },
+        ];
+        let recipient = openpgp.parse_public_key(METADATA.public).unwrap();
+        let message = block_on(crypto::sign_and_encrypt(
+            "line one\nline two é",
+            &signers,
+            &[&recipient],
+        ))
+        .unwrap();
+
+        assert_eq!(
+            read_with_openpgp_js(&message, &METADATA, &[&ADA, &METADATA]),
+            "line one\nline two é",
+            "{openpgp:?}"
+        );
+        assert_eq!(
+            METADATA.decrypt_signed(&message, &[&ADA, &METADATA]),
+            "line one\nline two é",
+            "{openpgp:?}"
+        );
+    }
 }
 
 #[test]
@@ -146,8 +207,12 @@ fn the_session_key_of_a_seipd_v2_message_is_read_by_openpgp_js() {
     let message = encrypted_by_openpgp_js("metadata", "seipd_v2");
     let erin = crypto::parse_private_key(ERIN.private).unwrap();
 
-    let (_, session_key) =
-        crypto::decrypt_message_keeping_session_key(&message, &erin.key, ERIN.passphrase).unwrap();
+    let (_, session_key) = block_on(crypto::decrypt_message_keeping_session_key(
+        &message,
+        &erin,
+        ERIN.passphrase,
+    ))
+    .unwrap();
 
     let read = openpgp_js(
         "verify.mjs",
@@ -164,14 +229,14 @@ fn the_session_key_of_a_seipd_v2_message_is_read_by_openpgp_js() {
 fn a_seipd_v2_message_is_read_by_openpgp_js() {
     let erin_asking_for_seipd_v2 = include_str!("../fixtures/keys/erin_seipd_v2_public.asc");
     let signer = crypto::parse_private_key(ADA.private).unwrap();
-    let message = crypto::sign_and_encrypt(
+    let message = block_on(crypto::sign_and_encrypt(
         "line one\nline two",
         &[crypto::Signer {
-            key: &signer.key,
+            key: &signer,
             passphrase: ADA.passphrase,
         }],
         &[&crypto::parse_public_key(erin_asking_for_seipd_v2).unwrap()],
-    )
+    ))
     .unwrap();
 
     assert_eq!(

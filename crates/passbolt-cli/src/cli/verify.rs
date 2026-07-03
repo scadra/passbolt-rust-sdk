@@ -30,21 +30,24 @@ pub struct VerifyArgs {
 pub async fn run(args: &VerifyArgs, config: &Config) -> Result<()> {
     let mut config = config.clone();
     session::require_credentials(&mut config)?;
-    let private_key = passbolt_sdk::crypto::parse_private_key(&config.private_key_text()?)?;
+    let openpgp = passbolt_sdk::OpenPgp::default();
+    let private_key = openpgp.parse_private_key(&config.private_key_text()?)?;
     let http = session::http_client(&config)?;
     let base_url = config.server_address.trim_end_matches('/').to_string();
 
-    let (fingerprint, server_public_key) = passbolt_sdk::auth::fetch_server_key(&http, &base_url)
-        .await
-        .context("setup Verification")?;
+    let (fingerprint, server_public_key) =
+        passbolt_sdk::auth::fetch_server_key(&http, &base_url, &openpgp)
+            .await
+            .context("setup Verification")?;
     if !config.server_public_key.is_empty() && !args.force {
-        let pinned = passbolt_sdk::crypto::public_key_fingerprint(&config.server_public_key)?;
+        let pinned = openpgp.public_key_fingerprint(&config.server_public_key)?;
         refuse_change("server", &pinned, &fingerprint)?;
     }
     // The token pair go-passbolt-cli checks at each login, proved once here.
     let token = passbolt_sdk::auth::new_verify_token();
-    let server_key = passbolt_sdk::crypto::parse_public_key(&server_public_key)?;
-    let encrypted_token = passbolt_sdk::crypto::encrypt_message(token.as_bytes(), &[&server_key])?;
+    let server_key = openpgp.parse_public_key(&server_public_key)?;
+    let encrypted_token =
+        passbolt_sdk::crypto::encrypt_message(token.as_bytes(), &[&server_key]).await?;
     passbolt_sdk::auth::verify_server(
         &http,
         &base_url,

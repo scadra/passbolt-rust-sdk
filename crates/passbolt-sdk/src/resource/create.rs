@@ -89,12 +89,13 @@ pub async fn create_resource<H: HttpClient>(
 
     let documents = Documents::build(new_resource, &resource_type)?;
     let me = client.get_me().await?;
-    let (user_public_key, _) = document::public_key_of(&me)?;
+    let (user_public_key, _) = document::public_key_of(client.openpgp(), &me)?;
     let secret = crypto::sign_and_encrypt(
         &document::secret_plaintext(&documents.secret)?,
         &[client.user_signer()],
         &[&user_public_key],
-    )?;
+    )
+    .await?;
 
     let mut payload = CreateResourcePayload {
         name: None,

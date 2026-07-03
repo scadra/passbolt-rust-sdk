@@ -150,6 +150,7 @@ fn build_sdk_config(
         metadata_key_fingerprint: non_empty(metadata_key_fingerprint).unwrap_or_default(),
         server_verify_enc_token: String::new(),
         server_verify_token: String::new(),
+        openpgp: passbolt_sdk::OpenPgp::default(),
     }
 }
 
@@ -1029,10 +1030,13 @@ pub fn fetch_server_key(
             NativeHttpClient::new(&http_config).map_err(|error| PassboltFfiError::Config {
                 reason: error.to_string(),
             })?;
-        let (fingerprint, armored_key) =
-            passbolt_sdk::auth::fetch_server_key(&http, server_url.trim_end_matches('/'))
-                .await
-                .map_err(PassboltFfiError::from)?;
+        let (fingerprint, armored_key) = passbolt_sdk::auth::fetch_server_key(
+            &http,
+            server_url.trim_end_matches('/'),
+            &passbolt_sdk::OpenPgp::default(),
+        )
+        .await
+        .map_err(PassboltFfiError::from)?;
         Ok(FfiServerKey {
             fingerprint,
             armored_key,
@@ -1066,11 +1070,15 @@ pub fn decrypt_message(
             reason: error.to_string(),
         }
     })?;
-    passbolt_sdk::crypto::decrypt_message(&armored_message, &key.key, &passphrase).map_err(
-        |error| PassboltFfiError::Crypto {
+    RUNTIME
+        .block_on(passbolt_sdk::crypto::decrypt_message(
+            &armored_message,
+            &key,
+            &passphrase,
+        ))
+        .map_err(|error| PassboltFfiError::Crypto {
             reason: error.to_string(),
-        },
-    )
+        })
 }
 
 /// Encrypt a plaintext message for one or more PGP public keys.
@@ -1088,11 +1096,11 @@ pub fn encrypt_message(
         reason: error.to_string(),
     })?;
     let key_refs: Vec<_> = keys.iter().collect();
-    passbolt_sdk::crypto::encrypt_message(&plaintext, &key_refs).map_err(|error| {
-        PassboltFfiError::Crypto {
+    RUNTIME
+        .block_on(passbolt_sdk::crypto::encrypt_message(&plaintext, &key_refs))
+        .map_err(|error| PassboltFfiError::Crypto {
             reason: error.to_string(),
-        }
-    })
+        })
 }
 
 /// Parse a PGP private key and return its fingerprint (hex uppercase).

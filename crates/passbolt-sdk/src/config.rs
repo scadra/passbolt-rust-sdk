@@ -11,6 +11,8 @@
 // @since         0.1.0
 
 use secrecy::SecretString;
+
+use crate::crypto::OpenPgp;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// SDK-level configuration: everything needed to connect and authenticate.
@@ -40,4 +42,7 @@ pub struct SdkConfig {
     pub server_verify_enc_token: String,
     /// …and the token the server must return.
     pub server_verify_token: String,
+    /// The `OpenPGP` engine keys are read and messages written with.
+    #[zeroize(skip)]
+    pub openpgp: OpenPgp,
 }

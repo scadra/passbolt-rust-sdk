@@ -13,11 +13,10 @@
 //! What create and update share: the `resource` and `secret` documents of a resource type,
 //! their validation, and their encryption.
 
-use pgp::composed::SignedPublicKey;
 use serde_json::{Map, Value};
 
 use crate::client::PassboltSdk;
-use crate::crypto;
+use crate::crypto::{OpenPgp, PublicKey};
 use crate::error::PassboltError;
 use crate::http::HttpClient;
 use crate::metadata::{self, EncryptedMetadata};
@@ -99,7 +98,10 @@ pub fn secret_plaintext(secret: &Value) -> Result<String, PassboltError> {
 }
 
 /// The user's public key as the server knows it, with its id there.
-pub fn public_key_of(user: &User) -> Result<(SignedPublicKey, &str), PassboltError> {
+pub fn public_key_of<'a>(
+    openpgp: &OpenPgp,
+    user: &'a User,
+) -> Result<(PublicKey, &'a str), PassboltError> {
     let gpgkey = user.gpg_key.as_ref();
     let armored_key = gpgkey
         .and_then(|gpgkey| gpgkey.armored_key.as_deref())
@@ -107,7 +109,7 @@ pub fn public_key_of(user: &User) -> Result<(SignedPublicKey, &str), PassboltErr
     let gpgkey_id = gpgkey
         .and_then(|gpgkey| gpgkey.id.as_deref())
         .unwrap_or_default();
-    Ok((crypto::parse_public_key(armored_key)?, gpgkey_id))
+    Ok((openpgp.parse_public_key(armored_key)?, gpgkey_id))
 }
 
 /// Encrypt metadata for the user (`personal`) or for the active shared metadata key.
@@ -119,8 +121,8 @@ pub async fn encrypt_metadata<H: HttpClient>(
 ) -> Result<EncryptedMetadata, PassboltError> {
     let user = client.user_signer();
     if personal {
-        let (public_key, gpgkey_id) = public_key_of(me)?;
-        metadata::encrypt_for_user(metadata, &user, &public_key, gpgkey_id)
+        let (public_key, gpgkey_id) = public_key_of(client.openpgp(), me)?;
+        metadata::encrypt_for_user(metadata, &user, &public_key, gpgkey_id).await
     } else {
         client.encrypt_shared_metadata(metadata).await
     }

@@ -12,6 +12,7 @@
 
 //! Test-only PGP keys from `tests/fixtures/keys`.
 
+use futures_executor::block_on;
 use passbolt_sdk::crypto;
 use serde_json::Value;
 
@@ -57,13 +58,22 @@ impl TestKey {
 
     pub fn encrypt(&self, plaintext: &str) -> String {
         let public_key = crypto::parse_public_key(self.public).unwrap();
-        crypto::encrypt_message(plaintext.as_bytes(), &[&public_key]).unwrap()
+        block_on(crypto::encrypt_message(
+            plaintext.as_bytes(),
+            &[&public_key],
+        ))
+        .unwrap()
     }
 
     pub fn decrypt(&self, armored_message: &str) -> String {
         let private_key = crypto::parse_private_key(self.private).unwrap();
         String::from_utf8(
-            crypto::decrypt_message(armored_message, &private_key.key, self.passphrase).unwrap(),
+            block_on(crypto::decrypt_message(
+                armored_message,
+                &private_key,
+                self.passphrase,
+            ))
+            .unwrap(),
         )
         .unwrap()
     }
@@ -71,8 +81,12 @@ impl TestKey {
     /// Like `decrypt`, `None` when the message is not for this key.
     pub fn try_decrypt(&self, armored_message: &str) -> Option<String> {
         let private_key = crypto::parse_private_key(self.private).unwrap();
-        let plaintext =
-            crypto::decrypt_message(armored_message, &private_key.key, self.passphrase).ok()?;
+        let plaintext = block_on(crypto::decrypt_message(
+            armored_message,
+            &private_key,
+            self.passphrase,
+        ))
+        .ok()?;
         String::from_utf8(plaintext).ok()
     }
 
@@ -83,14 +97,16 @@ impl TestKey {
     /// Decrypt a UTF-8 text message signed by exactly `signers`, every signature over the
     /// literal data as other `OpenPGP` implementations check them.
     pub fn decrypt_signed(&self, armored_message: &str, signers: &[&Self]) -> String {
-        use pgp::composed::{Message, VerificationResult};
+        use pgp::composed::{
+            Deserializable, Message, SignedPublicKey, SignedSecretKey, VerificationResult,
+        };
         use pgp::packet::DataMode;
         use pgp::types::VerifyingKey;
 
-        let private_key = crypto::parse_private_key(self.private).unwrap();
+        let (private_key, _) = SignedSecretKey::from_armor_single(self.private.as_bytes()).unwrap();
         let (message, _) = Message::from_armor(armored_message.as_bytes()).unwrap();
         let mut message = message
-            .decrypt(&self.passphrase.into(), &private_key.key)
+            .decrypt(&self.passphrase.into(), &private_key)
             .unwrap();
         let Message::Signed { reader, .. } = &message else {
             panic!("not signed")
@@ -108,7 +124,11 @@ impl TestKey {
         );
         let public_keys: Vec<_> = signers
             .iter()
-            .map(|signer| crypto::parse_public_key(signer.public).unwrap())
+            .map(|signer| {
+                SignedPublicKey::from_armor_single(signer.public.as_bytes())
+                    .unwrap()
+                    .0
+            })
             .collect();
         let verifying: Vec<&dyn VerifyingKey> = public_keys
             .iter()

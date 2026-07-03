@@ -14,6 +14,8 @@
 
 use std::sync::Arc;
 
+use futures_executor::block_on;
+
 use passbolt_ffi::{
     fetch_server_key, FfiLoginOptions, FfiMetadataKeysSettings, FfiPasswordExpirySettings,
     PassboltClient, PassboltFfiError,
@@ -87,7 +89,7 @@ impl Passbolt {
     fn answer_login(&self) {
         let token = format!("gpgauthv1.3.0|36|{}|gpgauthv1.3.0", uuid::Uuid::new_v4());
         let ada_key = crypto::parse_public_key(ADA_PUBLIC).unwrap();
-        let challenge = crypto::encrypt_message(token.as_bytes(), &[&ada_key]).unwrap();
+        let challenge = block_on(crypto::encrypt_message(token.as_bytes(), &[&ada_key])).unwrap();
         let stage_2 = Mock::given(method("POST"))
             .and(path("/auth/login.json"))
             .and(body_string_contains("user_token_result"))
@@ -199,7 +201,7 @@ impl Respond for DecryptingServer {
         let token = body
             .pointer("/gpg_auth/server_verify_token")
             .and_then(Value::as_str)
-            .and_then(|token| crypto::decrypt_message(token, &server_key.key, "").ok());
+            .and_then(|token| block_on(crypto::decrypt_message(token, &server_key, "")).ok());
         token.map_or_else(
             || ResponseTemplate::new(400).set_body_json(envelope(&Value::Null)),
             |token| {
@@ -266,7 +268,7 @@ fn resource(secret: &str) -> Value {
         "resource_type_id": PASSWORD_AND_DESCRIPTION_ID,
         "created": "2025-09-16T10:00:00+00:00",
         "modified": "2025-09-16T10:00:00+00:00",
-        "secrets": [{"user_id": ADA_ID, "data": crypto::encrypt_message(secret.as_bytes(), &[&ada_key]).unwrap()}]
+        "secrets": [{"user_id": ADA_ID, "data": block_on(crypto::encrypt_message(secret.as_bytes(), &[&ada_key])).unwrap()}]
     })
 }
 
@@ -440,7 +442,11 @@ fn ada_share_of_the_metadata_key() -> String {
         "passphrase": ""
     });
     let ada_key = crypto::parse_public_key(ADA_PUBLIC).unwrap();
-    crypto::encrypt_message(private_key.to_string().as_bytes(), &[&ada_key]).unwrap()
+    block_on(crypto::encrypt_message(
+        private_key.to_string().as_bytes(),
+        &[&ada_key],
+    ))
+    .unwrap()
 }
 
 #[test]

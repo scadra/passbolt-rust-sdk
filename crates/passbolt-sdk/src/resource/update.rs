@@ -392,20 +392,16 @@ async fn encrypt_for_users_with_access<H: HttpClient>(
             ..UserQuery::default()
         })
         .await?;
-    users
-        .iter()
-        .map(|user| {
-            let (public_key, _) = document::public_key_of(user)?;
-            Ok(SecretPayload {
-                user_id: user.id.clone(),
-                data: crypto::sign_and_encrypt(
-                    &plaintext,
-                    &[client.user_signer()],
-                    &[&public_key],
-                )?,
-            })
-        })
-        .collect()
+    let mut secrets = Vec::with_capacity(users.len());
+    for user in &users {
+        let (public_key, _) = document::public_key_of(client.openpgp(), user)?;
+        secrets.push(SecretPayload {
+            user_id: user.id.clone(),
+            data: crypto::sign_and_encrypt(&plaintext, &[client.user_signer()], &[&public_key])
+                .await?,
+        });
+    }
+    Ok(secrets)
 }
 
 #[cfg(test)]

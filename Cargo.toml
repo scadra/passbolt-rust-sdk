@@ -41,3 +41,16 @@ opt-level = 3
 
 [profile.dev.package.blake2]
 opt-level = 3
+
+# The OpenPGP.js engine: QuickJS, and the digests and ciphers its WebCrypto runs on.
+[profile.dev.package.rquickjs-sys]
+opt-level = 3
+
+[profile.dev.package.sha1]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.aes-gcm]
+opt-level = 3

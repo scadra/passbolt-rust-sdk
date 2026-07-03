@@ -64,6 +64,7 @@ pub mod user;
 
 pub use client::{FolderQuery, GroupQuery, PassboltSdk, ResourceQuery, UserQuery};
 pub use config::SdkConfig;
+pub use crypto::OpenPgp;
 pub use duration::{format_go_duration, parse_go_duration};
 pub use error::{ApiError, AuthError, CryptoError, PassboltError, TransportError};
 pub use folder::tree::{build_folder_tree, collect_subtree_ids, flatten_tree};

@@ -10,6 +10,10 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
+//! The rpgp engine, in Rust.
+
+use std::sync::Arc;
+
 use pgp::composed::{
     ArmorOptions, DecryptionOptions, Deserializable, DummyReader, Edata, Encryption, Message,
     MessageBuilder, PlainSessionKey, RawSessionKey, SignedPublicKey, SignedSecretKey, TheRing,
@@ -19,35 +23,105 @@ use pgp::crypto::hash::HashAlgorithm;
 use pgp::crypto::sym::SymmetricKeyAlgorithm;
 use pgp::packet::{DataMode, Features, ProtectedDataConfig, SymEncryptedProtectedDataConfig};
 use pgp::types::{DecryptionKey, EskType, KeyDetails, KeyVersion, Password, PkeskVersion};
-use zeroize::Zeroize;
 
+use super::{key_of, ready, CryptoFuture, Engine, KeyHandle, SessionKey};
 use crate::error::CryptoError;
 
-/// Parsed private key used for decryption / fingerprint.
-pub struct PrivateKey {
-    pub key: SignedSecretKey,
-    pub fingerprint: String,
-}
+/// The rpgp engine, the default one.
+pub struct Rpgp;
 
-impl Drop for PrivateKey {
-    fn drop(&mut self) {
-        self.fingerprint.zeroize();
+impl Engine for Rpgp {
+    fn name(&self) -> &'static str {
+        "rpgp"
+    }
+
+    fn parse_private_key(&self, armored: &str) -> Result<(KeyHandle, String), CryptoError> {
+        let key = parse_private_key(armored)?;
+        let fingerprint = hex::encode_upper(key.fingerprint().as_bytes());
+        Ok((Arc::new(key), fingerprint))
+    }
+
+    fn parse_public_key(&self, armored: &str) -> Result<(KeyHandle, String), CryptoError> {
+        let key = parse_public_key(armored)?;
+        let fingerprint = hex::encode_upper(key.fingerprint().as_bytes());
+        Ok((Arc::new(key), fingerprint))
+    }
+
+    fn decrypt<'a>(
+        &'a self,
+        armored_message: &'a str,
+        private_key: &'a KeyHandle,
+        passphrase: &'a str,
+    ) -> CryptoFuture<'a, Vec<u8>> {
+        ready(key_of(private_key).and_then(|key| decrypt_message(armored_message, key, passphrase)))
+    }
+
+    fn decrypt_keeping_session_key<'a>(
+        &'a self,
+        armored_message: &'a str,
+        private_key: &'a KeyHandle,
+        passphrase: &'a str,
+    ) -> CryptoFuture<'a, (Vec<u8>, SessionKey)> {
+        ready(
+            key_of(private_key).and_then(|key| {
+                decrypt_message_keeping_session_key(armored_message, key, passphrase)
+            }),
+        )
+    }
+
+    fn decrypt_with_session_key<'a>(
+        &'a self,
+        armored_message: &'a str,
+        session_key: &'a SessionKey,
+    ) -> CryptoFuture<'a, Vec<u8>> {
+        ready(decrypt_with_session_key(armored_message, session_key))
+    }
+
+    fn encrypt<'a>(
+        &'a self,
+        plaintext: &'a [u8],
+        recipients: &'a [&'a KeyHandle],
+    ) -> CryptoFuture<'a, String> {
+        ready(public_keys(recipients).and_then(|keys| encrypt_message(plaintext, &keys)))
+    }
+
+    fn sign_and_encrypt<'a>(
+        &'a self,
+        plaintext: &'a str,
+        signers: &'a [(&'a KeyHandle, &'a str)],
+        recipients: &'a [&'a KeyHandle],
+    ) -> CryptoFuture<'a, String> {
+        let signed = || {
+            let signers = signers
+                .iter()
+                .map(|(key, passphrase)| {
+                    Ok(SigningKey {
+                        key: key_of(key)?,
+                        passphrase,
+                    })
+                })
+                .collect::<Result<Vec<_>, CryptoError>>()?;
+            sign_and_encrypt(plaintext, &signers, &public_keys(recipients)?)
+        };
+        ready(signed())
     }
 }
 
+fn public_keys<'a>(handles: &[&'a KeyHandle]) -> Result<Vec<&'a SignedPublicKey>, CryptoError> {
+    handles.iter().map(|handle| key_of(handle)).collect()
+}
+
 /// Parse and validate a PGP private key from ASCII-armored text.
-pub fn parse_private_key(armored: &str) -> Result<PrivateKey, CryptoError> {
+fn parse_private_key(armored: &str) -> Result<SignedSecretKey, CryptoError> {
     let (key, _) = SignedSecretKey::from_armor_single(armored.as_bytes())
         .map_err(|error| CryptoError::KeyParse(format!("private key: {error}")))?;
     key.verify_bindings()
         .map_err(|error| CryptoError::KeyParse(format!("private key verification: {error}")))?;
-
-    let fingerprint = hex::encode_upper(key.fingerprint().as_bytes());
-    Ok(PrivateKey { key, fingerprint })
+    Ok(key)
 }
 
 /// Parse a PGP public key from ASCII-armored text.
-pub fn parse_public_key(armored: &str) -> Result<SignedPublicKey, CryptoError> {
+fn parse_public_key(armored: &str) -> Result<SignedPublicKey, CryptoError> {
     let (key, _) = SignedPublicKey::from_armor_single(armored.as_bytes())
         .map_err(|error| CryptoError::KeyParse(format!("public key: {error}")))?;
     key.verify_bindings()
@@ -55,13 +129,7 @@ pub fn parse_public_key(armored: &str) -> Result<SignedPublicKey, CryptoError> {
     Ok(key)
 }
 
-/// The fingerprint of an armored public key, in upper-case hexadecimal as Passbolt shows it.
-pub fn public_key_fingerprint(armored: &str) -> Result<String, CryptoError> {
-    let key = parse_public_key(armored)?;
-    Ok(hex::encode_upper(key.fingerprint().as_bytes()))
-}
-
-pub fn decrypt_message(
+fn decrypt_message(
     armored_message: &str,
     private_key: &SignedSecretKey,
     passphrase: &str,
@@ -103,63 +171,20 @@ fn seipd_v2_algorithm(message: &Message<'_>) -> Option<SymmetricKeyAlgorithm> {
     }
 }
 
-/// The symmetric key of one message, as Passbolt stores it: `<algorithm id>:<hex key>`.
-#[derive(Clone, PartialEq, Eq)]
-pub struct SessionKey {
-    algorithm: SymmetricKeyAlgorithm,
-    key: zeroize::Zeroizing<Vec<u8>>,
-}
-
-impl SessionKey {
-    /// Read `9:HEX`; a key without algorithm is AES-256, as Passbolt clients write it.
-    pub fn parse(text: &str) -> Result<Self, CryptoError> {
-        let (algorithm, key) = text.split_once(':').unwrap_or(("9", text));
-        let invalid = || CryptoError::Decrypt("invalid session key".into());
-        let algorithm = algorithm.parse::<u8>().map_err(|_| invalid())?;
-        let key = hex::decode(key).map_err(|_| invalid())?;
-        Ok(Self {
-            algorithm: algorithm.into(),
-            key: zeroize::Zeroizing::new(key),
-        })
-    }
-
-    /// `<algorithm id>:<HEX>`, the format of Passbolt session key bundles.
-    #[must_use]
-    pub fn to_passbolt_string(&self) -> String {
-        format!(
-            "{}:{}",
-            u8::from(self.algorithm),
-            hex::encode_upper(self.key.as_slice())
-        )
-    }
-
-    /// The key to decrypt `message` with: SEIPD v2 session keys carry no algorithm.
-    fn plain_for(&self, message: &Message<'_>) -> PlainSessionKey {
-        let key = RawSessionKey::from(self.key.to_vec());
-        if seipd_v2_algorithm(message).is_some() {
-            PlainSessionKey::V6 { key }
-        } else {
-            PlainSessionKey::V3_4 {
-                sym_alg: self.algorithm,
-                key,
-            }
+/// The key to decrypt `message` with: SEIPD v2 session keys carry no algorithm.
+fn plain_session_key(session_key: &SessionKey, message: &Message<'_>) -> PlainSessionKey {
+    let key = RawSessionKey::from(session_key.key().to_vec());
+    if seipd_v2_algorithm(message).is_some() {
+        PlainSessionKey::V6 { key }
+    } else {
+        PlainSessionKey::V3_4 {
+            sym_alg: session_key.algorithm().into(),
+            key,
         }
     }
 }
 
-/// Never print the key itself.
-impl std::fmt::Debug for SessionKey {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("SessionKey")
-            .field("algorithm", &self.algorithm)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Decrypt with `private_key`, and give the session key of the message, to decrypt it again
-/// without the costly public key operation.
-pub fn decrypt_message_keeping_session_key(
+fn decrypt_message_keeping_session_key(
     armored_message: &str,
     private_key: &SignedSecretKey,
     passphrase: &str,
@@ -208,10 +233,7 @@ pub fn decrypt_message_keeping_session_key(
             return Err(failure("unsupported session key version".into()))
         }
     };
-    let session_key = SessionKey {
-        algorithm,
-        key: zeroize::Zeroizing::new(key.as_ref().to_vec()),
-    };
+    let session_key = SessionKey::new(u8::from(algorithm), key.as_ref().to_vec());
     let ring = TheRing {
         session_keys: vec![plain_key],
         ..TheRing::default()
@@ -219,14 +241,13 @@ pub fn decrypt_message_keeping_session_key(
     Ok((content(decrypt(message, ring)?)?, session_key))
 }
 
-/// Decrypt with the session key of the message.
-pub fn decrypt_with_session_key(
+fn decrypt_with_session_key(
     armored_message: &str,
     session_key: &SessionKey,
 ) -> Result<Vec<u8>, CryptoError> {
     let message = parse_message(armored_message)?;
     let ring = TheRing {
-        session_keys: vec![session_key.plain_for(&message)],
+        session_keys: vec![plain_session_key(session_key, &message)],
         ..TheRing::default()
     };
     content(decrypt(message, ring)?)
@@ -263,27 +284,22 @@ fn content(mut message: Message<'_>) -> Result<Vec<u8>, CryptoError> {
     )
 }
 
-/// Encrypt `plaintext` for `recipients`, as a binary literal.
-pub fn encrypt_message(
+fn encrypt_message(
     plaintext: &[u8],
     recipients: &[&SignedPublicKey],
 ) -> Result<String, CryptoError> {
     encrypt(plaintext.to_vec(), DataMode::Binary, &[], recipients)
 }
 
-/// A key able to sign: a private key and its passphrase.
-pub struct Signer<'a> {
-    pub key: &'a SignedSecretKey,
-    pub passphrase: &'a str,
+/// A private key and its passphrase.
+struct SigningKey<'a> {
+    key: &'a SignedSecretKey,
+    passphrase: &'a str,
 }
 
-/// Sign `plaintext` with every signer, then encrypt it for `recipients`, as a UTF-8 text literal.
-///
-/// Passbolt clients sign secrets with the user key, shared metadata with the metadata key too.
-/// Every signature covers the literal data, as `OpenPGP.js` and gopenpgp write and check them.
-pub fn sign_and_encrypt(
+fn sign_and_encrypt(
     plaintext: &str,
-    signers: &[Signer<'_>],
+    signers: &[SigningKey<'_>],
     recipients: &[&SignedPublicKey],
 ) -> Result<String, CryptoError> {
     // UTF-8 literals are written with CR LF line endings.
@@ -308,7 +324,7 @@ macro_rules! encrypt_to_each {
 fn encrypt(
     data: Vec<u8>,
     mode: DataMode,
-    signers: &[Signer<'_>],
+    signers: &[SigningKey<'_>],
     recipients: &[&SignedPublicKey],
 ) -> Result<String, CryptoError> {
     let now = chrono::Utc::now();
@@ -331,7 +347,7 @@ fn encrypt(
 fn sign_and_armor<'a, E: Encryption>(
     mut builder: MessageBuilder<'a, DummyReader, E>,
     mode: DataMode,
-    signers: &[Signer<'a>],
+    signers: &[SigningKey<'a>],
 ) -> Result<String, CryptoError> {
     builder
         .data_mode(mode)
@@ -504,27 +520,28 @@ mod tests {
 
     use super::*;
 
-    const SERVER_PRIVATE: &str = include_str!("../tests/fixtures/keys/server_private.asc");
-    const SERVER_PUBLIC: &str = include_str!("../tests/fixtures/keys/server_public.asc");
-    const METADATA_PRIVATE: &str = include_str!("../tests/fixtures/keys/metadata_private.asc");
-    const METADATA_PUBLIC: &str = include_str!("../tests/fixtures/keys/metadata_public.asc");
+    const SERVER_PRIVATE: &str = include_str!("../../tests/fixtures/keys/server_private.asc");
+    const SERVER_PUBLIC: &str = include_str!("../../tests/fixtures/keys/server_public.asc");
+    const METADATA_PRIVATE: &str = include_str!("../../tests/fixtures/keys/metadata_private.asc");
+    const METADATA_PUBLIC: &str = include_str!("../../tests/fixtures/keys/metadata_public.asc");
 
     /// Fixture keypair without passphrase.
-    const ERIN_PUBLIC: &str = include_str!("../tests/fixtures/keys/erin_public.asc");
-    const ERIN_PRIVATE: &str = include_str!("../tests/fixtures/keys/erin_private.asc");
+    const ERIN_PUBLIC: &str = include_str!("../../tests/fixtures/keys/erin_public.asc");
+    const ERIN_PRIVATE: &str = include_str!("../../tests/fixtures/keys/erin_private.asc");
     /// Erin's key asking for SEIPD v2: see `tests/fixtures/keys/README.md`.
     const ERIN_SEIPD_V2_PUBLIC: &str =
-        include_str!("../tests/fixtures/keys/erin_seipd_v2_public.asc");
+        include_str!("../../tests/fixtures/keys/erin_seipd_v2_public.asc");
     /// Written by OpenPGP.js: see `tests/fixtures/messages/README.md`.
-    const SEIPD_V2_MESSAGE: &str = include_str!("../tests/fixtures/messages/erin_seipd_v2.asc");
-    const GNUPG_AEAD_MESSAGE: &str = include_str!("../tests/fixtures/messages/erin_gnupg_aead.asc");
+    const SEIPD_V2_MESSAGE: &str = include_str!("../../tests/fixtures/messages/erin_seipd_v2.asc");
+    const GNUPG_AEAD_MESSAGE: &str =
+        include_str!("../../tests/fixtures/messages/erin_gnupg_aead.asc");
     /// Passbolt server test keys: see `tests/fixtures/keys/README.md`.
-    const EXPIRED_PUBLIC: &str = include_str!("../tests/fixtures/keys/expired_public.asc");
+    const EXPIRED_PUBLIC: &str = include_str!("../../tests/fixtures/keys/expired_public.asc");
     const EXPIRED_PRIMARY_PUBLIC: &str =
-        include_str!("../tests/fixtures/keys/expired_primary_public.asc");
-    const REVOKED_PUBLIC: &str = include_str!("../tests/fixtures/keys/revoked_public.asc");
+        include_str!("../../tests/fixtures/keys/expired_primary_public.asc");
+    const REVOKED_PUBLIC: &str = include_str!("../../tests/fixtures/keys/revoked_public.asc");
     const REVOKED_SUBKEY_PUBLIC: &str =
-        include_str!("../tests/fixtures/keys/revoked_subkey_public.asc");
+        include_str!("../../tests/fixtures/keys/revoked_subkey_public.asc");
 
     fn at(date: &str) -> chrono::DateTime<chrono::Utc> {
         chrono::DateTime::parse_from_rfc3339(date).unwrap().to_utc()
@@ -580,32 +597,9 @@ mod tests {
 
     fn keypair(private: &str, public: &str) -> (SignedSecretKey, SignedPublicKey) {
         (
-            parse_private_key(private).unwrap().key.clone(),
+            parse_private_key(private).unwrap(),
             parse_public_key(public).unwrap(),
         )
-    }
-
-    #[test]
-    fn test_parse_private_key_invalid() {
-        assert!(parse_private_key("not a pgp key at all").is_err());
-    }
-
-    #[test]
-    fn test_parse_private_key_fingerprint() {
-        let fingerprint = parse_private_key(SERVER_PRIVATE)
-            .unwrap()
-            .fingerprint
-            .clone();
-
-        assert_eq!(fingerprint.len(), 40);
-        assert!(fingerprint
-            .chars()
-            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_lowercase()));
-    }
-
-    #[test]
-    fn test_parse_public_key_invalid() {
-        assert!(parse_public_key("garbage data").is_err());
     }
 
     #[test]
@@ -715,11 +709,11 @@ mod tests {
         let (server_secret, server_public) = keypair(SERVER_PRIVATE, SERVER_PUBLIC);
         let (metadata_secret, metadata_public) = keypair(METADATA_PRIVATE, METADATA_PUBLIC);
         let signers = [
-            Signer {
+            SigningKey {
                 key: &server_secret,
                 passphrase: "",
             },
-            Signer {
+            SigningKey {
                 key: &metadata_secret,
                 passphrase: "",
             },
@@ -765,26 +759,12 @@ mod tests {
     }
 
     #[rstest]
-    #[case::not_hex("9:zz")]
-    #[case::bad_algorithm("x:00")]
-    fn test_an_invalid_session_key_is_refused(#[case] text: &str) {
-        assert!(SessionKey::parse(text).is_err());
-    }
-
-    #[test]
-    fn test_a_session_key_without_algorithm_is_aes_256() {
-        let session_key = SessionKey::parse("00FF").unwrap();
-
-        assert_eq!(session_key.to_passbolt_string(), "9:00FF");
-    }
-
-    #[rstest]
     #[case::seipd_v2(SEIPD_V2_MESSAGE)]
     #[case::gnupg_aead(GNUPG_AEAD_MESSAGE)]
     fn test_aead_messages_are_decrypted(#[case] armored: &str) {
         let erin = parse_private_key(ERIN_PRIVATE).unwrap();
 
-        let plaintext = decrypt_message(armored, &erin.key, "erin-passphrase").unwrap();
+        let plaintext = decrypt_message(armored, &erin, "erin-passphrase").unwrap();
 
         assert_eq!(plaintext, b"line one\nline two");
     }
@@ -799,7 +779,7 @@ mod tests {
         let erin = parse_private_key(ERIN_PRIVATE).unwrap();
 
         let (_, session_key) =
-            decrypt_message_keeping_session_key(armored, &erin.key, "erin-passphrase").unwrap();
+            decrypt_message_keeping_session_key(armored, &erin, "erin-passphrase").unwrap();
         let stored = SessionKey::parse(&session_key.to_passbolt_string()).unwrap();
 
         assert!(
@@ -858,7 +838,7 @@ mod tests {
         let armored = encrypt_message(b"secret", &[&recipient]).unwrap();
 
         let (plaintext, session_key) =
-            decrypt_message_keeping_session_key(&armored, &erin.key, "erin-passphrase").unwrap();
+            decrypt_message_keeping_session_key(&armored, &erin, "erin-passphrase").unwrap();
 
         assert_eq!(plaintext, b"secret");
         assert_eq!(
