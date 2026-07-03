@@ -273,3 +273,42 @@ async fn test_a_key_of_another_engine_is_refused() {
     .await
     .is_err());
 }
+
+#[rstest]
+#[case::seipd_v1(ERIN_PUBLIC)]
+#[case::seipd_v2(ERIN_SEIPD_V2_PUBLIC)]
+#[tokio::test]
+async fn test_every_engine_reads_what_the_others_write(#[case] recipient: &str) {
+    for writer in ENGINES.iter() {
+        let (signing_key, public_key) = keypair(writer, ERIN_PRIVATE, recipient);
+        let signer = Signer {
+            key: &signing_key,
+            passphrase: ERIN_PASSPHRASE,
+        };
+        let binary = encrypt_message(b"\x00binary\r\n", &[&public_key])
+            .await
+            .unwrap();
+        let text = sign_and_encrypt("line one\nline two é", &[signer], &[&public_key])
+            .await
+            .unwrap();
+        for reader in ENGINES.iter() {
+            let erin = reader.parse_private_key(ERIN_PRIVATE).unwrap();
+            let pair = format!("{writer:?} → {reader:?}");
+
+            let read_binary = decrypt_message(&binary, &erin, ERIN_PASSPHRASE).await;
+            let (read_text, session_key) =
+                decrypt_message_keeping_session_key(&text, &erin, ERIN_PASSPHRASE)
+                    .await
+                    .unwrap();
+            let read_again = writer.decrypt_with_session_key(&text, &session_key).await;
+
+            assert_eq!(read_binary.unwrap(), b"\x00binary\r\n", "{pair}");
+            assert_eq!(read_text, "line one\nline two é".as_bytes(), "{pair}");
+            assert_eq!(
+                read_again.unwrap(),
+                "line one\nline two é".as_bytes(),
+                "{pair}"
+            );
+        }
+    }
+}
