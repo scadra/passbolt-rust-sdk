@@ -84,7 +84,6 @@ path = "tests/e2e_migration/main.rs"
 required-features = ["e2e"]
 
 [dev-dependencies]
-pgp = { version = "0.21", default-features = false }
 totp-rs = "5"
 assert_cmd = "2"
 predicates = "3"

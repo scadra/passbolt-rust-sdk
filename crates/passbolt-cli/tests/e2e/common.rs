@@ -316,6 +316,7 @@ pub fn sdk_login(account: Account) -> Sdk {
         metadata_key_fingerprint: String::new(),
         server_verify_enc_token: String::new(),
         server_verify_token: String::new(),
+        openpgp: passbolt_sdk::OpenPgp::default(),
     };
     block_on(passbolt_sdk::PassboltSdk::login(http, &config, None, 1)).unwrap()
 }

@@ -12,7 +12,6 @@
 
 //! What the CLI stores on the server, read by OpenPGP.js as the browser extension does.
 
-use pgp::composed::ArmorOptions;
 use serde_json::{json, Value};
 
 use crate::common::{
@@ -28,8 +27,8 @@ fn public_keys(sdk: &Sdk) -> (String, String) {
     let metadata_key = metadata_keys
         .active_public_key()
         .expect("the server has no active metadata key")
-        .to_armored_string(ArmorOptions::default())
-        .unwrap();
+        .armored()
+        .to_owned();
     (user_key, metadata_key)
 }
 
