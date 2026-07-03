@@ -287,8 +287,8 @@ fn migrated_metadata_reads_in_openpgp_js_with_the_expected_signatures() {
     let metadata_key = metadata_keys
         .active_public_key()
         .unwrap()
-        .to_armored_string(pgp::composed::ArmorOptions::default())
-        .unwrap();
+        .armored()
+        .to_owned();
     let user = sdk_login(Account::User);
     let (user_private_key, passphrase) = private_key(Account::User);
     let personal_metadata = block_on(user.get_resource(&personal.id)).unwrap();

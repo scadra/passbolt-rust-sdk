@@ -165,6 +165,7 @@ impl OpenPgp {
             openpgp: self.clone(),
             handle,
             fingerprint,
+            armored: armored.to_owned(),
         })
     }
 
@@ -223,6 +224,15 @@ pub struct PublicKey {
     openpgp: OpenPgp,
     handle: KeyHandle,
     pub fingerprint: String,
+    armored: String,
+}
+
+impl PublicKey {
+    /// The armored text it was read from.
+    #[must_use]
+    pub fn armored(&self) -> &str {
+        &self.armored
+    }
 }
 
 /// Parse and validate a private key with the default engine.
