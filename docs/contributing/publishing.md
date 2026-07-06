@@ -57,10 +57,19 @@ A publication is final on most registries: a version can be yanked or unlisted, 
 
 ## Releasing
 
+The tag names the version: on a `vX.Y.Z` tag, `scripts/set-version.sh` gives every crate the version
+`X.Y.Z` in the CI's checkout, so the packages, the CLI's `--version` and the crates.io upload carry it.
+The versions in the `Cargo.toml` files only name the builds that are not releases.
+
 ```bash
-git tag v0.1.1
-git push origin v0.1.1
+git fetch origin
+git tag -a v0.1.2 origin/master -m "passbolt-rust-sdk 0.1.2"
+git push origin v0.1.2
 ```
 
-A first job checks the tag names the SDK version; the packages then go to each enabled registry,
-and the payload to a GitHub release.
+A first job checks the tag has the `vX.Y.Z` form; the packages then go to each enabled registry, and
+the payload to a GitHub release. A version a registry already holds is refused there: each release
+needs a version none of them has published.
+
+An annotated tag carries the date `GIT_COMMITTER_DATE` gives it; the GitHub release and the
+registries keep the date they were published at.
