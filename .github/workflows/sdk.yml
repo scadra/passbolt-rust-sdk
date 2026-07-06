@@ -53,8 +53,14 @@ jobs:
             cargo metadata --format-version 1 --no-deps \
               | jq -r --arg name "$1" '.packages[] | select(.name == $name) | .version'
           }
-          echo "sdk=$(version passbolt-ffi)" >> "$GITHUB_OUTPUT"
-          echo "cli=$(version passbolt-cli)" >> "$GITHUB_OUTPUT"
+          # A release takes the version its tag names; any other run, the one of the crates.
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "sdk=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "cli=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "sdk=$(version passbolt-ffi)" >> "$GITHUB_OUTPUT"
+            echo "cli=$(version passbolt-cli)" >> "$GITHUB_OUTPUT"
+          fi
 
   # The CLI, and the native library the SDK bindings load, for each desktop platform.
   native:
@@ -79,6 +85,10 @@ jobs:
       TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
+      - name: Version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: bash scripts/set-version.sh "${GITHUB_REF_NAME#v}"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -194,6 +204,10 @@ jobs:
           - { os: windows-2022, target: x64, smoke: true }
     steps:
       - uses: actions/checkout@v4
+      - name: Version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: bash scripts/set-version.sh "${GITHUB_REF_NAME#v}"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -482,6 +496,10 @@ jobs:
       TARGETS: aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
     steps:
       - uses: actions/checkout@v4
+      - name: Version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: bash scripts/set-version.sh "${GITHUB_REF_NAME#v}"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
@@ -532,6 +550,10 @@ jobs:
       CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS: -C link-arg=-Wl,-z,max-page-size=16384
     steps:
       - uses: actions/checkout@v4
+      - name: Version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: bash scripts/set-version.sh "${GITHUB_REF_NAME#v}"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
@@ -613,8 +635,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - name: The tag names the SDK version
-        run: test "$GITHUB_REF_NAME" = "v${{ needs.version.outputs.sdk }}"
+      - name: The tag is a version
+        run: '[[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]'
 
   publish-npm:
     name: Publish npm
@@ -752,6 +774,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Version from the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: bash scripts/set-version.sh "${GITHUB_REF_NAME#v}"
       - uses: dtolnay/rust-toolchain@stable
       - run: bash scripts/publish-crates.sh "${{ vars.CRATES_PREFIX || 'switch-case' }}"
         env:
