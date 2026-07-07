@@ -15,5 +15,5 @@ for crate in passbolt-sdk passbolt-cli passbolt-ffi passbolt-wasm; do
   VERSION="$version" perl -0pi -e 's/^version = "[^"]*"/version = "$ENV{VERSION}"/m' \
     "crates/$crate/Cargo.toml"
   VERSION="$version" CRATE="$crate" perl -0pi -e \
-    's/(name = "\Q$ENV{CRATE}\E"\nversion = )"[^"]*"/$1"$ENV{VERSION}"/' Cargo.lock
+    's/(name = "\Q$ENV{CRATE}\E"\r?\nversion = )"[^"]*"/$1"$ENV{VERSION}"/' Cargo.lock
 done
