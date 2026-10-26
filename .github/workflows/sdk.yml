@@ -419,6 +419,8 @@ jobs:
               echo 'import "C"'
             } > "$pkg/link_$p.go"
           done
+          # The bindings are generated unformatted: pkg.go.dev shows them as gofmt would.
+          gofmt -w "$pkg"
           cp LICENSE "$pkg/"
           tar czf "dist/passbolt-sdk-go-${{ needs.version.outputs.sdk }}.tar.gz" -C build/go passbolt-sdk-go
       - name: Smoke test
