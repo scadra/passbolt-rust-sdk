@@ -11,3 +11,14 @@
 //
 // The module links a static library with cgo: CGO_ENABLED=1, on Linux or macOS.
 package passbolt
+
+// Close logs out and releases the client: it implements io.Closer, for a `defer client.Close()`.
+// Logging out is best effort, Close always returns nil; a second call does nothing.
+func (client *PassboltClient) Close() error {
+	if client.ffiObject.destroyed.Load() {
+		return nil
+	}
+	client.Logout()
+	client.Destroy()
+	return nil
+}
