@@ -12,98 +12,144 @@
 
 use clap::{Parser, Subcommand};
 
-/// passbolt-rs — Passbolt CLI
+/// `passbolt version X (Built on DATE from Git SHA SHA)`, as go-passbolt-cli prints it.
+const VERSION: &str = env!("PASSBOLT_VERSION_TEXT");
+
+/// Global flags. Each one also takes go-passbolt-cli's spelling (`--serverAddress`), and is
+/// also read from the environment: `PASSBOLT_SERVER_ADDRESS`, or go-passbolt-cli's
+/// `SERVERADDRESS`. Durations use Go's syntax (`30s`, `1m30s`, `-1m`); a plain number is
+/// seconds. Booleans take `--debug`, `--debug=true` or `--debug=false`.
 #[derive(Parser, Debug)]
 #[command(
     name = "passbolt",
-    version,
+    version = VERSION,
+    disable_version_flag = true,
     about = "Passbolt CLI — manage your Passbolt password manager",
     long_about = None
 )]
 pub struct Cli {
-    /// Path to config file (default: ~/.config/passbolt/config.toml)
+    /// Print the version
+    #[arg(short = 'v', long = "version", short_alias = 'V', action = clap::ArgAction::Version)]
+    pub version: Option<bool>,
+
+    /// Config file (default: ~/.config/passbolt/config.toml, else go-passbolt-cli's); its
+    /// extension gives the format: toml, json or yaml
     #[arg(long, global = true, env = "PASSBOLT_CONFIG")]
     pub config: Option<String>,
 
-    /// Passbolt server URL
-    #[arg(long, global = true, env = "PASSBOLT_SERVER_ADDRESS")]
+    /// Passbolt server address (`https://passbolt.example.com`)
+    #[arg(long, alias = "serverAddress", global = true)]
     pub server_address: Option<String>,
 
     /// PGP private key (armored, inline)
-    #[arg(long, global = true, env = "PASSBOLT_USER_PRIVATE_KEY")]
+    #[arg(long, alias = "userPrivateKey", global = true)]
     pub user_private_key: Option<String>,
 
-    /// Path to PGP private key file
-    #[arg(long, global = true, env = "PASSBOLT_USER_PRIVATE_KEY_FILE")]
+    /// File of the PGP private key: overrides --user-private-key; `configure` saves its
+    /// content
+    #[arg(long, alias = "userPrivateKeyFile", global = true)]
     pub user_private_key_file: Option<String>,
 
-    /// Master password (passphrase for the private key); also read from
-    /// `PASSBOLT_USER_PASSWORD`, which `configure` never saves
-    #[arg(long, global = true)]
+    /// Passphrase of the private key, asked for when not given; `configure` never saves the
+    /// one of an environment variable
+    #[arg(long, alias = "userPassword", global = true)]
     pub user_password: Option<String>,
 
-    /// MFA mode: interactive-totp | non-interactive-totp | none [default: interactive-totp]
-    #[arg(long, global = true, env = "PASSBOLT_MFA_MODE")]
+    /// How to answer MFA: none, interactive-totp or noninteractive-totp (also spelt
+    /// non-interactive-totp); any other mode is none [default: interactive-totp]
+    #[arg(long, alias = "mfaMode", global = true)]
     pub mfa_mode: Option<String>,
 
-    /// TOTP token for non-interactive MFA; also read from `PASSBOLT_MFA_TOTP_TOKEN`, which
-    /// `configure` never saves
-    #[arg(long, global = true)]
+    /// TOTP secret for noninteractive-totp; `configure` never saves the one of an
+    /// environment variable
+    #[arg(long, alias = "mfaTotpToken", global = true)]
     pub mfa_totp_token: Option<String>,
 
-    /// TOTP clock offset in seconds [default: 0]
-    #[arg(long, global = true, env = "PASSBOLT_MFA_TOTP_OFFSET")]
-    pub mfa_totp_offset: Option<i64>,
+    #[arg(long = "totpToken", global = true, hide = true)]
+    pub totp_token: Option<String>,
 
-    /// Number of MFA attempts, at most 3: the server disables the account after too many wrong
-    /// codes [default: 3]
-    #[arg(long, global = true, env = "PASSBOLT_MFA_RETRYS")]
+    /// TOTP clock offset for noninteractive-totp (e.g. 30s, -1m) [default: 0s]
+    #[arg(
+        long,
+        alias = "mfaTotpOffset",
+        global = true,
+        allow_hyphen_values = true
+    )]
+    pub mfa_totp_offset: Option<String>,
+
+    #[arg(
+        long = "totpOffset",
+        global = true,
+        hide = true,
+        allow_hyphen_values = true
+    )]
+    pub totp_offset: Option<String>,
+
+    /// TOTP codes to try in noninteractive-totp, at most 3: the server disables the account
+    /// after too many wrong codes (interactive-totp always asks 3 times) [default: 3]
+    #[arg(long, alias = "mfaRetrys", global = true)]
     pub mfa_retrys: Option<u32>,
 
-    /// Minimum delay between MFA attempts (e.g. 10s); a new attempt also waits for a new TOTP
-    /// code [default: 10s]
-    #[arg(long, global = true, env = "PASSBOLT_MFA_DELAY")]
+    /// Minimum delay between TOTP attempts in noninteractive-totp; a new attempt also waits
+    /// for a new code [default: 10s]
+    #[arg(long, alias = "mfaDelay", global = true)]
     pub mfa_delay: Option<String>,
 
-    /// Skip TLS certificate verification (insecure)
-    #[arg(long, global = true, env = "PASSBOLT_TLS_SKIP_VERIFY")]
-    pub tls_skip_verify: bool,
+    /// Allow servers with self-signed certificates (insecure)
+    #[arg(
+        long,
+        alias = "tlsSkipVerify",
+        global = true,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_parser = crate::config::parse_go_bool
+    )]
+    pub tls_skip_verify: Option<bool>,
 
-    /// TLS client certificate (PEM, inline)
-    #[arg(long, global = true, env = "PASSBOLT_TLS_CLIENT_CERT")]
+    /// TLS client certificate for mTLS (PEM, inline)
+    #[arg(long, alias = "tlsClientCert", global = true)]
     pub tls_client_cert: Option<String>,
 
-    /// TLS client private key (PEM, inline)
-    #[arg(long, global = true, env = "PASSBOLT_TLS_CLIENT_PRIVATE_KEY")]
+    /// TLS client private key for mTLS (PEM, inline)
+    #[arg(long, alias = "tlsClientPrivateKey", global = true)]
     pub tls_client_private_key: Option<String>,
 
-    /// Path to TLS client certificate file
-    #[arg(long, global = true, env = "PASSBOLT_TLS_CLIENT_CERT_FILE")]
+    /// File of the TLS client certificate for mTLS
+    #[arg(long, alias = "tlsClientCertFile", global = true)]
     pub tls_client_cert_file: Option<String>,
 
-    /// Path to TLS client private key file
-    #[arg(long, global = true, env = "PASSBOLT_TLS_CLIENT_PRIVATE_KEY_FILE")]
+    /// File of the TLS client private key for mTLS
+    #[arg(long, alias = "tlsClientPrivateKeyFile", global = true)]
     pub tls_client_private_key_file: Option<String>,
 
     /// HTTP proxy URL (e.g. `http://localhost:8080`)
-    #[arg(long, global = true, env = "PASSBOLT_PROXY")]
+    #[arg(long, global = true)]
     pub proxy: Option<String>,
 
     /// Pin a host name to an address: `host:port:address` (like `curl --resolve`)
-    #[arg(long, global = true, env = "PASSBOLT_RESOLVE")]
+    #[arg(long, global = true)]
     pub resolve: Option<String>,
 
-    /// Request timeout (e.g. 1m, 30s) [default: 1m]
-    #[arg(long, global = true, env = "PASSBOLT_TIMEOUT")]
+    /// Time each request, and the whole command, may take (e.g. 1m, 30s; 0 for no limit)
+    /// [default: 1m]
+    #[arg(long, global = true)]
     pub timeout: Option<String>,
 
-    /// Number of parallel workers (0 = auto) [default: 0]
-    #[arg(long, global = true, env = "PASSBOLT_WORKERS")]
+    /// Number of parallel workers (0 = number of CPUs) [default: 0]
+    #[arg(long, global = true)]
     pub workers: Option<usize>,
 
-    /// Enable debug output
-    #[arg(long, global = true, env = "PASSBOLT_DEBUG")]
-    pub debug: bool,
+    /// Enable debug output on stderr (no secrets)
+    #[arg(
+        long,
+        global = true,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_parser = crate::config::parse_go_bool
+    )]
+    pub debug: Option<bool>,
 
     /// Output JSON instead of a table
     #[arg(short = 'j', long, global = true)]

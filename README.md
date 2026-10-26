@@ -122,23 +122,27 @@ passbolt create resource --name "GitHub" --username "john" --uri https://github.
 
 ## Configuration
 
-Config file location: `~/.config/passbolt/config.toml`
+Config file location: `~/.config/passbolt/config.toml`. When it does not exist, the config
+file of go-passbolt-cli is read (and `configure` / `verify` update it, with its keys):
+`~/.config/go-passbolt-cli/go-passbolt-cli.{json,toml,yaml,yml}`. `--config` takes a `.toml`,
+`.json` or `.yaml` file. Keys are read whatever their case and underscores: go-passbolt-cli's
+`serveraddress` or `serverAddress` is `server_address`. Reading or writing a config file
+restricts it to its owner (`0600`).
 
 ```toml
 server_address         = "https://passbolt.example.com"
 
-# PGP private key — inline or file path (choose one)
+# PGP private key — `configure --user-private-key-file` saves the content of the file
 user_private_key       = """-----BEGIN PGP PRIVATE KEY BLOCK-----
 ...
 -----END PGP PRIVATE KEY BLOCK-----"""
-# user_private_key_file = "/home/user/.gnupg/private.asc"
 
 user_password          = "my-gpg-passphrase"
 
 # MFA (optional)
-mfa_mode               = "interactive-totp"   # or "non-interactive-totp" / "none"
-mfa_totp_token         = ""                   # TOTP secret (for non-interactive)
-mfa_totp_offset        = 0                    # clock skew in seconds
+mfa_mode               = "interactive-totp"   # or "noninteractive-totp" / "none"
+mfa_totp_token         = ""                   # TOTP secret (for noninteractive)
+mfa_totp_offset        = "0s"                 # clock skew, Go duration (e.g. "-30s")
 mfa_retrys             = 3
 mfa_delay              = "10s"
 
@@ -152,9 +156,11 @@ tls_skip_verify        = false
 # Written by `passbolt verify`: do not edit by hand
 # server_public_key        = """-----BEGIN PGP PUBLIC KEY BLOCK----- ..."""
 # metadata_key_fingerprint = "..."
+# server_verify_token      = "..."   # go-passbolt-cli's verification, also checked
+# server_verify_enc_token  = "..."
 
 # Performance
-timeout                = "1m"
+timeout                = "1m0s"   # each request and the whole command
 workers                = 0    # 0 = auto (number of CPU cores)
 
 # Debug
@@ -163,11 +169,17 @@ debug                  = false
 
 ### Priority Order
 
-CLI flags > Environment variables (`PASSBOLT_*`) > Config file > Defaults
+CLI flags > `PASSBOLT_*` variables > go-passbolt-cli variables (`SERVERADDRESS`,
+`USERPASSWORD`, `MFAMODE`…: the flag name in capitals) > Config file > Defaults
 
-`passbolt configure` saves the `PASSBOLT_*` variables set when it runs, except the secrets
-(password, TOTP secret, private keys): a secret exported for one command never ends up on disk.
-Give a secret on the `configure` command line to save it.
+Durations use Go's syntax (`30s`, `1m30s`, `500ms`, `-1m`); a plain number is seconds.
+Booleans take `--debug`, `--debug=true` or `--debug=false`; in a variable or a file also `1`,
+`0`, `t`, `f`. An invalid go-passbolt-cli variable is ignored, as go-passbolt-cli does
+(`DEBUG=*` does not stop the CLI); an invalid `PASSBOLT_*` variable is an error.
+
+`passbolt configure` saves every setting in effect (flags, variables, config file, defaults),
+except the secrets set by a variable (password, TOTP secret, private keys): a secret exported
+for one command never ends up on disk. Give a secret on the command line to save it.
 
 ---
 
@@ -193,37 +205,33 @@ matches the private key.
 
 ### configure
 
-Save credentials to the config file.
+Save the [global flags](#global-flags) given, with the variables and the config file, to the
+config file. Silent on success; `--debug` prints what was saved, secrets masked.
 
 ```bash
-passbolt configure [OPTIONS]
+passbolt configure --serverAddress https://passbolt.example.org \
+  --userPrivateKeyFile keys/privatekey.asc --userPassword '1234'
 ```
 
-| Option | Description |
-|---|---|
-| `--server-address` | Passbolt server URL |
-| `--user-private-key` | PGP private key (armored, inline) |
-| `--user-private-key-file` | Path to PGP private key file |
-| `--user-password` | GPG passphrase |
-| `--mfa-mode` | `interactive-totp` \| `non-interactive-totp` \| `none` |
-| `--mfa-totp-token` | TOTP secret (for non-interactive mode) |
-| `--tls-skip-verify` | Skip TLS verification (insecure) |
-| `--timeout` | Request timeout (e.g. `30s`, `1m`) |
-| `--workers` | Parallel workers (0 = auto) |
-
-The secrets are saved only when given here, never from the environment (see
-[Priority Order](#priority-order)).
+The private key file is read: its content is saved, not its path. The secrets are saved only
+when given as flags, never from the environment (see [Priority Order](#priority-order)).
 
 ---
 
 ### verify
 
-Pin the server key and the shared metadata key in the config file.
+Pin the server key and the shared metadata key in the config file, with the settings given
+(as `configure`), then print `Verification Enabled`. Needs no MFA; the password is asked for
+when it is not given.
 
 ```bash
 passbolt verify
 passbolt verify --force   # trust keys that changed, once your administrator confirmed it
 ```
+
+- go-passbolt-cli's `server_verify_token` / `server_verify_enc_token` are saved too: either CLI
+  checks the server with the same config file.
+- The shared metadata key is pinned only when the account logs in without MFA.
 
 - The server key is pinned once the server proved it holds the private key; each login then
   checks it again. Its fingerprint is computed from the key, not taken from the server.
@@ -606,18 +614,22 @@ passbolt migrate-metadata --shared-only
 
 ## Global Flags
 
-These flags apply to every command and can be set via CLI, env var, or config file.
+These flags apply to every command and can be set via CLI, env var, or config file. Each flag
+also takes go-passbolt-cli's spelling (`--serverAddress`, `--userPrivateKeyFile`,
+`--mfaTotpToken`, `--tlsSkipVerify`…), and each setting go-passbolt-cli reads from the
+environment is also read from its variable (`SERVERADDRESS`, `USERPRIVATEKEY`, `MFATOTPTOKEN`…).
+go-passbolt-cli's deprecated `--totpToken` and `--totpOffset` are taken with a warning.
 
 | Flag | Env Variable | Default | Description |
 |---|---|---|---|
 | `--server-address` | `PASSBOLT_SERVER_ADDRESS` | — | Server URL |
 | `--user-private-key` | `PASSBOLT_USER_PRIVATE_KEY` | — | PGP private key (inline) |
-| `--user-private-key-file` | `PASSBOLT_USER_PRIVATE_KEY_FILE` | — | Path to PGP key file |
-| `--user-password` | `PASSBOLT_USER_PASSWORD` | — | GPG passphrase |
+| `--user-private-key-file` | `PASSBOLT_USER_PRIVATE_KEY_FILE` | — | PGP key file, overrides the inline key |
+| `--user-password` | `PASSBOLT_USER_PASSWORD` | asked | GPG passphrase |
 | `--config` | `PASSBOLT_CONFIG` | `~/.config/passbolt/config.toml` | Config file path |
 | `--mfa-mode` | `PASSBOLT_MFA_MODE` | `interactive-totp` | MFA mode |
 | `--mfa-totp-token` | `PASSBOLT_MFA_TOTP_TOKEN` | — | TOTP secret |
-| `--mfa-totp-offset` | `PASSBOLT_MFA_TOTP_OFFSET` | `0` | TOTP clock offset (seconds) |
+| `--mfa-totp-offset` | `PASSBOLT_MFA_TOTP_OFFSET` | `0s` | TOTP clock offset (e.g. `-30s`) |
 | `--mfa-retrys` | `PASSBOLT_MFA_RETRYS` | `3` | MFA attempts, at most 3 |
 | `--mfa-delay` | `PASSBOLT_MFA_DELAY` | `10s` | Minimum delay between MFA attempts |
 | `--tls-skip-verify` | `PASSBOLT_TLS_SKIP_VERIFY` | `false` | Skip TLS verification |
@@ -627,10 +639,15 @@ These flags apply to every command and can be set via CLI, env var, or config fi
 | `--tls-client-private-key-file` | `PASSBOLT_TLS_CLIENT_PRIVATE_KEY_FILE` | — | mTLS client key file |
 | `--proxy` | `PASSBOLT_PROXY` | — | HTTP(S) proxy URL |
 | `--resolve` | `PASSBOLT_RESOLVE` | — | Pin a host to an address: `host:port:address` |
-| `--timeout` | `PASSBOLT_TIMEOUT` | `1m` | Request timeout |
+| `--timeout` | `PASSBOLT_TIMEOUT` | `1m` | Time each request and the whole command may take (`0`: no limit) |
 | `--workers` | `PASSBOLT_WORKERS` | `0` (auto) | Parallel workers |
-| `--debug` | `PASSBOLT_DEBUG` | `false` | Debug output |
+| `--debug` | `PASSBOLT_DEBUG` | `false` | Debug output on stderr: config file, files read, worker count, requests (no secrets) |
 | `-j, --json` | — | `false` | JSON output |
+| `-v, --version` | — | — | `passbolt version X (Built on DATE from Git SHA SHA)` |
+
+Errors print `Error: <message>` on stderr and exit with code 1, usage errors included. The
+session keys found while reading resources are saved before logging out
+(`Saved N session keys to server` on stderr).
 
 ---
 
@@ -727,29 +744,34 @@ passbolt update resource --id <UUID> --expiry "none"
 
 Three modes are supported:
 
-**`interactive-totp`** (default) — prompts for a 6-digit TOTP code on login:
-```
-TOTP code: ______
-```
+**`interactive-totp`** (default) — asks for the TOTP code on stderr (`Enter TOTP:`), read
+from the terminal or, when stdin is not one, from stdin; 3 attempts, `TOTP Verification Failed`
+after a refused code. The password is asked for the same way (`Enter Password:`) when not given.
 
-**`non-interactive-totp`** — provide the TOTP *secret* (not the 6-digit code) in config or env:
+**`noninteractive-totp`** (also spelt `non-interactive-totp`) — provide the TOTP *secret* (not
+the 6-digit code) in config or env:
 ```bash
 passbolt list resource \
-  --mfa-mode non-interactive-totp \
+  --mfa-mode noninteractive-totp \
   --mfa-totp-token "JBSWY3DPEBLW64TMMQ======"
 ```
 The CLI computes the current code automatically. Use `--mfa-totp-offset` to compensate for clock drift.
 A new attempt waits for the next TOTP code: the same code is never sent twice.
 
 The server disables an account after too many wrong codes: the CLI sends at most 3 per session,
-whatever `--mfa-retrys` says, and stops as soon as the server ends the session. An account
+whatever `--mfa-retrys` says (go-passbolt-cli sends `--mfaRetrys` + 1), and stops as soon as
+the server ends the session. An account
 without TOTP (Yubikey, Duo…) gets an error naming the MFA it has.
 
-**`none`** — disable MFA (for accounts without MFA configured).
+**`none`** — disable MFA (for accounts without MFA configured). Any other mode is `none`, as for
+go-passbolt-cli.
 
 ---
 
 ## TLS / mTLS
+
+Server certificates are checked against the system's roots (also `SSL_CERT_FILE` /
+`SSL_CERT_DIR`) and Mozilla's. HTTPS is required, except for a server on localhost.
 
 Skip verification (self-signed certs, labs):
 ```bash

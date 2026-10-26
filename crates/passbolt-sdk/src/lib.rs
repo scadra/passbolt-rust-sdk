@@ -41,6 +41,7 @@ pub mod client;
 pub mod comment;
 pub mod config;
 pub mod crypto;
+pub mod duration;
 pub mod error;
 pub mod filter;
 pub mod folder;
@@ -62,6 +63,7 @@ pub mod user;
 
 pub use client::{FolderQuery, GroupQuery, PassboltSdk, ResourceQuery, UserQuery};
 pub use config::SdkConfig;
+pub use duration::{format_go_duration, parse_go_duration};
 pub use error::{ApiError, AuthError, CryptoError, PassboltError, TransportError};
 pub use folder::tree::{build_folder_tree, collect_subtree_ids, flatten_tree};
 pub use http::{HttpClient, HttpResponse};

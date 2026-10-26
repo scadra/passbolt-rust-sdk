@@ -18,6 +18,9 @@ use crate::error::PassboltError;
 /// (TOTP generation) implementations are CPU-only.
 pub trait MfaProvider: Send + Sync {
     fn get_totp_code(&self) -> Result<String, PassboltError>;
+
+    /// Told when the server refused the last code given, before another is asked.
+    fn code_refused(&self) {}
 }
 
 /// Non-interactive MFA: the TOTP code of a base32 secret, as authenticator apps give it.

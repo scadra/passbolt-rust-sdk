@@ -24,6 +24,32 @@ pub fn read_password(prompt: &str) -> Result<SecretString> {
     non_empty(password)
 }
 
+/// Ask for a secret as go-passbolt-cli does: `prompt` on stderr, then the hidden input of the
+/// terminal, or one line of stdin when it is not a terminal.
+pub fn prompt_secret(prompt: &str) -> Result<String> {
+    eprint!("{prompt}");
+    let read = if io::stdin().is_terminal() {
+        rpassword::read_password().map_err(anyhow::Error::from)
+    } else {
+        read_stdin_line()
+    };
+    eprintln!();
+    read
+}
+
+fn read_stdin_line() -> Result<String> {
+    let mut line = String::new();
+    if io::stdin().read_line(&mut line)? == 0 {
+        anyhow::bail!("EOF");
+    }
+    Ok(strip_line_end(&line).to_string())
+}
+
+fn strip_line_end(line: &str) -> &str {
+    let line = line.strip_suffix('\n').unwrap_or(line);
+    line.strip_suffix('\r').unwrap_or(line)
+}
+
 fn non_empty(password: String) -> Result<SecretString> {
     if password.is_empty() {
         anyhow::bail!("Empty password: give one, or pass it with its option");
@@ -38,11 +64,7 @@ fn read_line(prompt: &str) -> Result<String> {
         io::stdin()
             .read_line(&mut line)
             .map_err(|error| anyhow::anyhow!("Cannot read stdin: {error}"))?;
-        let trimmed = line
-            .trim_end_matches('\n')
-            .trim_end_matches('\r')
-            .to_string();
-        return Ok(trimmed);
+        return Ok(strip_line_end(&line).to_string());
     }
 
     rpassword::prompt_password(prompt)
@@ -57,6 +79,15 @@ mod tests {
     #[test]
     fn test_non_empty_refuses_an_empty_password() {
         assert!(non_empty(String::new()).is_err());
+    }
+
+    #[rstest::rstest]
+    #[case("secret\n", "secret")]
+    #[case("secret\r\n", "secret")]
+    #[case("secret", "secret")]
+    #[case("two\n\n", "two\n")]
+    fn test_strip_line_end(#[case] line: &str, #[case] expected: &str) {
+        assert_eq!(strip_line_end(line), expected);
     }
 
     #[test]

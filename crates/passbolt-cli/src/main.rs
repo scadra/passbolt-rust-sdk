@@ -15,8 +15,11 @@ mod config;
 mod keepass;
 mod util;
 
-use anyhow::{Context, Result};
-use clap::{CommandFactory, Parser};
+use std::io::Write;
+use std::process::ExitCode;
+
+use anyhow::Result;
+use clap::{CommandFactory, FromArgMatches};
 use clap_complete::generate;
 
 use cli::root::{
@@ -29,122 +32,175 @@ use util::{output, session};
 /// Type alias for the concrete SDK client used by the CLI.
 pub type Client = passbolt_sdk::PassboltSdk<passbolt_sdk::NativeHttpClient>;
 
+/// As go-passbolt-cli: `Error: <message>` and exit code 1 for any error, usage errors included;
+/// help, version, and no arguments at all print on stdout and exit 0.
 #[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
+async fn main() -> ExitCode {
+    let cli = match parse_arguments() {
+        Ok(cli) => cli,
+        Err(code) => return code,
+    };
+    match Box::pin(run(cli)).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn parse_arguments() -> Result<Cli, ExitCode> {
+    use clap::error::ErrorKind;
+
+    let parsed = help_when_incomplete(Cli::command())
+        .try_get_matches()
+        .and_then(|matches| Cli::from_arg_matches(&matches));
+    match parsed {
+        Ok(cli) => Ok(cli),
+        Err(error) => match error.kind() {
+            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+                let _ = error.print();
+                Err(ExitCode::SUCCESS)
+            }
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+                print!("{}", error.render());
+                Err(ExitCode::SUCCESS)
+            }
+            _ => {
+                let _ = error.print();
+                Err(ExitCode::FAILURE)
+            }
+        },
+    }
+}
+
+/// A command with subcommands prints its help when given nothing, as cobra does.
+fn help_when_incomplete(command: clap::Command) -> clap::Command {
+    let names: Vec<String> = command
+        .get_subcommands()
+        .map(|subcommand| subcommand.get_name().to_string())
+        .collect();
+    let has_subcommands = !names.is_empty();
+    let mut command = command;
+    for name in names {
+        command = command.mut_subcommand(name, help_when_incomplete);
+    }
+    command.arg_required_else_help(has_subcommands)
+}
+
+async fn run(cli: Cli) -> Result<()> {
     if let Some(path) = &cli.config {
         Config::set_path(path.into());
     }
 
     match &cli.command {
-        // ── Configure ──────────────────────────────────────────────────────
-        Commands::Configure(args) => {
-            cli::configure::run(args)?;
-        }
-
-        // ── Shell completions ──────────────────────────────────────────────
         Commands::Completion { shell } => {
             let mut command = Cli::command();
             let name = command.get_name().to_string();
-            generate(*shell, &mut command, name, &mut std::io::stdout());
+            let mut script = Vec::new();
+            generate(*shell, &mut command, name, &mut script);
+            return write_ignoring_closed_pipe(&script);
         }
-
-        // ── Documentation generation ───────────────────────────────────────
-        Commands::Gendoc(args) => {
-            cli::gendoc::run_gendoc(args)?;
-        }
-
-        // ── Verify ─────────────────────────────────────────────────────────
-        Commands::Verify(args) => {
-            let config = load_config(&cli)?;
-            cli::verify::run(args, &config).await?;
-        }
-
-        // All other commands require a connected client
-        command => {
-            let config = load_config(&cli)?;
-            let client = session::get_client(&config).await?;
-            let result = dispatch(command, &client, cli.json, config.workers).await;
-            client.logout().await;
-            result?;
-        }
+        Commands::Gendoc(args) => return cli::gendoc::run_gendoc(args),
+        _ => {}
     }
 
-    Ok(())
+    let mut config = load_config(&cli)?;
+    match &cli.command {
+        Commands::Configure(args) => cli::configure::run(args, &config),
+        Commands::Verify(args) => {
+            session::require_credentials(&mut config)?;
+            Box::pin(with_deadline(&config, cli::verify::run(args, &config))).await
+        }
+        command => {
+            session::require_credentials(&mut config)?;
+            let workers = config.worker_count();
+            let work = async {
+                let client = session::get_client(&config).await?;
+                let result = dispatch(command, &client, cli.json, workers).await;
+                session::finish(&client).await;
+                result
+            };
+            // The command run by `exec` takes the time it needs.
+            if matches!(command, Commands::Exec(_)) {
+                work.await
+            } else {
+                with_deadline(&config, work).await
+            }
+        }
+    }
+}
+
+/// Write to stdout; a reader that stopped reading (`| head`) is not an error.
+fn write_ignoring_closed_pipe(bytes: &[u8]) -> Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    match stdout.write_all(bytes).and_then(|()| stdout.flush()) {
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        result => Ok(result?),
+    }
+}
+
+/// `--timeout` bounds the whole command too, as go-passbolt-cli's context does.
+async fn with_deadline(
+    config: &Config,
+    work: impl std::future::Future<Output = Result<()>>,
+) -> Result<()> {
+    match config.timeout_duration()? {
+        Some(limit) => tokio::time::timeout(limit, work).await.map_err(|_| {
+            anyhow::anyhow!("context deadline exceeded (--timeout {})", config.timeout)
+        })?,
+        None => work.await,
+    }
 }
 
 /// Load the config file and environment, then apply the command-line flags over them.
 fn load_config(cli: &Cli) -> Result<Config> {
-    let mut config = Config::load()?;
-    apply_cli_overrides(cli, &mut config)?;
-    if cli.debug {
-        eprintln!("[debug] server: {}", config.server_address);
-    }
-    Ok(config)
+    Config::load_with(&apply_cli_overrides(cli))
 }
 
-/// Apply CLI flag overrides on top of loaded config.
-fn apply_cli_overrides(cli: &Cli, config: &mut Config) -> Result<()> {
-    if let Some(value) = &cli.server_address {
-        config.server_address.clone_from(value);
+/// The settings given as flags, by setting name.
+fn apply_cli_overrides(cli: &Cli) -> Vec<(&'static str, String)> {
+    for (given, flag, replacement) in [
+        (cli.totp_token.is_some(), "totpToken", "mfaTotpToken"),
+        (cli.totp_offset.is_some(), "totpOffset", "mfaTotpOffset"),
+    ] {
+        if given {
+            eprintln!("Flag --{flag} has been deprecated, use --{replacement} instead");
+        }
     }
-    if let Some(value) = &cli.user_private_key {
-        config.user_private_key.clone_from(value);
-    }
-    if let Some(value) = &cli.user_private_key_file {
-        config.user_private_key_file.clone_from(value);
-    }
-    if let Some(value) = &cli.user_password {
-        config.user_password.clone_from(value);
-    }
-    if let Some(value) = &cli.mfa_mode {
-        config.mfa_mode.clone_from(value);
-    }
-    if let Some(value) = &cli.mfa_totp_token {
-        config.mfa_totp_token.clone_from(value);
-    }
-    if let Some(value) = cli.mfa_totp_offset {
-        config.mfa_totp_offset = value;
-    }
-    if let Some(value) = cli.mfa_retrys {
-        config.mfa_retrys = value;
-    }
-    if let Some(value) = &cli.mfa_delay {
-        config.mfa_delay.clone_from(value);
-    }
-    if cli.tls_skip_verify {
-        config.tls_skip_verify = true;
-    }
-    if let Some(value) = &cli.tls_client_cert {
-        config.tls_client_cert.clone_from(value);
-    }
-    if let Some(value) = &cli.tls_client_private_key {
-        config.tls_client_private_key.clone_from(value);
-    }
-    if let Some(path) = &cli.tls_client_cert_file {
-        config.tls_client_cert = std::fs::read_to_string(path)
-            .with_context(|| format!("Cannot read TLS client cert file: {path}"))?;
-    }
-    if let Some(path) = &cli.tls_client_private_key_file {
-        config.tls_client_private_key = std::fs::read_to_string(path)
-            .with_context(|| format!("Cannot read TLS client private key file: {path}"))?;
-    }
-    if let Some(value) = &cli.proxy {
-        config.proxy.clone_from(value);
-    }
-    if let Some(value) = &cli.resolve {
-        config.resolve.clone_from(value);
-    }
-    if let Some(value) = &cli.timeout {
-        config.timeout.clone_from(value);
-    }
-    if let Some(value) = cli.workers {
-        config.workers = value;
-    }
-    if cli.debug {
-        config.debug = true;
-    }
-    Ok(())
+    let texts = [
+        ("server_address", cli.server_address.clone()),
+        ("user_private_key", cli.user_private_key.clone()),
+        ("user_private_key_file", cli.user_private_key_file.clone()),
+        ("user_password", cli.user_password.clone()),
+        ("mfa_mode", cli.mfa_mode.clone()),
+        ("mfa_totp_token", cli.mfa_totp_token.clone()),
+        ("totp_token", cli.totp_token.clone()),
+        ("mfa_totp_offset", cli.mfa_totp_offset.clone()),
+        ("totp_offset", cli.totp_offset.clone()),
+        ("mfa_retrys", cli.mfa_retrys.map(|value| value.to_string())),
+        ("mfa_delay", cli.mfa_delay.clone()),
+        (
+            "tls_skip_verify",
+            cli.tls_skip_verify.map(|value| value.to_string()),
+        ),
+        ("tls_client_cert", cli.tls_client_cert.clone()),
+        ("tls_client_private_key", cli.tls_client_private_key.clone()),
+        ("tls_client_cert_file", cli.tls_client_cert_file.clone()),
+        (
+            "tls_client_private_key_file",
+            cli.tls_client_private_key_file.clone(),
+        ),
+        ("proxy", cli.proxy.clone()),
+        ("resolve", cli.resolve.clone()),
+        ("timeout", cli.timeout.clone()),
+        ("workers", cli.workers.map(|value| value.to_string())),
+        ("debug", cli.debug.map(|value| value.to_string())),
+    ];
+    texts
+        .into_iter()
+        .filter_map(|(name, value)| Some((name, value?)))
+        .collect()
 }
 
 fn parse_filters(expressions: &[String]) -> Result<Vec<passbolt_sdk::filter::Filter>> {
@@ -877,59 +933,122 @@ fn refuse_blocked_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
-    fn config_from_file(text: &str) -> Config {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("config.toml");
-        std::fs::write(&path, text).unwrap();
-        Config::load_from(&path).unwrap()
+    fn flags(arguments: &[&str]) -> Vec<(&'static str, String)> {
+        let arguments = std::iter::once("passbolt")
+            .chain(arguments.iter().copied())
+            .chain(["list", "resource"]);
+        apply_cli_overrides(&Cli::try_parse_from(arguments).unwrap())
     }
 
-    fn overridden(arguments: &[&str], mut config: Config) -> Config {
-        let cli = Cli::try_parse_from(arguments).unwrap();
-        apply_cli_overrides(&cli, &mut config).unwrap();
-        config
-    }
-
-    #[test]
-    fn test_overrides_keep_the_file_settings_without_flags() {
-        let config = config_from_file(
-            "mfa_mode = \"none\"\nmfa_totp_offset = 5\nmfa_retrys = 7\n\
-             mfa_delay = \"2s\"\ntimeout = \"30s\"\nworkers = 4\n",
-        );
-
-        let config = overridden(&["passbolt", "list", "resource"], config);
-
-        assert_eq!(config.mfa_mode, "none");
-        assert_eq!(config.mfa_totp_offset, 5);
-        assert_eq!(config.mfa_retrys, 7);
-        assert_eq!(config.mfa_delay, "2s");
-        assert_eq!(config.timeout, "30s");
-        assert_eq!(config.workers, 4);
+    fn flag(arguments: &[&str], name: &str) -> Option<String> {
+        flags(arguments)
+            .into_iter()
+            .find(|(flag_name, _)| *flag_name == name)
+            .map(|(_, value)| value)
     }
 
     #[test]
-    fn test_overrides_put_the_flags_over_the_file() {
-        let config = config_from_file("mfa_retrys = 7\nworkers = 4\ntimeout = \"30s\"\n");
+    fn test_no_flag_gives_no_setting() {
+        assert_eq!(flags(&[]), Vec::new());
+    }
 
-        let config = overridden(
-            &[
-                "passbolt",
-                "--mfa-retrys",
-                "2",
-                "--workers",
-                "0",
-                "--timeout",
-                "5s",
-                "list",
-                "resource",
-            ],
-            config,
+    #[rstest::rstest]
+    #[case(&["--serverAddress", "https://go"], "server_address", "https://go")]
+    #[case(&["--server-address", "https://ours"], "server_address", "https://ours")]
+    #[case(&["--userPrivateKey", "key"], "user_private_key", "key")]
+    #[case(&["--userPrivateKeyFile", "key.asc"], "user_private_key_file", "key.asc")]
+    #[case(&["--userPassword", "secret"], "user_password", "secret")]
+    #[case(&["--mfaMode", "none"], "mfa_mode", "none")]
+    #[case(&["--mfaTotpToken", "T"], "mfa_totp_token", "T")]
+    #[case(&["--totpToken", "T"], "totp_token", "T")]
+    #[case(&["--mfaTotpOffset", "-1m"], "mfa_totp_offset", "-1m")]
+    #[case(&["--totpOffset", "30s"], "totp_offset", "30s")]
+    #[case(&["--mfaRetrys", "2"], "mfa_retrys", "2")]
+    #[case(&["--mfaDelay", "5s"], "mfa_delay", "5s")]
+    #[case(&["--tlsSkipVerify"], "tls_skip_verify", "true")]
+    #[case(&["--tlsSkipVerify=false"], "tls_skip_verify", "false")]
+    #[case(&["--tls-skip-verify=true"], "tls_skip_verify", "true")]
+    #[case(&["--tlsClientCert", "C"], "tls_client_cert", "C")]
+    #[case(&["--tlsClientPrivateKey", "K"], "tls_client_private_key", "K")]
+    #[case(&["--tlsClientCertFile", "c.pem"], "tls_client_cert_file", "c.pem")]
+    #[case(&["--tlsClientPrivateKeyFile", "k.pem"], "tls_client_private_key_file", "k.pem")]
+    #[case(&["--timeout", "1m30s"], "timeout", "1m30s")]
+    #[case(&["--workers", "4"], "workers", "4")]
+    #[case(&["--debug"], "debug", "true")]
+    #[case(&["--debug=1"], "debug", "true")]
+    #[case(&["--debug=false"], "debug", "false")]
+    fn test_flags_of_both_spellings(
+        #[case] arguments: &[&str],
+        #[case] name: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(flag(arguments, name).as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn test_a_bool_flag_does_not_take_the_next_argument() {
+        let cli = Cli::try_parse_from(["passbolt", "--debug", "list", "resource"]).unwrap();
+
+        assert_eq!(cli.debug, Some(true));
+    }
+
+    #[test]
+    fn test_a_bool_flag_refuses_a_value_that_is_not_a_bool() {
+        assert!(Cli::try_parse_from(["passbolt", "--debug=maybe", "list", "resource"]).is_err());
+    }
+
+    #[test]
+    fn test_global_flags_are_taken_after_the_subcommand() {
+        let cli =
+            Cli::try_parse_from(["passbolt", "configure", "--serverAddress", "https://x"]).unwrap();
+
+        assert_eq!(cli.server_address.as_deref(), Some("https://x"));
+    }
+
+    #[tokio::test]
+    async fn test_with_deadline_stops_a_command_that_takes_too_long() {
+        let mut config = Config::default();
+        config.timeout = "50ms".into();
+
+        let error = with_deadline(&config, async {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("context deadline exceeded"),
+            "{error}"
         );
+    }
 
-        assert_eq!(config.mfa_retrys, 2);
-        assert_eq!(config.workers, 0);
-        assert_eq!(config.timeout, "5s");
+    #[tokio::test]
+    async fn test_with_deadline_zero_is_no_limit() {
+        let mut config = Config::default();
+        config.timeout = "0s".into();
+
+        let result = with_deadline(&config, async {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            Ok(())
+        })
+        .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_help_when_incomplete_asks_for_help_without_arguments() {
+        let error = help_when_incomplete(Cli::command())
+            .try_get_matches_from(["passbolt"])
+            .unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
     }
 
     #[test]
