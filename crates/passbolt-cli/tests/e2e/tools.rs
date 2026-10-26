@@ -119,9 +119,9 @@ fn keepass_export_contains_shared_v5_resources() {
     run(&[
         "export",
         "keepass",
-        "--output",
+        "-f",
         file.to_str().unwrap(),
-        "--password",
+        "-p",
         "kdbx-password",
         "--folder-id",
         &folder.id,
@@ -203,18 +203,13 @@ fn keepass_export_refuses_an_empty_master_password() {
     let directory = tempfile::tempdir().unwrap();
     let file = directory.path().join("export.kdbx");
 
+    // As go-passbolt-cli, an empty --password prompts; the empty answer is refused.
     passbolt()
-        .args([
-            "export",
-            "keepass",
-            "--output",
-            file.to_str().unwrap(),
-            "--password",
-            "",
-        ])
+        .args(["export", "keepass", "-f", file.to_str().unwrap(), "-p", ""])
+        .write_stdin("\n")
         .assert()
         .failure()
-        .stderr(contains("cannot be empty"));
+        .stderr(contains("Empty password"));
 
     assert!(!file.exists());
 }

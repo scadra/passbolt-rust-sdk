@@ -185,7 +185,7 @@ pub fn detail_rows(view: &ResourceView) -> Vec<(String, String)> {
 }
 
 /// Custom fields as `(key, value)`, their metadata and secret sides paired by id.
-fn custom_fields(
+pub fn custom_fields(
     metadata_side: Option<&Value>,
     secret_side: Option<&Value>,
 ) -> Vec<(String, String)> {

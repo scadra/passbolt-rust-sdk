@@ -22,6 +22,7 @@ mod errors;
 mod folder_permissions;
 mod folders;
 mod interop;
+mod keepass_export;
 mod outputs;
 mod pinning;
 mod resource_types;
