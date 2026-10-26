@@ -396,9 +396,11 @@ jobs:
           pkg=build/go/passbolt-sdk-go
           mkdir -p "$pkg" dist
           find bindings/go \( -name '*.go' -o -name '*.h' \) -exec cp {} "$pkg/" \;
-          # The link files join the package the generator wrote.
-          package=$(sed -n 's/^package //p' "$pkg"/*.go | head -n 1)
-          test -n "$package"
+          # The generator names the package after the UniFFI namespace, `passbolt_ffi`: Go wants
+          # `passbolt`, the name uniffi.toml gives the header and the exported callbacks.
+          sed -i 's/^package passbolt_ffi$/package passbolt/' "$pkg"/*.go
+          test -z "$(grep -L '^package passbolt$' "$pkg"/*.go)"
+          cp packaging/go/*.go "$pkg/"
           printf 'module github.com/%s\n\ngo 1.21\n' "$GO_REPOSITORY" > "$pkg/go.mod"
           declare -A platform=(
             [x86_64-unknown-linux-gnu]=linux_amd64 [aarch64-unknown-linux-gnu]=linux_arm64
@@ -411,7 +413,7 @@ jobs:
             {
               echo "//go:build ${p%_*} && ${p#*_}"
               echo
-              echo "package $package"
+              echo "package passbolt"
               echo
               echo "// #cgo LDFLAGS: -L\${SRCDIR}/lib/$p -lpassbolt_ffi $(cat "native/native-$target/native-static-libs.txt")"
               echo 'import "C"'
