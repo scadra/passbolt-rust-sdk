@@ -11,6 +11,7 @@
 // @since         0.1.0
 
 use assert_cmd::Command;
+use predicates::boolean::PredicateBooleanExt;
 use predicates::str::contains;
 
 fn passbolt() -> Command {
@@ -450,6 +451,45 @@ fn an_unknown_mfa_mode_is_refused_before_contacting_the_server() {
         .assert()
         .failure()
         .stderr(contains("Unknown MFA mode interactive"));
+}
+
+#[test]
+fn an_unknown_kdbx_version_is_refused_before_contacting_the_server() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("x.kdbx");
+
+    passbolt()
+        .env("PASSBOLT_CONFIG", directory.path().join("config.toml"))
+        .env("PASSBOLT_SERVER_ADDRESS", "http://127.0.0.1:1")
+        .args([
+            "export",
+            "keepass",
+            "-f",
+            file.to_str().unwrap(),
+            "-p",
+            "pw",
+        ])
+        .args(["--kdbx-version", "v5"])
+        .assert()
+        .failure()
+        .stderr(contains(r#"invalid kdbx-version "v5": must be v3 or v4"#));
+
+    assert!(!file.exists());
+}
+
+#[test]
+fn export_keepass_help_shows_the_go_passbolt_cli_flags() {
+    passbolt()
+        .args(["export", "keepass", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("-f, --file <FILE>"))
+        .stdout(contains("[default: passbolt-export.kdbx]"))
+        .stdout(contains("-p, --password <PASSWORD>"))
+        .stdout(contains("--kdbx-version <KDBX_VERSION>"))
+        .stdout(contains("[default: v3]"))
+        .stdout(contains("--folder-id <FOLDER_ID>"))
+        .stdout(contains("--output").not());
 }
 
 #[test]

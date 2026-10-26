@@ -15,25 +15,54 @@ use indicatif::ProgressBar;
 use secstr::SecStr;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
-use zeroize::ZeroizeOnDrop;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
+use crate::util::resources::custom_fields;
 use crate::Client;
 use passbolt_sdk::resource::list::list_resources;
 use passbolt_sdk::resource::view::ResourceView;
 use passbolt_sdk::types::{Folder, TotpData};
 
+pub const DATABASE_NAME: &str = "Passbolt Export";
+pub const ROOT_GROUP_NAME: &str = "root";
+
+const STANDARD_FIELDS: [&str; 6] = ["Title", "UserName", "URL", "Password", "Notes", "otp"];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KdbxVersion {
+    /// KDBX 3.1: AES-KDF, AES-256-CBC, Salsa20 protected values.
+    V3,
+    /// KDBX 4: Argon2, AES-256-CBC, `ChaCha20` protected values.
+    V4,
+}
+
+impl KdbxVersion {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "v3" => Ok(Self::V3),
+            "v4" => Ok(Self::V4),
+            _ => Err(format!("invalid kdbx-version {value:?}: must be v3 or v4")),
+        }
+    }
+}
+
 /// Export Passbolt resources to a `KeePass` KDBX file, preserving folder hierarchy.
 ///
 /// If `folder_id` is provided, only resources inside that folder subtree are exported.
 /// The resources are listed as `list resource` lists them, their secrets decrypted by
-/// `workers` threads (0 = one per CPU).
+/// `workers` threads (0 = one per CPU). A resource that cannot be decrypted is reported
+/// and skipped, as go-passbolt-cli does.
 pub async fn export_keepass(
     client: &Client,
     output_path: &Path,
     password: &str,
+    version: KdbxVersion,
     folder_id: Option<&str>,
     workers: usize,
 ) -> Result<()> {
+    if output_path.as_os_str().is_empty() {
+        anyhow::bail!("the Filename cannot be empty");
+    }
     let all_folders = client
         .get_folders(passbolt_sdk::FolderQuery::default())
         .await
@@ -58,64 +87,118 @@ pub async fn export_keepass(
         None => (passbolt_sdk::ResourceQuery::default(), all_folders),
     };
 
-    let progress = ProgressBar::new_spinner().with_message("Decrypting secrets...");
+    println!("Getting Resources...");
+    let progress = ProgressBar::new_spinner().with_message("Decrypting Resources");
     progress.enable_steady_tick(std::time::Duration::from_millis(100));
     let views = list_resources(client, query, &[], Some(workers))
         .await
-        .context("Failed to fetch resources")?;
-    progress.finish_with_message("Secrets decrypted");
+        .context("getting Resources")?;
+    progress.finish_and_clear();
 
-    let total = views.len();
-    let (entries, failures) = collect_entries(&views);
-    let exported = entries.len();
+    let (entries, skipped) = collect_entries(&views);
+    for reason in &skipped {
+        println!("\n{reason}");
+    }
+    let root = build_tree(entries, &folders);
 
-    write_kdbx(output_path, password, entries, &folders)?;
+    match version {
+        KdbxVersion::V3 => save_replacing(output_path, |file| {
+            super::kdbx3::write_kdbx3(file, password, &root)
+                .with_context(|| format!("Cannot write KDBX to {}", output_path.display()))
+        }),
+        KdbxVersion::V4 => write_kdbx4(output_path, password, &root),
+    }?;
 
-    println!("Exported {exported} entries to {}", output_path.display());
-
-    // A partial backup must not look like a complete one to scripts: report and fail.
-    ensure_no_decryption_failure(&failures, total)
+    println!("Done");
+    Ok(())
 }
 
 /// The entries of the decrypted views, with their folder; the views that could not be
-/// decrypted are skipped, their errors returned instead.
+/// decrypted are skipped, the reasons returned instead.
 fn collect_entries(views: &[ResourceView]) -> (Vec<(Option<String>, KeePassEntry)>, Vec<String>) {
     let mut entries = Vec::with_capacity(views.len());
-    let mut failures = Vec::new();
+    let mut skipped = Vec::new();
     for view in views {
         match &view.error {
             None => entries.push((view.folder_parent_id.clone(), build_entry(view))),
-            Some(error) => failures.push(format!("Failed to decrypt '{}': {error}", view.name)),
+            Some(error) => skipped.push(format!(
+                "Skipping Export of Resource {} {} Because of: {error}",
+                view.id, view.name
+            )),
         }
     }
-    (entries, failures)
+    (entries, skipped)
 }
-
-fn ensure_no_decryption_failure(failures: &[String], total: usize) -> Result<()> {
-    if failures.is_empty() {
-        return Ok(());
-    }
-    for failure in failures {
-        eprintln!("Skipped: {failure}");
-    }
-    anyhow::bail!(
-        "{} of {total} secrets could not be decrypted and were not exported",
-        failures.len()
-    )
-}
-
-// ─── Internal types ───────────────────────────────────────────────────────────
 
 /// Intermediate plaintext representation; zeroized on drop so decrypted
 /// passwords do not linger in the heap after the KDBX file is written.
 #[derive(ZeroizeOnDrop)]
-struct KeePassEntry {
-    title: String,
-    username: String,
-    url: String,
-    password: String,
-    notes: String,
-    otp: Option<String>,
+pub struct KeePassEntry {
+    pub title: String,
+    pub username: String,
+    pub url: String,
+    pub password: String,
+    pub notes: String,
+    pub otp: Option<String>,
+    pub custom_fields: Vec<CustomField>,
+}
+
+#[derive(Zeroize)]
+pub struct CustomField {
+    pub name: String,
+    pub value: String,
+}
+
+/// A string field of an entry, in the order `KeePass` lists them.
+pub struct EntryField<'a> {
+    pub key: &'a str,
+    pub value: &'a str,
+    pub protected: bool,
+}
+
+impl KeePassEntry {
+    pub fn fields(&self) -> Vec<EntryField<'_>> {
+        let field = |key, value, protected| EntryField {
+            key,
+            value,
+            protected,
+        };
+        let mut fields = vec![
+            field("Title", self.title.as_str(), false),
+            field("UserName", self.username.as_str(), false),
+            field("URL", self.url.as_str(), false),
+            field("Password", self.password.as_str(), true),
+            field("Notes", self.notes.as_str(), false),
+        ];
+        if let Some(otp) = &self.otp {
+            fields.push(field("otp", otp.as_str(), true));
+        }
+        for custom_field in &self.custom_fields {
+            fields.push(field(
+                custom_field.name.as_str(),
+                custom_field.value.as_str(),
+                true,
+            ));
+        }
+        fields
+    }
+}
+
+/// A `KeePass` group: a Passbolt folder, or the root of the export.
+pub struct KeePassGroup {
+    pub name: String,
+    pub entries: Vec<KeePassEntry>,
+    pub groups: Vec<Self>,
+}
+
+impl KeePassGroup {
+    pub fn named(name: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            entries: Vec::new(),
+            groups: Vec::new(),
+        }
+    }
 }
 
 fn build_entry(view: &ResourceView) -> KeePassEntry {
@@ -130,7 +213,7 @@ fn build_entry(view: &ResourceView) -> KeePassEntry {
         .as_ref()
         .and_then(|secret| secret.get("totp"))
         .and_then(|totp| serde_json::from_value::<TotpData>(totp.clone()).ok())
-        .map(|totp| build_otpauth(&view.name, &view.username, &totp));
+        .and_then(|totp| build_otpauth(&view.name, &view.username, &view.uri, &totp));
 
     KeePassEntry {
         title: view.name.clone(),
@@ -139,7 +222,36 @@ fn build_entry(view: &ResourceView) -> KeePassEntry {
         password: view.password.clone().unwrap_or_default(),
         notes,
         otp,
+        custom_fields: entry_custom_fields(view),
     }
+}
+
+/// The custom fields, each named after its key. A name taken by a standard field or an
+/// earlier custom field gets a ` (2)`, ` (3)`… suffix: a `KeePass` entry has unique keys.
+fn entry_custom_fields(view: &ResourceView) -> Vec<CustomField> {
+    let secret_side = view
+        .secret
+        .as_ref()
+        .and_then(|secret| secret.get("custom_fields"));
+    let mut taken: HashSet<String> = STANDARD_FIELDS.iter().map(|&name| name.into()).collect();
+    custom_fields(view.metadata.get("custom_fields"), secret_side)
+        .into_iter()
+        .filter(|(name, _)| !name.is_empty())
+        .map(|(name, value)| CustomField {
+            name: unique_field_name(&name, &mut taken),
+            value,
+        })
+        .collect()
+}
+
+fn unique_field_name(name: &str, taken: &mut HashSet<String>) -> String {
+    let mut candidate = name.to_owned();
+    let mut index = 2;
+    while !taken.insert(candidate.clone()) {
+        candidate = format!("{name} ({index})");
+        index += 1;
+    }
+    candidate
 }
 
 /// Normalise a base32 secret: uppercase, strip spaces and `=` padding,
@@ -170,103 +282,64 @@ fn percent_encode(value: &str) -> String {
 }
 
 /// Build an `otpauth://totp/issuer:account` URI (Google Key URI format) for the
-/// `KeePass` OTP plugin. The issuer defaults to the title, the account to the
-/// username, then to the title.
-fn build_otpauth(title: &str, username: &str, totp: &TotpData) -> String {
-    let issuer = totp
-        .issuer
-        .as_deref()
-        .filter(|issuer| !issuer.is_empty())
-        .unwrap_or(title);
+/// `KeePass` OTP plugin, or `None` without a secret key. As go-passbolt-cli, the issuer is
+/// the URI, else the title; the account is the username, else the title.
+fn build_otpauth(title: &str, username: &str, url: &str, totp: &TotpData) -> Option<String> {
+    let secret = normalize_base32(totp.secret_key.as_deref().unwrap_or(""));
+    if secret.is_empty() {
+        return None;
+    }
+    let issuer = if url.is_empty() { title } else { url };
     let account = if username.is_empty() { title } else { username };
     let label = format!("{}:{}", percent_encode(issuer), percent_encode(account));
-    let secret = percent_encode(&normalize_base32(totp.secret_key.as_deref().unwrap_or("")));
     let algorithm = percent_encode(&totp.algorithm.as_deref().unwrap_or("SHA1").to_uppercase());
     let digits = totp.digits.unwrap_or(6);
     let period = totp.period.unwrap_or(30);
 
-    format!(
-        "otpauth://totp/{label}?secret={secret}&issuer={}&algorithm={algorithm}&digits={digits}&period={period}",
+    Some(format!(
+        "otpauth://totp/{label}?secret={}&issuer={}&algorithm={algorithm}&digits={digits}&period={period}",
+        percent_encode(&secret),
         percent_encode(issuer)
-    )
+    ))
 }
 
-// ─── KDBX writer ─────────────────────────────────────────────────────────────
+/// The `root` group: the entries without folder and one sub-group per folder, nested as
+/// the folders are.
+fn build_tree(entries: Vec<(Option<String>, KeePassEntry)>, folders: &[Folder]) -> KeePassGroup {
+    let mut root = KeePassGroup::named(ROOT_GROUP_NAME);
+    let bfs_order = bfs_folders(folders);
+    let mut groups: HashMap<&str, KeePassGroup> = bfs_order
+        .iter()
+        .map(|folder| (folder.id.as_str(), KeePassGroup::named(&folder.name)))
+        .collect();
 
-fn write_kdbx(
-    path: &Path,
-    password: &str,
-    entries: Vec<(Option<String>, KeePassEntry)>,
-    folders: &[Folder],
-) -> Result<()> {
-    use keepass::{
-        config::DatabaseConfig,
-        db::{Database, Group, Node},
-        DatabaseKey,
-    };
-
-    let mut database = Database::new(DatabaseConfig::default());
-
-    if folders.is_empty() {
-        // No folder data — flat export
-        for (_, entry) in entries {
-            database
-                .root
-                .children
-                .push(Node::Entry(build_kp_entry(entry)));
-        }
-    } else {
-        // Build folder groups, preserving hierarchy.
-        //
-        // Algorithm:
-        //  1. BFS-order folders (parents before children).
-        //  2. Create a keepass Group for each folder.
-        //  3. Add entries to the correct group (or root if no folder).
-        //  4. Assemble in reverse-BFS order: remove deepest groups first and
-        //     attach them to their parent groups, ending with root-level groups
-        //     attached to database.root.
-
-        // Step 1: BFS ordering
-        let bfs_order = bfs_folders(folders);
-
-        // Step 2: create one Group per folder_id
-        let mut groups: HashMap<String, Group> = bfs_order
-            .iter()
-            .map(|folder| {
-                (
-                    folder.id.clone(),
-                    Group {
-                        name: folder.name.clone(),
-                        ..Default::default()
-                    },
-                )
-            })
-            .collect();
-
-        // Step 3: add entries to the correct group (or database.root)
-        for (folder_id, entry) in entries {
-            let node = Node::Entry(build_kp_entry(entry));
-            match folder_id.as_deref().and_then(|id| groups.get_mut(id)) {
-                Some(group) => group.children.push(node),
-                None => database.root.children.push(node),
-            }
-        }
-
-        // Step 4: assemble tree in reverse-BFS order (deepest first)
-        for folder in bfs_order.iter().rev() {
-            if let Some(group) = groups.remove(&folder.id) {
-                let node = Node::Group(group);
-                match folder
-                    .folder_parent_id
-                    .as_deref()
-                    .and_then(|parent_id| groups.get_mut(parent_id))
-                {
-                    Some(parent) => parent.children.push(node),
-                    None => database.root.children.push(node),
-                }
-            }
+    for (folder_id, entry) in entries {
+        match folder_id.as_deref().and_then(|id| groups.get_mut(id)) {
+            Some(group) => group.entries.push(entry),
+            None => root.entries.push(entry),
         }
     }
+
+    // Deepest first, so that a group is complete when it joins its parent.
+    for folder in bfs_order.iter().rev() {
+        if let Some(group) = groups.remove(folder.id.as_str()) {
+            let parent = folder
+                .folder_parent_id
+                .as_deref()
+                .and_then(|parent_id| groups.get_mut(parent_id))
+                .unwrap_or(&mut root);
+            parent.groups.insert(0, group);
+        }
+    }
+    root
+}
+
+fn write_kdbx4(path: &Path, password: &str, root: &KeePassGroup) -> Result<()> {
+    use keepass::{config::DatabaseConfig, db::Database, DatabaseKey};
+
+    let mut database = Database::new(DatabaseConfig::default());
+    database.meta.database_name = Some(DATABASE_NAME.into());
+    database.root = keepass_group(root);
 
     let key = DatabaseKey::new().with_password(password);
     save_replacing(path, |file| {
@@ -274,6 +347,28 @@ fn write_kdbx(
             .save(file, key)
             .with_context(|| format!("Cannot write KDBX to {}", path.display()))
     })
+}
+
+fn keepass_group(group: &KeePassGroup) -> keepass::db::Group {
+    use keepass::db::{Entry, Group, Node, Value};
+
+    let mut converted = Group::new(&group.name);
+    for entry in &group.entries {
+        let mut converted_entry = Entry::new();
+        for field in entry.fields() {
+            let value = if field.protected {
+                Value::Protected(SecStr::from(field.value))
+            } else {
+                Value::Unprotected(field.value.to_owned())
+            };
+            converted_entry.fields.insert(field.key.to_owned(), value);
+        }
+        converted.children.push(Node::Entry(converted_entry));
+    }
+    for child in &group.groups {
+        converted.children.push(Node::Group(keepass_group(child)));
+    }
+    converted
 }
 
 /// Write a sibling file then rename it over `path`: a failed export never damages the
@@ -306,44 +401,6 @@ fn save_replacing(path: &Path, write: impl FnOnce(&mut std::fs::File) -> Result<
         let _ = std::fs::remove_file(&temporary);
     }
     written
-}
-
-/// Build a keepass `Entry` from our intermediate representation.
-///
-/// Uses `std::mem::take` to move each field out without triggering borrow
-/// conflicts with the `Drop` impl added by `ZeroizeOnDrop`.  After all takes,
-/// `source` holds only empty/None values and is then zeroized on drop.
-fn build_kp_entry(mut source: KeePassEntry) -> keepass::db::Entry {
-    use keepass::db::{Entry, Value};
-    use std::mem::take;
-
-    let mut entry = Entry::new();
-    entry
-        .fields
-        .insert("Title".into(), Value::Unprotected(take(&mut source.title)));
-    entry.fields.insert(
-        "UserName".into(),
-        Value::Unprotected(take(&mut source.username)),
-    );
-    entry
-        .fields
-        .insert("URL".into(), Value::Unprotected(take(&mut source.url)));
-    entry.fields.insert(
-        "Password".into(),
-        Value::Protected(SecStr::new(take(&mut source.password).into_bytes())),
-    );
-    entry
-        .fields
-        .insert("Notes".into(), Value::Unprotected(take(&mut source.notes)));
-
-    if let Some(otp) = take(&mut source.otp) {
-        entry.fields.insert(
-            "otp".into(),
-            Value::Protected(SecStr::new(otp.into_bytes())),
-        );
-    }
-
-    entry
 }
 
 /// Return folders in BFS order (parents before children). A folder whose
@@ -388,12 +445,13 @@ mod tests {
     use super::*;
     use keepass::db::{Database, Node, Value};
     use keepass::DatabaseKey;
-    use passbolt_sdk::types::{Resource, ResourceType};
+    use passbolt_sdk::types::{Resource, ResourceMetadata, ResourceType};
     use rstest::rstest;
+    use serde_json::json;
 
     fn make_resource(name: &str) -> Resource {
         Resource {
-            id: "test-id".into(),
+            id: format!("{name}-id"),
             name: name.into(),
             username: None,
             uri: None,
@@ -433,24 +491,22 @@ mod tests {
         }
     }
 
-    fn make_totp(secret: &str, issuer: Option<&str>) -> TotpData {
-        TotpData {
-            secret_key: Some(secret.into()),
-            algorithm: Some("SHA1".into()),
-            digits: Some(6),
-            period: Some(30),
-            issuer: issuer.map(Into::into),
-        }
+    fn make_totp(secret: &str) -> TotpData {
+        serde_json::from_value(json!({
+            "secret_key": secret, "algorithm": "SHA1", "digits": 6, "period": 30
+        }))
+        .unwrap()
     }
 
-    fn make_entry(title: &str, otp: Option<&str>) -> KeePassEntry {
+    fn make_entry(title: &str) -> KeePassEntry {
         KeePassEntry {
             title: title.into(),
             username: String::new(),
             url: String::new(),
             password: format!("{title}-password"),
             notes: String::new(),
-            otp: otp.map(Into::into),
+            otp: None,
+            custom_fields: Vec::new(),
         }
     }
 
@@ -458,26 +514,85 @@ mod tests {
         folders.iter().map(|folder| folder.id.as_str()).collect()
     }
 
-    fn child_group<'a>(group: &'a keepass::db::Group, name: &str) -> &'a keepass::db::Group {
+    fn group_names(group: &KeePassGroup) -> Vec<&str> {
         group
-            .children
+            .groups
             .iter()
-            .find_map(|node| match node {
-                Node::Group(child) if child.name == name => Some(child),
-                _ => None,
-            })
+            .map(|child| child.name.as_str())
+            .collect()
+    }
+
+    fn entry_titles(group: &KeePassGroup) -> Vec<&str> {
+        group
+            .entries
+            .iter()
+            .map(|entry| entry.title.as_str())
+            .collect()
+    }
+
+    fn types() -> Vec<ResourceType> {
+        [
+            "password-string",
+            "password-and-description",
+            "v5-default",
+            "v5-default-with-totp",
+        ]
+        .into_iter()
+        .map(|slug| ResourceType {
+            id: format!("{slug}-id"),
+            slug: slug.into(),
+            name: None,
+            definition: None,
+        })
+        .collect()
+    }
+
+    fn typed_resource(name: &str, slug: &str) -> Resource {
+        Resource {
+            resource_type_id: Some(format!("{slug}-id")),
+            ..make_resource(name)
+        }
+    }
+
+    fn view_of(resource: Resource, secret: &str) -> ResourceView {
+        ResourceView::new(resource, None, &types())
+            .unwrap()
+            .with_secret(secret)
             .unwrap()
     }
 
-    fn child_entries(group: &keepass::db::Group) -> Vec<&keepass::db::Entry> {
-        group
-            .children
-            .iter()
-            .filter_map(|node| match node {
-                Node::Entry(entry) => Some(entry),
-                Node::Group(_) => None,
-            })
+    fn v5_view_of(metadata: serde_json::Value, secret: &serde_json::Value) -> ResourceView {
+        let metadata: ResourceMetadata = serde_json::from_value(metadata).unwrap();
+        ResourceView::new(
+            typed_resource("ignored", "v5-default-with-totp"),
+            Some(metadata),
+            &types(),
+        )
+        .unwrap()
+        .with_secret(&secret.to_string())
+        .unwrap()
+    }
+
+    fn field_pairs(entry: &KeePassEntry) -> Vec<(&str, &str, bool)> {
+        entry
+            .fields()
+            .into_iter()
+            .map(|field| (field.key, field.value, field.protected))
             .collect()
+    }
+
+    #[test]
+    fn test_kdbx_version_parse_accepts_v3_and_v4() {
+        assert_eq!(KdbxVersion::parse("v3"), Ok(KdbxVersion::V3));
+        assert_eq!(KdbxVersion::parse("v4"), Ok(KdbxVersion::V4));
+    }
+
+    #[test]
+    fn test_kdbx_version_parse_rejects_others_as_go_passbolt_cli() {
+        assert_eq!(
+            KdbxVersion::parse("4"),
+            Err(r#"invalid kdbx-version "4": must be v3 or v4"#.to_string())
+        );
     }
 
     #[rstest]
@@ -491,37 +606,52 @@ mod tests {
     }
 
     #[rstest]
-    #[case::plain(
+    #[case::issuer_is_the_uri(
         "MyService",
         "alice",
-        make_totp("JBSWY3DPEHPK3PXP", Some("MyIssuer")),
-        "otpauth://totp/MyIssuer:alice?secret=JBSWY3DPEHPK3PXP&issuer=MyIssuer&algorithm=SHA1&digits=6&period=30"
+        "https://my.test",
+        make_totp("JBSWY3DPEHPK3PXP"),
+        "otpauth://totp/https%3A%2F%2Fmy.test:alice?secret=JBSWY3DPEHPK3PXP&issuer=https%3A%2F%2Fmy.test&algorithm=SHA1&digits=6&period=30"
+    )]
+    #[case::issuer_falls_back_to_the_title(
+        "Fallback",
+        "bob",
+        "",
+        make_totp("JBSWY3DP"),
+        "otpauth://totp/Fallback:bob?secret=JBSWY3DP&issuer=Fallback&algorithm=SHA1&digits=6&period=30"
     )]
     #[case::special_characters(
-        "Title",
+        "A&B?C#D:E/F G",
         "me&you?#a:b/c",
-        make_totp("jbswy3d=", Some("A&B?C#D:E/F G")),
+        "",
+        make_totp("jbswy3d="),
         "otpauth://totp/A%26B%3FC%23D%3AE%2FF%20G:me%26you%3F%23a%3Ab%2Fc?secret=JBSWY3D&issuer=A%26B%3FC%23D%3AE%2FF%20G&algorithm=SHA1&digits=6&period=30"
     )]
     #[case::defaults(
         "My Service",
         "",
-        TotpData { secret_key: Some("JBSWY3DP".into()), algorithm: None, digits: None, period: None, issuer: None },
+        "",
+        TotpData { secret_key: Some("JBSWY3DP".into()), ..make_totp("") },
         "otpauth://totp/My%20Service:My%20Service?secret=JBSWY3DP&issuer=My%20Service&algorithm=SHA1&digits=6&period=30"
-    )]
-    #[case::empty_issuer_falls_back_to_title(
-        "Fallback",
-        "bob",
-        make_totp("JBSWY3DP", Some("")),
-        "otpauth://totp/Fallback:bob?secret=JBSWY3DP&issuer=Fallback&algorithm=SHA1&digits=6&period=30"
     )]
     fn test_build_otpauth(
         #[case] title: &str,
         #[case] username: &str,
+        #[case] url: &str,
         #[case] totp: TotpData,
         #[case] expected: &str,
     ) {
-        assert_eq!(build_otpauth(title, username, &totp), expected);
+        assert_eq!(
+            build_otpauth(title, username, url, &totp).as_deref(),
+            Some(expected)
+        );
+    }
+
+    #[rstest]
+    #[case::empty("")]
+    #[case::only_padding(" = ")]
+    fn test_build_otpauth_skips_a_totp_without_secret_key(#[case] secret: &str) {
+        assert_eq!(build_otpauth("name", "", "", &make_totp(secret)), None);
     }
 
     #[rstest]
@@ -545,68 +675,53 @@ mod tests {
     }
 
     #[test]
-    fn test_write_kdbx_keeps_hierarchy_of_exported_subtree() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("export.kdbx");
+    fn test_build_tree_puts_everything_in_a_root_group() {
+        let root = build_tree(vec![(None, make_entry("loose"))], &[]);
+
+        assert_eq!(root.name, "root");
+        assert_eq!(entry_titles(&root), ["loose"]);
+    }
+
+    #[test]
+    fn test_build_tree_keeps_hierarchy_of_exported_subtree() {
         let folders = vec![
             make_folder("child", Some("sub")),
             make_folder("sub", Some("outside")),
         ];
         let entries = vec![
-            (None, make_entry("at-root", None)),
-            (
-                Some("child".to_owned()),
-                make_entry("nested", Some("otpauth://totp/Issuer:me?secret=JBSWY3DP")),
-            ),
+            (None, make_entry("at-root")),
+            (Some("child".to_owned()), make_entry("nested")),
+            (Some("unknown".to_owned()), make_entry("orphan")),
         ];
 
-        write_kdbx(&path, "master", entries, &folders).unwrap();
+        let root = build_tree(entries, &folders);
 
-        let mut file = std::fs::File::open(&path).unwrap();
-        let database =
-            Database::open(&mut file, DatabaseKey::new().with_password("master")).unwrap();
-        let root_entries = child_entries(&database.root);
-        assert_eq!(root_entries.len(), 1);
-        assert_eq!(root_entries[0].get_title(), Some("at-root"));
-        assert_eq!(root_entries[0].get_password(), Some("at-root-password"));
-        let sub = child_group(&database.root, "sub-name");
-        let child = child_group(sub, "child-name");
-        let nested = child_entries(child);
-        assert_eq!(nested[0].get_title(), Some("nested"));
-        assert!(matches!(
-            nested[0].fields.get("otp"),
-            Some(Value::Protected(_))
-        ));
-        assert_eq!(
-            nested[0].get("otp"),
-            Some("otpauth://totp/Issuer:me?secret=JBSWY3DP")
-        );
+        assert_eq!(entry_titles(&root), ["at-root", "orphan"]);
+        assert_eq!(group_names(&root), ["sub-name"]);
+        assert_eq!(group_names(&root.groups[0]), ["child-name"]);
+        assert_eq!(entry_titles(&root.groups[0].groups[0]), ["nested"]);
     }
 
-    fn types() -> Vec<ResourceType> {
-        ["password-string", "password-and-description", "v5-default"]
-            .into_iter()
-            .map(|slug| ResourceType {
-                id: format!("{slug}-id"),
-                slug: slug.into(),
-                name: None,
-                definition: None,
-            })
-            .collect()
+    #[test]
+    fn test_build_tree_keeps_the_folder_order() {
+        let folders = vec![make_folder("first", None), make_folder("second", None)];
+
+        let root = build_tree(Vec::new(), &folders);
+
+        assert_eq!(group_names(&root), ["first-name", "second-name"]);
     }
 
-    fn typed_resource(name: &str, slug: &str) -> Resource {
-        Resource {
-            resource_type_id: Some(format!("{slug}-id")),
-            ..make_resource(name)
-        }
-    }
+    #[test]
+    fn test_build_tree_keeps_folders_of_a_cycle() {
+        let folders = vec![
+            make_folder("first", Some("second")),
+            make_folder("second", Some("first")),
+        ];
 
-    fn view_of(resource: Resource, secret: &str) -> ResourceView {
-        ResourceView::new(resource, None, &types())
-            .unwrap()
-            .with_secret(secret)
-            .unwrap()
+        let root = build_tree(Vec::new(), &folders);
+
+        assert_eq!(group_names(&root), ["first-name"]);
+        assert_eq!(group_names(&root.groups[0]), ["second-name"]);
     }
 
     #[test]
@@ -645,17 +760,163 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_entries_skips_and_counts_decryption_failures() {
+    fn test_build_entry_exports_custom_fields_as_protected_fields() {
+        let view = v5_view_of(
+            json!({
+                "name": "bank",
+                "custom_fields": [
+                    {"id": "c1", "type": "text", "metadata_key": "Account"},
+                    {"id": "c2", "type": "text", "metadata_key": "Branch", "metadata_value": "Main"},
+                ],
+            }),
+            &json!({
+                "object_type": "PASSBOLT_SECRET_DATA",
+                "password": "p",
+                "custom_fields": [{"id": "c1", "type": "text", "secret_value": "42"}],
+            }),
+        );
+
+        let entry = build_entry(&view);
+
+        assert_eq!(
+            field_pairs(&entry)[5..],
+            [("Account", "42", true), ("Branch", "Main", true)]
+        );
+    }
+
+    #[test]
+    fn test_build_entry_renames_custom_fields_with_a_taken_name() {
+        let view = v5_view_of(
+            json!({
+                "name": "bank",
+                "custom_fields": [
+                    {"id": "c1", "type": "text", "metadata_key": "Password"},
+                    {"id": "c2", "type": "text", "metadata_key": "Code"},
+                    {"id": "c3", "type": "text", "metadata_key": "Code"},
+                    {"id": "c4", "type": "text", "metadata_key": ""},
+                ],
+            }),
+            &json!({
+                "object_type": "PASSBOLT_SECRET_DATA",
+                "password": "real",
+                "custom_fields": [
+                    {"id": "c1", "type": "text", "secret_value": "custom"},
+                    {"id": "c2", "type": "text", "secret_value": "one"},
+                    {"id": "c3", "type": "text", "secret_value": "two"},
+                    {"id": "c4", "type": "text", "secret_value": "nameless"},
+                ],
+            }),
+        );
+
+        let entry = build_entry(&view);
+
+        assert_eq!(entry.password, "real");
+        assert_eq!(
+            field_pairs(&entry)[5..],
+            [
+                ("Password (2)", "custom", true),
+                ("Code", "one", true),
+                ("Code (2)", "two", true)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_build_entry_builds_the_otp_from_the_uri() {
+        let view = v5_view_of(
+            json!({"name": "site", "username": "me", "uris": ["https://site.test"]}),
+            &json!({
+                "object_type": "PASSBOLT_SECRET_DATA",
+                "password": "p",
+                "totp": {"secret_key": "JBSWY3DP", "algorithm": "SHA256", "digits": 8, "period": 60},
+            }),
+        );
+
+        let entry = build_entry(&view);
+
+        assert_eq!(
+            entry.otp.as_deref(),
+            Some("otpauth://totp/https%3A%2F%2Fsite.test:me?secret=JBSWY3DP&issuer=https%3A%2F%2Fsite.test&algorithm=SHA256&digits=8&period=60")
+        );
+    }
+
+    #[test]
+    fn test_entry_fields_list_the_standard_fields_first() {
+        let mut entry = make_entry("title");
+        entry.otp = Some("otpauth://x".into());
+
+        assert_eq!(
+            field_pairs(&entry),
+            [
+                ("Title", "title", false),
+                ("UserName", "", false),
+                ("URL", "", false),
+                ("Password", "title-password", true),
+                ("Notes", "", false),
+                ("otp", "otpauth://x", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_collect_entries_skips_failures_with_the_go_message() {
         let broken = ResourceView::new(make_resource("broken"), None, &types())
             .unwrap()
             .with_error(&passbolt_sdk::PassboltError::Other("no key".into()));
         let views = vec![view_of(make_resource("decrypted"), "secret"), broken];
 
-        let (entries, failures) = collect_entries(&views);
+        let (entries, skipped) = collect_entries(&views);
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].1.title, "decrypted");
-        assert_eq!(failures, ["Failed to decrypt 'broken': no key"]);
+        assert_eq!(
+            skipped,
+            ["Skipping Export of Resource broken-id broken Because of: no key"]
+        );
+    }
+
+    #[test]
+    fn test_write_kdbx4_writes_the_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("export.kdbx");
+        let mut root = KeePassGroup::named("root");
+        let mut folder = KeePassGroup::named("folder");
+        let mut entry = make_entry("nested");
+        entry.custom_fields.push(CustomField {
+            name: "Account".into(),
+            value: "42".into(),
+        });
+        folder.entries.push(entry);
+        root.groups.push(folder);
+
+        write_kdbx4(&path, "master", &root).unwrap();
+
+        let database = Database::open(
+            &mut std::fs::File::open(&path).unwrap(),
+            DatabaseKey::new().with_password("master"),
+        )
+        .unwrap();
+        assert_eq!(
+            database.config.version,
+            keepass::config::DatabaseVersion::KDB4(0)
+        );
+        assert_eq!(
+            database.meta.database_name.as_deref(),
+            Some("Passbolt Export")
+        );
+        assert_eq!(database.root.name, "root");
+        let Some(Node::Group(folder)) = database.root.children.first() else {
+            panic!("no folder group");
+        };
+        let Some(Node::Entry(entry)) = folder.children.first() else {
+            panic!("no entry");
+        };
+        assert_eq!(entry.get_password(), Some("nested-password"));
+        assert_eq!(entry.get("Account"), Some("42"));
+        assert!(matches!(
+            entry.fields.get("Account"),
+            Some(Value::Protected(_))
+        ));
     }
 
     #[test]
@@ -685,22 +946,5 @@ mod tests {
         save_replacing(&path, |file| Ok(file.write_all(b"new backup")?)).unwrap();
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "new backup");
-    }
-
-    #[test]
-    fn test_ensure_no_decryption_failure_reports_count() {
-        let failures = vec!["Failed to decrypt 'broken'".to_string()];
-
-        let error = ensure_no_decryption_failure(&failures, 3).unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "1 of 3 secrets could not be decrypted and were not exported"
-        );
-    }
-
-    #[test]
-    fn test_ensure_no_decryption_failure_accepts_complete_export() {
-        assert!(ensure_no_decryption_failure(&[], 3).is_ok());
     }
 }
