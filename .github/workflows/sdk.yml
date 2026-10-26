@@ -428,8 +428,8 @@ jobs:
           mkdir -p build/smoke && cd build/smoke
           module="github.com/$GO_REPOSITORY"
           printf 'module smoke\n\ngo 1.21\n\nrequire %s v0.0.0\n\nreplace %s => ../go/passbolt-sdk-go\n' "$module" "$module" > go.mod
-          printf 'package main\n\nimport _ "%s"\n\nfunc main() {}\n' "$module" > main.go
-          CGO_ENABLED=1 go build -o smoke . && ./smoke
+          sed "s|github.com/scadra/passbolt-sdk-go|$module|" ../../packaging/smoke/smoke.go > main.go
+          go vet . && CGO_ENABLED=1 go build -o smoke . && ./smoke
       - uses: actions/upload-artifact@v4
         with:
           name: sdk-go
