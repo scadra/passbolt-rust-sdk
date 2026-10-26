@@ -151,31 +151,32 @@ fn user_group_and_folder_lists_take_columns_and_refuse_unknown_ones() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|listed| listed == &json!({"id": folder.id, "folder_parent_id": null})));
+        .any(|listed| listed == &json!({"id": folder.id, "folder_parent_id": ""})));
     assert!(groups
         .as_array()
         .unwrap()
         .iter()
-        .any(|listed| listed["name"].is_string() && listed["members"].is_number()));
+        .any(|listed| listed["name"].is_string() && listed["user_count"].is_number()));
     for entity in ["user", "group", "folder"] {
         passbolt()
             .args(["list", entity, "-c", "colour"])
             .assert()
             .failure()
-            .stderr(contains("Unknown column colour"));
+            .stderr(contains("unknown column: \"colour\""));
     }
     drop(group);
 }
 
 #[test]
-fn folder_and_totp_show_as_tables() {
-    let folder = create_folder(&unique_name("table"), &[]);
-    let resource = create_resource(&unique_name("table"), "p", &["--totp-key", TOTP_KEY]);
+fn folder_and_totp_show_as_text() {
+    let name = unique_name("text");
+    let folder = create_folder(&name, &[]);
+    let resource = create_resource(&unique_name("text"), "p", &["--totp-key", TOTP_KEY]);
 
-    let folder_table = run_text(&["get", "folder", "--id", &folder.id]);
+    let folder_text = run_text(&["get", "folder", "--id", &folder.id]);
     let totp_text = run_text(&["get", "totp", "--id", &resource.id]);
 
-    assert!(folder_table.contains(&folder.id), "{folder_table}");
+    assert_eq!(folder_text, format!("FolderParentID: \nName: {name}\n"));
     assert!(totp_text.contains("s remaining"), "{totp_text}");
 }
 
@@ -194,7 +195,7 @@ fn a_folder_moves_back_to_the_root_with_an_empty_parent() {
     ]);
 
     let moved = run_json(&["get", "folder", "--id", &child.id]);
-    assert_eq!(moved["folder_parent_id"], serde_json::Value::Null);
+    assert_eq!(moved["folder_parent_id"], "");
 }
 
 #[test]

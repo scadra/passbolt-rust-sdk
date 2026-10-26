@@ -10,21 +10,39 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-//! Columns of `list folder`, `list user`, `list group` and of the permissions, named as
-//! go-passbolt-cli names them.
+//! The columns of the lists, of `get group` and of the permissions, named, ordered and printed
+//! as go-passbolt-cli does.
 
 use anyhow::{bail, Result};
+use passbolt_sdk::resource::view::ResourceView;
 use passbolt_sdk::types::{Folder, Group, GroupUser, Permission, User};
+use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::util::output;
+use std::collections::HashMap;
 
-/// A list column: its canonical name, other accepted spellings, its table header and value.
+use crate::util::cel::{zero_timestamp, CelValue, Kind, Variable};
+use crate::util::output;
+use crate::util::shapes::{self, metadata_text, permission_type_name, table_time};
+
+/// A column: its canonical name, the other spellings it accepts, and its value.
 pub struct Column<T> {
     pub name: &'static str,
     pub aliases: &'static [&'static str],
-    pub header: &'static str,
+    /// Shown when no column is asked for.
+    pub default: bool,
+    /// Its value needs the secrets decrypted.
+    pub secret: bool,
+    /// Not a go-passbolt-cli column: absent from the full JSON, added when asked for.
+    pub extension: bool,
     pub value: fn(&T) -> Value,
+}
+
+/// The columns of one kind of item.
+pub struct Columns<T: 'static> {
+    /// The items, plural, for the error of a filter matching nothing.
+    pub noun: &'static str,
+    pub columns: &'static [Column<T>],
 }
 
 /// Lower case, without `_`, `-` or spaces: `First Name`, `first_name` and `FirstName` match.
@@ -35,19 +53,522 @@ fn compact(name: &str) -> String {
         .to_lowercase()
 }
 
-/// The columns named by `requested`, or `defaults` when none is; an unknown name is an error.
-pub fn resolve<'a, T>(
-    columns: &'a [Column<T>],
+impl<T> Columns<T> {
+    /// The column named `name` in any spelling go-passbolt-cli accepts, or ours.
+    pub fn find(&self, name: &str) -> Result<&'static Column<T>> {
+        let wanted = compact(name);
+        self.columns
+            .iter()
+            .find(|column| {
+                compact(column.name) == wanted
+                    || column.aliases.iter().any(|alias| compact(alias) == wanted)
+            })
+            .map_or_else(
+                || {
+                    let valid: Vec<&str> = self.columns.iter().map(|column| column.name).collect();
+                    bail!("unknown column: {name:?} (valid: {})", valid.join(", "))
+                },
+                Ok,
+            )
+    }
+
+    /// The columns named by `requested`, or the default ones when none is.
+    pub fn select(&self, requested: &[String]) -> Result<Vec<&'static Column<T>>> {
+        if requested.is_empty() {
+            return Ok(self
+                .columns
+                .iter()
+                .filter(|column| column.default)
+                .collect());
+        }
+        requested.iter().map(|name| self.find(name)).collect()
+    }
+
+    /// The columns `read` of `item`, typed as `variables` declare them for a CEL filter.
+    pub fn cel_row(
+        &self,
+        variables: &[Variable],
+        read: &[&str],
+        item: &T,
+    ) -> HashMap<&'static str, CelValue> {
+        self.columns
+            .iter()
+            .filter(|column| read.contains(&column.name))
+            .filter_map(|column| {
+                let kind = variables
+                    .iter()
+                    .find(|variable| variable.column == column.name)?
+                    .kind;
+                let value = (column.value)(item);
+                let typed = match kind {
+                    Kind::String => CelValue::String(cell(value)),
+                    Kind::Bool => CelValue::Bool(value.as_bool().unwrap_or(false)),
+                    Kind::Int => CelValue::Int(value.as_i64().unwrap_or(0)),
+                    Kind::Timestamp => CelValue::Timestamp(
+                        value
+                            .as_str()
+                            .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+                            .map_or_else(zero_timestamp, |date| date.to_utc()),
+                    ),
+                    Kind::Map => CelValue::Map(match value {
+                        Value::Object(fields) => fields,
+                        _ => Map::new(),
+                    }),
+                };
+                Some((column.name, typed))
+            })
+            .collect()
+    }
+
+    /// Print `items`: a table of the selected columns, or JSON. Without requested columns the
+    /// JSON holds each item as go-passbolt-cli writes it (`json`), else only the requested
+    /// keys of it.
+    pub fn print<J: Serialize>(
+        &self,
+        items: &[T],
+        requested: &[String],
+        json: fn(&T) -> J,
+        json_output: bool,
+    ) -> Result<()> {
+        let selected = self.select(requested)?;
+        if !json_output {
+            let headers: Vec<&str> = selected.iter().map(|column| column.name).collect();
+            let rows = items
+                .iter()
+                .map(|item| {
+                    selected
+                        .iter()
+                        .map(|column| cell((column.value)(item)))
+                        .collect()
+                })
+                .collect();
+            output::print_table(&headers, rows);
+            return Ok(());
+        }
+        if requested.is_empty() {
+            let objects: Vec<J> = items.iter().map(json).collect();
+            return output::print_json(&objects);
+        }
+        let objects = items
+            .iter()
+            .map(|item| {
+                let Value::Object(full) = serde_json::to_value(json(item))? else {
+                    bail!("an item is not a JSON object");
+                };
+                Ok(selected
+                    .iter()
+                    .filter_map(|column| {
+                        let value = full
+                            .get(column.name)
+                            .cloned()
+                            .or_else(|| column.extension.then(|| (column.value)(item)))?;
+                        Some((column.name.to_string(), value))
+                    })
+                    .collect::<Map<String, Value>>())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        output::print_json(&objects)
+    }
+}
+
+/// A value as go-passbolt-cli writes it in a cell: text as it is, an empty map as nothing, a
+/// map as compact JSON, a list of texts joined.
+pub fn cell(value: Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::String(text) => text,
+        Value::Object(fields) if fields.is_empty() => String::new(),
+        Value::Array(items) if items.iter().all(Value::is_string) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", "),
+        value => value.to_string(),
+    }
+}
+
+fn time(date: Option<chrono::DateTime<chrono::Utc>>) -> Value {
+    table_time(date).into()
+}
+
+pub const RESOURCES: Columns<ResourceView> = Columns {
+    noun: "resources",
+    columns: &[
+        Column {
+            name: "id",
+            aliases: &["ID"],
+            default: true,
+            secret: false,
+            extension: false,
+            value: |view| view.id.clone().into(),
+        },
+        Column {
+            name: "folder_parent_id",
+            aliases: &["FolderParentID", "parent", "parent_id"],
+            default: true,
+            secret: false,
+            extension: false,
+            value: |view| view.folder_parent_id.clone().unwrap_or_default().into(),
+        },
+        Column {
+            name: "name",
+            aliases: &["Name"],
+            default: true,
+            secret: false,
+            extension: false,
+            value: |view| metadata_text(&shapes::resource_metadata(view), "name").into(),
+        },
+        Column {
+            name: "username",
+            aliases: &["Username"],
+            default: true,
+            secret: false,
+            extension: false,
+            value: |view| metadata_text(&shapes::resource_metadata(view), "username").into(),
+        },
+        Column {
+            name: "uri",
+            aliases: &["URI", "url"],
+            default: true,
+            secret: false,
+            extension: false,
+            value: |view| metadata_text(&shapes::resource_metadata(view), "uri").into(),
+        },
+        Column {
+            name: "password",
+            aliases: &["Password"],
+            default: false,
+            secret: true,
+            extension: false,
+            value: |view| view.password.clone().unwrap_or_default().into(),
+        },
+        Column {
+            name: "description",
+            aliases: &["Description"],
+            default: false,
+            secret: true,
+            extension: false,
+            value: |view| metadata_text(&shapes::resource_metadata(view), "description").into(),
+        },
+        Column {
+            name: "created_timestamp",
+            aliases: &["CreatedTimestamp", "created"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |view| time(view.created),
+        },
+        Column {
+            name: "modified_timestamp",
+            aliases: &["ModifiedTimestamp", "modified"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |view| time(view.modified),
+        },
+        Column {
+            name: "metadata",
+            aliases: &["Metadata"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |view| Value::Object(shapes::resource_metadata(view)),
+        },
+        Column {
+            name: "secret",
+            aliases: &["Secret"],
+            default: false,
+            secret: true,
+            extension: false,
+            value: |view| Value::Object(view.secret.clone().unwrap_or_default()),
+        },
+        Column {
+            name: "deleted",
+            aliases: &["Deleted"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |view| view.resource.deleted.unwrap_or(false).into(),
+        },
+        Column {
+            name: "expired",
+            aliases: &["Expired"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |view| view.expired.is_some().into(),
+        },
+        Column {
+            name: "expired_at",
+            aliases: &["ExpiredAt", "expiry"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |view| {
+                view.expired
+                    .map_or_else(String::new, |date| table_time(Some(date)))
+                    .into()
+            },
+        },
+        Column {
+            name: "resource_type_id",
+            aliases: &["ResourceTypeID"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |view| view.resource_type_id.clone().unwrap_or_default().into(),
+        },
+        Column {
+            name: "uris",
+            aliases: &[],
+            default: false,
+            secret: false,
+            extension: true,
+            value: |view| view.uris.clone().into(),
+        },
+        Column {
+            name: "note",
+            aliases: &[],
+            default: false,
+            secret: true,
+            extension: true,
+            value: |view| view.note().unwrap_or_default().into(),
+        },
+        Column {
+            name: "resource_type",
+            aliases: &["type"],
+            default: false,
+            secret: false,
+            extension: true,
+            value: |view| view.resource_type.clone().unwrap_or_default().into(),
+        },
+        Column {
+            name: "personal",
+            aliases: &[],
+            default: false,
+            secret: false,
+            extension: true,
+            value: |view| view.personal.unwrap_or(false).into(),
+        },
+    ],
+};
+
+pub const FOLDERS: Columns<Folder> = Columns {
+    noun: "folders",
+    columns: &[
+        Column {
+            name: "id",
+            aliases: &["ID"],
+            default: true,
+            secret: false,
+            extension: false,
+            value: |folder| folder.id.clone().into(),
+        },
+        Column {
+            name: "folder_parent_id",
+            aliases: &["FolderParentID", "parent", "parent_id"],
+            default: true,
+            secret: false,
+            extension: false,
+            value: |folder| folder.folder_parent_id.clone().unwrap_or_default().into(),
+        },
+        Column {
+            name: "name",
+            aliases: &["Name"],
+            default: true,
+            secret: false,
+            extension: false,
+            value: |folder| folder.name.clone().into(),
+        },
+        Column {
+            name: "created_timestamp",
+            aliases: &["CreatedTimestamp", "created"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |folder| time(folder.created),
+        },
+        Column {
+            name: "modified_timestamp",
+            aliases: &["ModifiedTimestamp", "modified"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |folder| time(folder.modified),
+        },
+        Column {
+            name: "personal",
+            aliases: &["Personal"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |folder| folder.personal.unwrap_or(false).into(),
+        },
+    ],
+};
+
+pub const USERS: Columns<User> = Columns {
+    noun: "users",
+    columns: &[
+        Column {
+            name: "id",
+            aliases: &["ID"],
+            default: true,
+            secret: false,
+            extension: false,
+            value: |user| user.id.clone().into(),
+        },
+        Column {
+            name: "username",
+            aliases: &["Username"],
+            default: true,
+            secret: false,
+            extension: false,
+            value: |user| user.username.clone().unwrap_or_default().into(),
+        },
+        Column {
+            name: "first_name",
+            aliases: &["FirstName"],
+            default: true,
+            secret: false,
+            extension: false,
+            value: |user| user.first_name().into(),
+        },
+        Column {
+            name: "last_name",
+            aliases: &["LastName"],
+            default: true,
+            secret: false,
+            extension: false,
+            value: |user| user.last_name().into(),
+        },
+        Column {
+            name: "role",
+            aliases: &["Role"],
+            default: true,
+            secret: false,
+            extension: false,
+            value: |user| user.role_name().into(),
+        },
+        Column {
+            name: "created_timestamp",
+            aliases: &["CreatedTimestamp", "created"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |user| time(user.created),
+        },
+        Column {
+            name: "modified_timestamp",
+            aliases: &["ModifiedTimestamp", "modified"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |user| time(user.modified),
+        },
+        Column {
+            name: "active",
+            aliases: &["Active"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |user| user.active.unwrap_or(false).into(),
+        },
+        Column {
+            name: "deleted",
+            aliases: &["Deleted"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |user| user.deleted.unwrap_or(false).into(),
+        },
+        Column {
+            name: "disabled",
+            aliases: &["Disabled"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |user| user.disabled.is_some().into(),
+        },
+    ],
+};
+
+pub const GROUPS: Columns<Group> = Columns {
+    noun: "groups",
+    columns: &[
+        Column {
+            name: "id",
+            aliases: &["ID"],
+            default: true,
+            secret: false,
+            extension: false,
+            value: |group| group.id.clone().into(),
+        },
+        Column {
+            name: "name",
+            aliases: &["Name"],
+            default: true,
+            secret: false,
+            extension: false,
+            value: |group| group.name.clone().into(),
+        },
+        Column {
+            name: "created_timestamp",
+            aliases: &["CreatedTimestamp", "created"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |group| time(group.created),
+        },
+        Column {
+            name: "modified_timestamp",
+            aliases: &["ModifiedTimestamp", "modified"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |group| time(group.modified),
+        },
+        Column {
+            name: "deleted",
+            aliases: &["Deleted"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |group| group.deleted.unwrap_or(false).into(),
+        },
+        Column {
+            name: "user_count",
+            aliases: &["UserCount", "members"],
+            default: false,
+            secret: false,
+            extension: false,
+            value: |group| group.groups_users.len().into(),
+        },
+    ],
+};
+
+/// A column of `get group` or of the permissions: go-passbolt-cli heads it with the name as
+/// it was typed.
+pub struct NamedColumn<T> {
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub text: fn(&T) -> String,
+}
+
+/// Print `items` as a table of the `requested` columns (`defaults` without), headed as typed.
+pub fn print_named<T>(
+    items: &[T],
+    columns: &[NamedColumn<T>],
     requested: &[String],
     defaults: &[&str],
-) -> Result<Vec<&'a Column<T>>> {
+) -> Result<()> {
     let names: Vec<&str> = if requested.is_empty() {
         defaults.to_vec()
     } else {
         requested.iter().map(String::as_str).collect()
     };
-    names
-        .into_iter()
+    let selected = names
+        .iter()
         .map(|name| {
             let wanted = compact(name);
             columns
@@ -56,366 +577,202 @@ pub fn resolve<'a, T>(
                     compact(column.name) == wanted
                         || column.aliases.iter().any(|alias| compact(alias) == wanted)
                 })
-                .map_or_else(
-                    || {
-                        let known: Vec<&str> = columns.iter().map(|column| column.name).collect();
-                        bail!("Unknown column {name}. Columns: {}", known.join(", "))
-                    },
-                    Ok,
-                )
+                .ok_or_else(|| anyhow::anyhow!("unknown Column: {name}"))
         })
-        .collect()
-}
-
-/// Print `items` as a table of `columns`, or as JSON: full objects without requested columns.
-pub fn print<T: serde::Serialize>(
-    items: &[T],
-    columns: &[Column<T>],
-    requested: &[String],
-    defaults: &[&str],
-    json: bool,
-) -> Result<()> {
-    let selected = resolve(columns, requested, defaults)?;
-    if json {
-        if requested.is_empty() {
-            return output::print_json(&items);
-        }
-        let objects: Vec<Value> = items
-            .iter()
-            .map(|item| {
-                Value::Object(
-                    selected
-                        .iter()
-                        .map(|column| (column.name.to_string(), (column.value)(item)))
-                        .collect::<Map<String, Value>>(),
-                )
-            })
-            .collect();
-        return output::print_json(&objects);
-    }
-    let headers: Vec<&str> = selected.iter().map(|column| column.header).collect();
+        .collect::<Result<Vec<_>>>()?;
     let rows = items
         .iter()
-        .map(|item| {
-            selected
-                .iter()
-                .map(|column| text((column.value)(item)))
-                .collect()
-        })
+        .map(|item| selected.iter().map(|column| (column.text)(item)).collect())
         .collect();
-    output::print_table(&headers, rows);
+    output::print_table(&names, rows);
     Ok(())
 }
 
-fn text(value: Value) -> String {
-    match value {
-        Value::Null => String::new(),
-        Value::String(text) => text,
-        value => value.to_string(),
-    }
-}
-
-fn date(date: Option<chrono::DateTime<chrono::Utc>>) -> Value {
-    date.map_or(Value::Null, |date| date.to_rfc3339().into())
-}
-
-pub const FOLDER_DEFAULTS: [&str; 3] = ["id", "name", "folder_parent_id"];
-pub const FOLDER_COLUMNS: [Column<Folder>; 6] = [
-    Column {
-        name: "id",
-        aliases: &[],
-        header: "ID",
-        value: |folder| folder.id.clone().into(),
-    },
-    Column {
-        name: "name",
-        aliases: &[],
-        header: "Name",
-        value: |folder| folder.name.clone().into(),
-    },
-    Column {
-        name: "folder_parent_id",
-        aliases: &["parent", "parent id"],
-        header: "Parent ID",
-        value: |folder| folder.folder_parent_id.clone().into(),
-    },
-    Column {
-        name: "created",
-        aliases: &["created_timestamp"],
-        header: "Created",
-        value: |folder| date(folder.created),
-    },
-    Column {
-        name: "modified",
-        aliases: &["modified_timestamp"],
-        header: "Modified",
-        value: |folder| date(folder.modified),
-    },
-    Column {
-        name: "personal",
-        aliases: &[],
-        header: "Personal",
-        value: |folder| folder.personal.into(),
-    },
-];
-
-pub const USER_DEFAULTS: [&str; 5] = ["id", "username", "first_name", "last_name", "role"];
-pub const USER_COLUMNS: [Column<User>; 8] = [
-    Column {
-        name: "id",
-        aliases: &[],
-        header: "ID",
-        value: |user| user.id.clone().into(),
-    },
-    Column {
-        name: "username",
-        aliases: &[],
-        header: "Username",
-        value: |user| user.username.clone().into(),
-    },
-    Column {
-        name: "first_name",
-        aliases: &[],
-        header: "First Name",
-        value: |user| user.first_name().into(),
-    },
-    Column {
-        name: "last_name",
-        aliases: &[],
-        header: "Last Name",
-        value: |user| user.last_name().into(),
-    },
-    Column {
-        name: "role",
-        aliases: &[],
-        header: "Role",
-        value: |user| user.role_name().into(),
-    },
-    Column {
-        name: "active",
-        aliases: &[],
-        header: "Active",
-        value: |user| user.active.into(),
-    },
-    Column {
-        name: "created",
-        aliases: &["created_timestamp"],
-        header: "Created",
-        value: |user| date(user.created),
-    },
-    Column {
-        name: "modified",
-        aliases: &["modified_timestamp"],
-        header: "Modified",
-        value: |user| date(user.modified),
-    },
-];
-
-pub const GROUP_DEFAULTS: [&str; 3] = ["id", "name", "members"];
-pub const GROUP_COLUMNS: [Column<Group>; 5] = [
-    Column {
-        name: "id",
-        aliases: &[],
-        header: "ID",
-        value: |group| group.id.clone().into(),
-    },
-    Column {
-        name: "name",
-        aliases: &[],
-        header: "Name",
-        value: |group| group.name.clone().into(),
-    },
-    Column {
-        name: "members",
-        aliases: &["user_count"],
-        header: "Members",
-        value: |group| group.groups_users.len().into(),
-    },
-    Column {
-        name: "created",
-        aliases: &["created_timestamp"],
-        header: "Created",
-        value: |group| date(group.created),
-    },
-    Column {
-        name: "modified",
-        aliases: &["modified_timestamp"],
-        header: "Modified",
-        value: |group| date(group.modified),
-    },
-];
-
-/// Members of `get group`, as go-passbolt-cli shows them.
+/// The members of `get group`.
 pub const GROUP_MEMBER_DEFAULTS: [&str; 5] = [
-    "user_id",
-    "username",
-    "first_name",
-    "last_name",
-    "is_group_manager",
+    "UserID",
+    "Username",
+    "UserFirstName",
+    "UserLastName",
+    "IsGroupManager",
 ];
-pub const GROUP_MEMBER_COLUMNS: [Column<GroupUser>; 5] = [
-    Column {
-        name: "user_id",
+pub const GROUP_MEMBERS: [NamedColumn<GroupUser>; 5] = [
+    NamedColumn {
+        name: "UserID",
         aliases: &[],
-        header: "User ID",
-        value: |member| member.user_id.clone().into(),
+        text: |member| member.user_id.clone().unwrap_or_default(),
     },
-    Column {
-        name: "username",
+    NamedColumn {
+        name: "Username",
         aliases: &[],
-        header: "Username",
-        value: |member| {
+        text: |member| {
             member
                 .user
                 .as_ref()
                 .and_then(|user| user.username.clone())
-                .into()
+                .unwrap_or_default()
         },
     },
-    Column {
-        name: "first_name",
-        aliases: &["user_first_name"],
-        header: "First Name",
-        value: |member| {
+    NamedColumn {
+        name: "UserFirstName",
+        aliases: &["first_name"],
+        text: |member| {
             member
                 .user
                 .as_ref()
                 .map(|user| user.first_name().to_string())
-                .into()
+                .unwrap_or_default()
         },
     },
-    Column {
-        name: "last_name",
-        aliases: &["user_last_name"],
-        header: "Last Name",
-        value: |member| {
+    NamedColumn {
+        name: "UserLastName",
+        aliases: &["last_name"],
+        text: |member| {
             member
                 .user
                 .as_ref()
                 .map(|user| user.last_name().to_string())
-                .into()
+                .unwrap_or_default()
         },
     },
-    Column {
-        name: "is_group_manager",
+    NamedColumn {
+        name: "IsGroupManager",
         aliases: &["manager", "role"],
-        header: "Manager",
-        value: |member| member.is_admin.unwrap_or(false).into(),
+        text: |member| member.is_admin.unwrap_or(false).to_string(),
     },
 ];
 
-/// `get resource-permissions` and `get folder-permissions`.
-pub const PERMISSION_COLUMNS: [Column<Permission>; 5] = [
-    Column {
-        name: "aro",
+/// The permissions of `get resource|folder permission`.
+pub const PERMISSION_DEFAULTS: [&str; 6] =
+    ["ID", "Aco", "AcoForeignKey", "Aro", "AroForeignKey", "Type"];
+pub const PERMISSIONS: [NamedColumn<Permission>; 8] = [
+    NamedColumn {
+        name: "ID",
         aliases: &[],
-        header: "ARO",
-        value: |permission| permission.aro.clone().into(),
+        text: |permission| permission.id.clone().unwrap_or_default(),
     },
-    Column {
-        name: "aro_foreign_key",
+    NamedColumn {
+        name: "Aco",
+        aliases: &[],
+        text: |permission| permission.aco.clone().unwrap_or_default(),
+    },
+    NamedColumn {
+        name: "AcoForeignKey",
+        aliases: &[],
+        text: |permission| permission.aco_foreign_key.clone().unwrap_or_default(),
+    },
+    NamedColumn {
+        name: "Aro",
+        aliases: &[],
+        text: |permission| permission.aro.clone().unwrap_or_default(),
+    },
+    NamedColumn {
+        name: "AroForeignKey",
         aliases: &["aro_id"],
-        header: "ARO ID",
-        value: |permission| permission.aro_foreign_key.clone().into(),
+        text: |permission| permission.aro_foreign_key.clone().unwrap_or_default(),
     },
-    Column {
-        name: "type",
+    NamedColumn {
+        name: "Type",
         aliases: &["permission_type"],
-        header: "Type",
-        value: |permission| permission.type_name().into(),
+        text: |permission| permission_type_name(permission.permission_type),
     },
-    Column {
-        name: "id",
-        aliases: &[],
-        header: "ID",
-        value: |permission| permission.id.clone().into(),
+    NamedColumn {
+        name: "CreatedTimestamp",
+        aliases: &["created"],
+        text: |permission| table_time(permission.created),
     },
-    Column {
-        name: "modified",
-        aliases: &[],
-        header: "Modified",
-        value: |permission| {
-            permission
-                .modified
-                .map(|modified| modified.to_rfc3339())
-                .into()
-        },
+    NamedColumn {
+        name: "ModifiedTimestamp",
+        aliases: &["modified"],
+        text: |permission| table_time(permission.modified),
     },
 ];
-
-pub const PERMISSION_DEFAULTS: [&str; 3] = ["aro", "aro_foreign_key", "type"];
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     fn requested(names: &[&str]) -> Vec<String> {
         names.iter().map(|name| (*name).to_string()).collect()
     }
 
+    fn names<T>(columns: &[&Column<T>]) -> Vec<&'static str> {
+        columns.iter().map(|column| column.name).collect()
+    }
+
     #[rstest::rstest]
-    #[case("First Name", "first_name")]
+    #[case("first_name", "first_name")]
     #[case("FirstName", "first_name")]
-    #[case("last-name", "last_name")]
-    #[case("CreatedTimestamp", "created")]
-    fn test_resolve_accepts_go_passbolt_cli_spellings(
-        #[case] column: &str,
-        #[case] expected: &str,
+    #[case("firstname", "first_name")]
+    #[case("First Name", "first_name")]
+    #[case("CreatedTimestamp", "created_timestamp")]
+    #[case("createdtimestamp", "created_timestamp")]
+    fn test_a_column_is_found_in_every_go_spelling(#[case] column: &str, #[case] expected: &str) {
+        assert_eq!(USERS.find(column).unwrap().name, expected);
+    }
+
+    #[test]
+    fn test_an_unknown_column_is_refused_as_go_refuses_it() {
+        let error = GROUPS.find("colour").err().unwrap().to_string();
+
+        assert_eq!(
+            error,
+            "unknown column: \"colour\" (valid: id, name, created_timestamp, modified_timestamp, \
+             deleted, user_count)"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::resources(names(&RESOURCES.select(&[]).unwrap()), vec!["id", "folder_parent_id", "name", "username", "uri"])]
+    #[case::folders(names(&FOLDERS.select(&[]).unwrap()), vec!["id", "folder_parent_id", "name"])]
+    #[case::users(names(&USERS.select(&[]).unwrap()), vec!["id", "username", "first_name", "last_name", "role"])]
+    #[case::groups(names(&GROUPS.select(&[]).unwrap()), vec!["id", "name"])]
+    fn test_the_default_columns_are_go_ones(
+        #[case] selected: Vec<&str>,
+        #[case] expected: Vec<&str>,
     ) {
-        let selected = resolve(&USER_COLUMNS, &requested(&[column]), &USER_DEFAULTS).unwrap();
-
-        assert_eq!(selected[0].name, expected);
+        assert_eq!(selected, expected);
     }
 
     #[test]
-    fn test_resolve_refuses_an_unknown_column() {
-        let error = resolve(&GROUP_COLUMNS, &requested(&["colour"]), &GROUP_DEFAULTS)
-            .err()
-            .unwrap()
-            .to_string();
+    fn test_the_requested_columns_keep_their_order() {
+        let selected = RESOURCES.select(&requested(&["Name", "ID"])).unwrap();
 
-        assert!(error.contains("Unknown column colour"), "{error}");
+        assert_eq!(names(&selected), ["name", "id"]);
+    }
+
+    #[rstest::rstest]
+    #[case(json!(null), "")]
+    #[case(json!(true), "true")]
+    #[case(json!({}), "")]
+    #[case(json!({"b": 1, "a": "x"}), r#"{"a":"x","b":1}"#)]
+    #[case(json!(["https://a.test", "https://b.test"]), "https://a.test, https://b.test")]
+    fn test_cells_are_written_as_go_writes_them(#[case] value: Value, #[case] text: &str) {
+        assert_eq!(cell(value), text);
     }
 
     #[test]
-    fn test_resolve_uses_the_defaults_without_columns() {
-        let selected = resolve(&FOLDER_COLUMNS, &[], &FOLDER_DEFAULTS).unwrap();
-
-        let names: Vec<&str> = selected.iter().map(|column| column.name).collect();
-        assert_eq!(names, FOLDER_DEFAULTS);
-    }
-
-    #[test]
-    fn test_group_members_accept_go_passbolt_cli_names() {
-        let names: Vec<&str> = resolve(
-            &GROUP_MEMBER_COLUMNS,
-            &requested(&[
-                "UserID",
-                "Username",
-                "UserFirstName",
-                "UserLastName",
-                "IsGroupManager",
-            ]),
-            &GROUP_MEMBER_DEFAULTS,
-        )
-        .unwrap()
-        .iter()
-        .map(|column| column.name)
-        .collect();
-
-        assert_eq!(names, GROUP_MEMBER_DEFAULTS);
-    }
-
-    #[test]
-    fn test_user_names_come_from_the_profile() {
-        let user: User = serde_json::from_value(serde_json::json!({
+    fn test_a_filter_row_reads_flags_as_booleans_and_missing_dates_as_zero() {
+        let user: User = serde_json::from_value(json!({
             "id": "u1",
             "username": "ada@passbolt.test",
-            "profile": {"first_name": "Ada", "last_name": "Lovelace"}
+            "disabled": "2024-01-01T10:00:00+00:00"
         }))
         .unwrap();
 
-        assert_eq!((USER_COLUMNS[2].value)(&user), "Ada");
-        assert_eq!((USER_COLUMNS[3].value)(&user), "Lovelace");
+        let row = USERS.cel_row(
+            crate::util::cel::USER_VARIABLES,
+            &["active", "disabled", "created_timestamp"],
+            &user,
+        );
+
+        assert_eq!(row["active"], CelValue::Bool(false));
+        assert_eq!(row["disabled"], CelValue::Bool(true));
+        assert_eq!(
+            row["created_timestamp"],
+            CelValue::Timestamp(zero_timestamp())
+        );
     }
 }

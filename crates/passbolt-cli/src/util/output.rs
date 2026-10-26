@@ -10,32 +10,55 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use colored::Colorize;
-use comfy_table::{Cell, Color, ContentArrangement, Table};
 use serde::Serialize;
+use unicode_width::UnicodeWidthStr;
 
-/// Print data as a formatted table.
-/// `columns` — column headers, `rows` — each row as Vec<String>.
+/// Print a table as go-passbolt-cli prints it (pterm without styles): every cell padded to its
+/// column, ` | ` between cells, the headers as the first row, then an empty line.
 ///
-/// Cell values are stripped of ASCII control characters to prevent terminal injection.
-pub fn print_table(columns: &[&str], rows: Vec<Vec<String>>) {
-    let mut table = Table::new();
-    table
-        .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(
-            columns
-                .iter()
-                .map(|column| Cell::new(column).fg(Color::Cyan)),
-        );
+/// Cells are stripped of control characters to prevent terminal injection; a line break
+/// continues the cell on the next line, in its column.
+pub fn print_table(headers: &[&str], rows: Vec<Vec<String>>) {
+    print!("{}", render_table(headers, rows));
+}
 
-    for row in rows {
-        let safe_row: Vec<String> = row
-            .into_iter()
-            .map(|cell| strip_control_chars(&cell))
+fn render_table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
+    let table: Vec<Vec<Vec<String>>> =
+        std::iter::once(headers.iter().map(|header| (*header).to_string()).collect())
+            .chain(rows)
+            .map(|row: Vec<String>| {
+                row.iter()
+                    .map(|cell| cell.split('\n').map(strip_control_chars).collect())
+                    .collect()
+            })
             .collect();
-        table.add_row(safe_row);
+    let mut widths: Vec<usize> = Vec::new();
+    for row in &table {
+        for (index, cell) in row.iter().enumerate() {
+            let width = cell.iter().map(|line| line.width()).max().unwrap_or(0);
+            match widths.get_mut(index) {
+                Some(known) => *known = (*known).max(width),
+                None => widths.push(width),
+            }
+        }
     }
-    println!("{table}");
+    let mut rendered = String::new();
+    for row in &table {
+        let height = row.iter().map(Vec::len).max().unwrap_or(0);
+        for line_index in 0..height {
+            for (index, cell) in row.iter().enumerate() {
+                let line = cell.get(line_index).map_or("", String::as_str);
+                rendered.push_str(line);
+                rendered.push_str(&" ".repeat(widths[index] - line.width()));
+                if index + 1 < row.len() {
+                    rendered.push_str(" | ");
+                }
+            }
+            rendered.push('\n');
+        }
+    }
+    rendered.push('\n');
+    rendered
 }
 
 /// Remove ASCII control characters (0x00–0x1F and 0x7F) from a string.
@@ -46,27 +69,23 @@ fn strip_control_chars(text: &str) -> String {
         .collect()
 }
 
-/// Print any serializable value as pretty JSON.
+/// Print any serializable value as JSON indented by two spaces.
 pub fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(value)?;
     println!("{json}");
     Ok(())
 }
 
-/// Report a write: `Deleted resource <id>`, or `{"id": …, "result": "deleted"}` with `--json`.
-pub fn print_done(json: bool, result: &str, entity: &str, id: &str) -> anyhow::Result<()> {
+/// Report a write with `--json`: `{"id": …, "result": "deleted"}`. Without it nothing is
+/// printed, as go-passbolt-cli prints nothing.
+pub fn print_done(json: bool, result: &str, id: &str) -> anyhow::Result<()> {
     if json {
         return print_json(&serde_json::json!({ "id": id, "result": result }));
     }
-    let mut verb = result.to_string();
-    if let Some(first) = verb.get_mut(..1) {
-        first.make_ascii_uppercase();
-    }
-    println!("{verb} {entity} {id}");
     Ok(())
 }
 
-/// Print key-value pairs, stripped of control characters like table cells.
+/// Print `Key: value` lines, stripped of control characters like table cells.
 pub fn print_kv(pairs: &[(&str, &str)]) {
     for (key, value) in pairs {
         println!("{}", format_kv(key, value));
@@ -76,7 +95,7 @@ pub fn print_kv(pairs: &[(&str, &str)]) {
 fn format_kv(key: &str, value: &str) -> String {
     format!(
         "{}: {}",
-        strip_control_chars(key).bold(),
+        strip_control_chars(key),
         strip_control_chars(value)
     )
 }
@@ -84,8 +103,6 @@ fn format_kv(key: &str, value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ─── strip_control_chars ──────────────────────────────────────────────────
 
     #[test]
     fn test_strip_control_chars_removes_escape() {
@@ -104,21 +121,43 @@ mod tests {
         assert_eq!(strip_control_chars("hello world"), "hello world");
     }
 
-    // ─── print_kv ────────────────────────────────────────────────────────────
+    #[test]
+    fn test_a_table_pads_every_cell_and_separates_them() {
+        let table = render_table(
+            &["id", "name"],
+            vec![
+                vec!["1".into(), "GitHub".into()],
+                vec!["22".into(), "é".into()],
+            ],
+        );
+
+        assert_eq!(table, "id | name  \n1  | GitHub\n22 | é     \n\n");
+    }
+
+    #[test]
+    fn test_a_line_break_continues_the_cell_in_its_column() {
+        let table = render_table(&["a", "b"], vec![vec!["x\ny".into(), "z".into()]]);
+
+        assert_eq!(table, "a | b\nx | z\ny |  \n\n");
+    }
+
+    #[test]
+    fn test_a_table_cell_loses_its_control_characters() {
+        let table = render_table(&["name"], vec![vec!["\x1b[31mred".into()]]);
+
+        assert_eq!(table, "name   \n[31mred\n\n");
+    }
 
     #[test]
     fn test_format_kv_strips_control_characters_from_the_value() {
-        let line = format_kv("Name", "\x1b[31mred\x07");
-
-        assert!(line.ends_with(": [31mred"), "{line:?}");
-        assert!(!line.contains("\x1b[31m"), "{line:?}");
+        assert_eq!(format_kv("Name", "\x1b[31mred\x07"), "Name: [31mred");
     }
 
     #[test]
     fn test_format_kv_strips_control_characters_from_the_key() {
-        let line = format_kv("Na\x1b]0;title\x07me", "value");
-
-        assert!(!line.contains("\x1b]0;"), "{line:?}");
-        assert!(line.contains("Na]0;titleme"), "{line:?}");
+        assert_eq!(
+            format_kv("Na\x1b]0;title\x07me", "value"),
+            "Na]0;titleme: value"
+        );
     }
 }

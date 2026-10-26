@@ -19,13 +19,13 @@ use crate::types::Group;
 
 pub async fn list_groups<H: HttpClient>(
     client: &PassboltSdk<H>,
-    user_id: Option<String>,
-    manager_id: Option<String>,
+    user_ids: Vec<String>,
+    manager_ids: Vec<String>,
     filters: &[Filter],
 ) -> Result<Vec<Group>, PassboltError> {
     let query = GroupQuery {
-        user_id,
-        manager_id,
+        user_ids,
+        manager_ids,
         ..Default::default()
     };
     let groups = client.get_groups(query).await?;

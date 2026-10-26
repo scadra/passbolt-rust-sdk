@@ -127,7 +127,10 @@ fn resource_moved_back_to_the_root_has_no_parent() {
 
     run(&["move", "resource", "--id", &resource.id]);
 
-    assert!(run_json(&["get", "resource", "--id", &resource.id])["folder_parent_id"].is_null());
+    assert_eq!(
+        run_json(&["get", "resource", "--id", &resource.id])["folder_parent_id"],
+        ""
+    );
 }
 
 #[test]

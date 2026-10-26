@@ -40,9 +40,11 @@ toml = "0.8"
 zeroize = { version = "1", features = ["derive"] }
 
 # Output
-comfy-table = "6"
-colored = "2"
+unicode-width = "0.2"
 indicatif = "0.17"
+
+# --filter expressions, as go-passbolt-cli evaluates them (cel-go)
+cel = { version = "0.15", default-features = false, features = ["chrono", "regex"] }
 
 # Utils
 rpassword = "7"

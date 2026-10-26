@@ -14,7 +14,8 @@ use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 
 use crate::common::{
-    assert_not_found, create_resource, ids, run, run_json, run_text, unique_name, Account,
+    assert_not_found, create_resource, ids, resource_column, run, run_json, run_text, unique_name,
+    Account,
 };
 
 fn get(id: &str) -> Value {
@@ -107,7 +108,7 @@ fn updated_description_reads_back() {
 #[test]
 fn expiry_is_set_then_cleared() {
     let resource = create_resource(&unique_name("resource"), "p", &["--expiry", "7d"]);
-    let expires_at: DateTime<Utc> = get(&resource.id)["expired"]
+    let expires_at: DateTime<Utc> = resource_column(Account::User, &resource.id, "expired_at")
         .as_str()
         .unwrap()
         .parse()
@@ -127,7 +128,10 @@ fn expiry_is_set_then_cleared() {
         "none",
     ]);
 
-    assert!(get(&resource.id)["expired"].is_null(), "expiry not cleared");
+    assert!(
+        resource_column(Account::User, &resource.id, "expired_at").is_null(),
+        "expiry not cleared"
+    );
 }
 
 #[test]
@@ -214,7 +218,7 @@ fn table_output_shows_the_decrypted_fields() {
 
 #[test]
 fn v5_resources_read_back_with_their_decrypted_name() {
-    let resources = run_json(&["list", "resource"]);
+    let resources = run_json(&["list", "resource", "-c", "id", "-c", "resource_type"]);
     let v5_ids: Vec<&str> = resources
         .as_array()
         .unwrap()

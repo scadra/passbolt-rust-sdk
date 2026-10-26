@@ -16,7 +16,7 @@ use crate::client::{FolderQuery, PassboltSdk, ResourceQuery};
 use crate::error::PassboltError;
 use crate::http::HttpClient;
 use crate::permission::{cascaded, changes, moved};
-use crate::resource::share::{apply_changes, aros, is_owner, merge_changes, revoke_changes};
+use crate::resource::share::{apply_changes, is_owner, requested_changes};
 use crate::types::{Folder, ShareChange, SharePayload};
 
 /// Share a folder with users and groups, or revoke their access (`permission_type == -1`).
@@ -34,11 +34,7 @@ pub async fn share_folder<H: HttpClient>(
     with_content: bool,
 ) -> Result<(), PassboltError> {
     let existing = client.get_folder_permissions(id).await?;
-    let folder_changes = if permission_type == -1 {
-        revoke_changes(&existing, user_ids, group_ids)?
-    } else {
-        merge_changes(&existing, aros(user_ids, group_ids), permission_type)
-    };
+    let folder_changes = requested_changes(&existing, user_ids, group_ids, permission_type)?;
     if folder_changes.is_empty() {
         return Ok(());
     }
