@@ -6,6 +6,8 @@ package_name = "com.passbolt.sdk"
 [bindings.java]
 package_name = "com.passbolt.sdk"
 
+# The directory, header and cgo callbacks; uniffi-bindgen-go still writes `package passbolt_ffi`
+# (the UniFFI namespace), which the Go job of sdk.yml renames to `passbolt`.
 [bindings.go]
 package_name = "passbolt"
 
