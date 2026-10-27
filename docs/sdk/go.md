@@ -30,40 +30,45 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 
 	passbolt "github.com/scadra/passbolt-sdk-go"
 )
 
+// The fields of a resource view used here; the overview lists the others.
+type resourceView struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Username string `json:"username"`
+}
+
 func main() {
 	privateKey, err := os.ReadFile("private.asc")
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	client, err := passbolt.PassboltClientLogin(
 		"https://passbolt.example.com", string(privateKey), os.Getenv("PASSBOLT_PASSPHRASE"))
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
-	defer client.Destroy()
-	defer client.Logout()
+	defer client.Close() // logs out and releases the client
 
 	search := "github"
 	viewsJSON, err := client.ListResourceViews(&search, false)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
-	var views []map[string]any
+	var views []resourceView
 	if err := json.Unmarshal([]byte(viewsJSON), &views); err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	for _, view := range views {
-		fmt.Println(view["id"], view["name"])
+		fmt.Println(view.ID, view.Name, view.Username)
 	}
 }
 ```
 
-Optional arguments are pointers (`nil` for none). Each constructor of the Rust client is a
-function named after it: `PassboltClientLogin`, `PassboltClientLoginWithConfig`. Errors are
-`*passbolt.PassboltFfiError`, one variant per failure. The methods are those of the
-[overview](README.md#what-the-api-covers), in PascalCase.
+`Close` makes the client an `io.Closer`; `Logout` and `Destroy` are the two halves of it.
+
