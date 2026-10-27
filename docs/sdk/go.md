@@ -5,13 +5,13 @@ sidebar_position: 8
 
 # Go
 
-The module `github.com/scadra/passbolt-sdk-go` holds the bindings and the static library of Linux
-(x86_64, aarch64) and macOS (Intel, Apple silicon), linked with cgo. Windows is not covered.
-
 ```bash
 go get github.com/scadra/passbolt-sdk-go@v0.1.1
-CGO_ENABLED=1 go build
 ```
+
+The package is `passbolt`. It links the static library of Linux (x86_64, aarch64) or macOS (Intel,
+Apple silicon) with cgo, so it builds with `CGO_ENABLED=1` and a C compiler; Windows is not covered.
+Its calls block until the server answers.
 
 The same module is the `passbolt-sdk-go-<version>.tar.gz` of each release, for a build without
 network access:
