@@ -133,3 +133,24 @@ if err := client.ShareResource(created.Id, []string{userID}, nil, 7); err != nil
 }
 ```
 
+## Errors
+
+Each call returns its failure as a `*passbolt.PassboltFfiError` wrapping one variant per cause,
+`PassboltFfiErrorAuth`, `PassboltFfiErrorApi` (with the HTTP `Status`), `PassboltFfiErrorNotFound`…
+each with its `Reason`. Match the variant with `errors.As`, or its kind with `errors.Is` and the
+`ErrPassboltFfiError…` values:
+
+```go
+_, err := client.GetResource(resourceID)
+var apiErr *passbolt.PassboltFfiErrorApi
+switch {
+case err == nil:
+case errors.Is(err, passbolt.ErrPassboltFfiErrorNotFound):
+	fmt.Println("no such resource")
+case errors.As(err, &apiErr):
+	fmt.Println("the server answered", apiErr.Status, apiErr.Reason)
+default:
+	return err
+}
+```
+
