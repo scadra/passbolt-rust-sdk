@@ -41,7 +41,7 @@ out empty.
 | Android AAR | `packaging/android/` (Gradle), the libraries of `cargo ndk` |
 | NuGet | `packaging/dotnet/`, the libraries under `runtimes/<rid>/native` |
 | Ruby gem | `packaging/ruby/`, the libraries under `lib/native/<os>-<arch>/` |
-| Go module | the Go bindings, the static libraries and their cgo link flags |
+| Go module | the Go bindings as package `passbolt`, `packaging/go/`, the static libraries and their cgo link flags |
 | Swift package | `packaging/swift/Package.swift`, an XCFramework for devices and simulators |
 
 The smoke tests in `packaging/smoke/` install each package and call it: the library loads and a
