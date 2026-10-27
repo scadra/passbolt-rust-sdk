@@ -154,3 +154,17 @@ default:
 }
 ```
 
+## Names
+
+The methods are those of the [overview](README.md#what-the-api-covers), in PascalCase, generated
+from the Rust names:
+
+- A constructor of the Rust client is a function named after it: `PassboltClientLogin`,
+  `PassboltClientLoginWithConfig`; the records keep their Rust prefix: `FfiResource`,
+  `FfiLoginOptions`.
+- Acronyms are written as words: `Id`, `Url`, `GetResourcesByIds`, `BaseUrl()`.
+- Optional arguments and fields are pointers, `nil` for none.
+- The calls take no `context.Context`: a request stops at the login timeout. The client is safe
+  to use from several goroutines.
+- The bindings export their plumbing too (`FfiConverter…`, `FfiDestroyer…`, `RustBuffer…`):
+  leave it aside. The `Destroy` method of a record does nothing worth calling.
