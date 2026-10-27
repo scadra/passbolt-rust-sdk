@@ -72,3 +72,30 @@ func main() {
 
 `Close` makes the client an `io.Closer`; `Logout` and `Destroy` are the two halves of it.
 
+## Pinning the server, MFA, TLS
+
+The fields of `FfiLoginOptions` left out keep their default: optional fields are pointers, `nil`
+for none.
+
+```go
+serverKey, err := passbolt.FetchServerKey("https://passbolt.example.com", false)
+if err != nil {
+	return err
+}
+fmt.Println("Check this fingerprint with your administrator:", serverKey.Fingerprint)
+
+totpSecret := os.Getenv("PASSBOLT_TOTP_SECRET") // the base32 TOTP secret, for an account with TOTP
+timeout := uint64(30)                           // 60 by default, 0 waits forever
+client, err := passbolt.PassboltClientLoginWithConfig(
+	"https://passbolt.example.com", privateKey, passphrase,
+	passbolt.FfiLoginOptions{
+		ServerPublicKey: &serverKey.ArmoredKey,
+		MfaTotpToken:    &totpSecret,
+		TimeoutSeconds:  &timeout,
+	})
+if err != nil {
+	return err
+}
+defer client.Close()
+```
+
