@@ -99,3 +99,37 @@ if err != nil {
 defer client.Close()
 ```
 
+## Reading and writing
+
+Views come as JSON text, and resources are written from JSON text, with the fields of the
+[overview](README.md#concepts):
+
+```go
+viewJSON, err := client.GetResourceView(resourceID)
+if err != nil {
+	return err
+}
+var view struct {
+	Password string `json:"password"`
+}
+if err := json.Unmarshal([]byte(viewJSON), &view); err != nil {
+	return err
+}
+
+fields, err := json.Marshal(map[string]any{"name": "GitHub", "username": "ada", "password": "…"})
+if err != nil {
+	return err
+}
+created, err := client.CreateResource(string(fields))
+if err != nil {
+	return err
+}
+if _, err := client.UpdateResource(created.Id, `{"password": "new"}`); err != nil {
+	return err
+}
+// 1 read, 7 update, 15 owner, -1 revokes.
+if err := client.ShareResource(created.Id, []string{userID}, nil, 7); err != nil {
+	return err
+}
+```
+
