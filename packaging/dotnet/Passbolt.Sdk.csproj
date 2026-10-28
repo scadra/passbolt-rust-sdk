@@ -13,13 +13,19 @@
     <NoWarn>$(NoWarn);CS1591;CS1572;CS1573;CS1587;CS8632;CS0105</NoWarn>
     <EnableDefaultNoneItems>false</EnableDefaultNoneItems>
     <PackageId>SwitchCase.Passbolt.Sdk</PackageId>
-    <RepositoryUrl>https://github.com/scadra/passbolt-rust-sdk</RepositoryUrl>
     <Version>0.0.0</Version>
-    <Description>Passbolt SDK — .NET bindings of the Rust SDK</Description>
+    <Authors>Passbolt SA</Authors>
+    <Description>Passbolt SDK — .NET bindings of the Rust SDK: GPGAuth login, resources, folders, users, groups and sharing, with the encryption done in Rust.</Description>
+    <PackageTags>passbolt;password-manager;openpgp;sdk</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/scadra/passbolt-rust-sdk</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/scadra/passbolt-rust-sdk</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
     <None Include="runtimes/**/*" Pack="true" PackagePath="runtimes/" />
   </ItemGroup>
 </Project>
