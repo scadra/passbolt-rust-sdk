@@ -13,3 +13,5 @@ package_name = "passbolt"
 
 [bindings.csharp]
 namespace = "Passbolt.Sdk"
+# uniffi-bindgen-cs makes everything `internal` by default: the package would expose nothing.
+access_modifier = "public"
