@@ -3,6 +3,8 @@
        each platform (runtimes/<rid>/native/, resolved by the .NET host). -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Passbolt.Sdk</RootNamespace>
+    <AssemblyName>Passbolt.Sdk</AssemblyName>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>enable</Nullable>
     <!-- Generated code: its warnings are not ours to fix. -->
