@@ -354,7 +354,7 @@ jobs:
         run: |
           pkg=build/dotnet
           mkdir -p "$pkg/generated"
-          cp packaging/dotnet/Passbolt.Sdk.csproj "$pkg/"
+          cp packaging/dotnet/Passbolt.Sdk.csproj packaging/dotnet/README.md "$pkg/"
           cp -r bindings/csharp/. "$pkg/generated/"
           declare -A rid=(
             [x86_64-unknown-linux-gnu]=linux-x64 [aarch64-unknown-linux-gnu]=linux-arm64
