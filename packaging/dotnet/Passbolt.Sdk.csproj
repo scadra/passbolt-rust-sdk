@@ -7,8 +7,10 @@
     <AssemblyName>Passbolt.Sdk</AssemblyName>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>enable</Nullable>
+    <!-- The XML documentation of the generated code, for IntelliSense. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <!-- Generated code: its warnings are not ours to fix. -->
-    <NoWarn>$(NoWarn);CS1591;CS8632;CS0105</NoWarn>
+    <NoWarn>$(NoWarn);CS1591;CS1572;CS1573;CS1587;CS8632;CS0105</NoWarn>
     <EnableDefaultNoneItems>false</EnableDefaultNoneItems>
     <PackageId>SwitchCase.Passbolt.Sdk</PackageId>
     <RepositoryUrl>https://github.com/scadra/passbolt-rust-sdk</RepositoryUrl>
