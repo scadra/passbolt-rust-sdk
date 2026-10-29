@@ -367,6 +367,10 @@ jobs:
               -exec cp {} "$pkg/runtimes/${rid[$target]}/native/" \;
           done
           dotnet pack "$pkg" -c Release -p:Version="${{ needs.version.outputs.sdk }}" -o dist
+      - name: Smoke test
+        run: |
+          dotnet run --project packaging/smoke/Smoke.csproj \
+            -p:SdkVersion="${{ needs.version.outputs.sdk }}" -p:SdkSource="$PWD/dist"
       - uses: actions/upload-artifact@v4
         with:
           name: sdk-dotnet
