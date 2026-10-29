@@ -70,3 +70,29 @@ using var client = PassboltClient.LoginWithConfig(
 var throughProxy = options with { proxy = "http://proxy.example.com:3128" };
 ```
 
+## Reading and writing
+
+```csharp
+using System.Text.Json;
+using Passbolt.Sdk;
+
+static void Example(PassboltClient client, string resourceId, string userId)
+{
+    using var view = JsonDocument.Parse(client.GetResourceView(resourceId));
+    Console.WriteLine(view.RootElement.GetProperty("password"));
+
+    var created = client.CreateResource(
+        JsonSerializer.Serialize(new { name = "GitHub", username = "ada", password = "…" }));
+    client.UpdateResource(created.id, JsonSerializer.Serialize(new { password = "new" }));
+    client.ShareResource(created.id, [userId], [], permissionType: 7);
+
+    foreach (var folder in client.ListFolders(search: null))
+    {
+        Console.WriteLine($"{folder.id} {folder.name}");
+    }
+}
+```
+
+The typed results (`FfiResource`, `FfiFolder`, `FfiUser`…) are C# records; their members keep the
+camelCase of the generator (`created.id`, `folder.name`). Lists come back as arrays.
+
