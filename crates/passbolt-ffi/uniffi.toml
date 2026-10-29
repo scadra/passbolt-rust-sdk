@@ -5,6 +5,8 @@ package_name = "com.passbolt.sdk"
 
 [bindings.java]
 package_name = "com.passbolt.sdk"
+# The records as Java records: immutable, with equals, hashCode and toString.
+generate_immutable_records = true
 
 # The directory, header and cgo callbacks; uniffi-bindgen-go still writes `package passbolt_ffi`
 # (the UniFFI namespace), which the Go job of sdk.yml renames to `passbolt`.
