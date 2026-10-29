@@ -96,3 +96,33 @@ static void Example(PassboltClient client, string resourceId, string userId)
 The typed results (`FfiResource`, `FfiFolder`, `FfiUser`…) are C# records; their members keep the
 camelCase of the generator (`created.id`, `folder.name`). Lists come back as arrays.
 
+## Errors
+
+```csharp
+using Passbolt.Sdk;
+
+try
+{
+    PassboltFfi.GetKeyFingerprint("not a key");
+}
+catch (PassboltFfiException.Crypto error)
+{
+    Console.WriteLine($"not a key: {error.reason}");
+}
+catch (PassboltFfiException.Api error) when (error.status == 404)
+{
+    Console.WriteLine("not on the server");
+}
+catch (PassboltFfiException error)
+{
+    Console.WriteLine($"failed: {error.Message}");
+}
+```
+
+`PassboltFfiException` derives from `System.Exception`, with one nested class per variant of the
+[overview](README.md#concepts) (`Auth`, `Crypto`, `Api`, `NotFound`…).
+
+The methods are those of the [overview](README.md#what-the-api-covers), in PascalCase:
+`ListFolders`, `CreateFolder`, `DeleteUserWithTransfer`, `SetResourceTags`… The stateless
+functions are static methods of `PassboltFfi`: `FetchServerKey`, `GetKeyFingerprint`,
+`EncryptMessage`, `DecryptMessage`.
