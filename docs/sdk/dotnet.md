@@ -43,3 +43,30 @@ server.
 The calls block. In a desktop app, keep them off the UI thread:
 `await Task.Run(() => client.ListResourceViews(null, false))`.
 
+## Pinning the server, MFA, TLS
+
+```csharp
+using Passbolt.Sdk;
+
+var privateKey = File.ReadAllText("private.asc");
+var passphrase = Environment.GetEnvironmentVariable("PASSBOLT_PASSPHRASE")!;
+
+var serverKey = PassboltFfi.FetchServerKey("https://passbolt.example.com", tlsSkipVerify: false);
+Console.WriteLine($"Check this fingerprint with your administrator: {serverKey.fingerprint}");
+
+var options = new FfiLoginOptions(
+    tlsSkipVerify: false,
+    proxy: null,
+    mfaTotpToken: null,               // the base32 TOTP secret, for an account with TOTP
+    serverPublicKey: serverKey.armoredKey,
+    metadataKeyFingerprint: null,
+    timeoutSeconds: null,             // 60 by default, 0 waits forever
+    clientCertificatePem: null,
+    clientKeyPem: null);
+using var client = PassboltClient.LoginWithConfig(
+    "https://passbolt.example.com", privateKey, passphrase, options);
+
+// The records are immutable: change a field with `with`.
+var throughProxy = options with { proxy = "http://proxy.example.com:3128" };
+```
+
