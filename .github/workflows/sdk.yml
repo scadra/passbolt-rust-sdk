@@ -321,7 +321,10 @@ jobs:
           name="passbolt-sdk-${{ needs.version.outputs.sdk }}"
           mkdir -p build/classes dist
           javac --release 21 -nowarn -cp jna.jar -d build/classes $(find bindings/java -name '*.java')
-          jar --create --file "dist/$name.jar" -C build/classes . -C build/resources .
+          # A stable module name for the module path, without a module-info (JNA has none either).
+          echo "Automatic-Module-Name: com.passbolt.sdk" > build/MANIFEST.MF
+          jar --create --file "dist/$name.jar" --manifest build/MANIFEST.MF \
+            -C build/classes . -C build/resources .
           jar --create --file "dist/$name-sources.jar" -C bindings/java .
           cp jna.jar "dist/jna-$JNA.jar"
       - name: Smoke test
@@ -354,7 +357,7 @@ jobs:
         run: |
           pkg=build/dotnet
           mkdir -p "$pkg/generated"
-          cp packaging/dotnet/Passbolt.Sdk.csproj "$pkg/"
+          cp packaging/dotnet/Passbolt.Sdk.csproj packaging/dotnet/README.md "$pkg/"
           cp -r bindings/csharp/. "$pkg/generated/"
           declare -A rid=(
             [x86_64-unknown-linux-gnu]=linux-x64 [aarch64-unknown-linux-gnu]=linux-arm64
@@ -367,6 +370,10 @@ jobs:
               -exec cp {} "$pkg/runtimes/${rid[$target]}/native/" \;
           done
           dotnet pack "$pkg" -c Release -p:Version="${{ needs.version.outputs.sdk }}" -o dist
+      - name: Smoke test
+        run: |
+          dotnet run --project packaging/smoke/Smoke.csproj \
+            -p:SdkVersion="${{ needs.version.outputs.sdk }}" -p:SdkSource="$PWD/dist"
       - uses: actions/upload-artifact@v4
         with:
           name: sdk-dotnet

@@ -60,9 +60,10 @@ type follows the fields and the server's default version when not given. `update
 **Sharing.** Permission types are Passbolt's: `1` read, `7` update, `15` owner, `-1` to revoke.
 
 **Errors.** Rust returns `PassboltError`; JavaScript throws an `Error` with the message; the FFI
-bindings raise the `PassboltFfiError` of the language (`PassboltFfiException` in Kotlin), whose
-variants say what failed: `Auth`, `Crypto`, `Api` (with the HTTP `status`), `NotFound`,
-`Transport`, `Config`, `InvalidArgument`, `Other`. Each carries the `reason` of the failure.
+bindings raise the `PassboltFfiError` of the language (`PassboltFfiException` in Kotlin, Java
+and .NET), whose variants say what failed: `Auth`, `Crypto`, `Api` (with the HTTP `status`),
+`NotFound`, `Transport`, `Config`, `InvalidArgument`, `Other`. Each carries the `reason` of the
+failure.
 
 ## What the API covers
 

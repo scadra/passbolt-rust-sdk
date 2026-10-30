@@ -5,6 +5,8 @@ package_name = "com.passbolt.sdk"
 
 [bindings.java]
 package_name = "com.passbolt.sdk"
+# The records as Java records: immutable, with equals, hashCode and toString.
+generate_immutable_records = true
 
 # The directory, header and cgo callbacks; uniffi-bindgen-go still writes `package passbolt_ffi`
 # (the UniFFI namespace), which the Go job of sdk.yml renames to `passbolt`.
@@ -13,3 +15,7 @@ package_name = "passbolt"
 
 [bindings.csharp]
 namespace = "Passbolt.Sdk"
+# uniffi-bindgen-cs makes everything `internal` by default: the package would expose nothing.
+access_modifier = "public"
+# The class of the stateless functions, named as in Java (default: PassboltFfiMethods).
+global_methods_class_name = "PassboltFfi"

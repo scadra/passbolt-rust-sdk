@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Smoke test of the NuGet package: dotnet run -p:SdkVersion=<version> -p:SdkSource=<dir of the .nupkg> -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RestoreAdditionalProjectSources>$(SdkSource)</RestoreAdditionalProjectSources>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Smoke.cs" />
+    <PackageReference Include="SwitchCase.Passbolt.Sdk" Version="$(SdkVersion)" />
+  </ItemGroup>
+</Project>

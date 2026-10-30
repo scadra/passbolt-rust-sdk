@@ -1,10 +1,14 @@
-// The jar loads its native library (JNA, from the classpath) and maps Rust errors to exceptions.
+// The jar loads its native library (JNA, from the classpath) and maps Rust errors to the
+// variants of the checked PassboltFfiException.
+import com.passbolt.sdk.PassboltFfi;
+import com.passbolt.sdk.PassboltFfiException;
+
 public class Smoke {
-    public static void main(String[] args) {
+    public static void main(String[] args) throws PassboltFfiException {
         try {
-            com.passbolt.sdk.PassboltFfi.getKeyFingerprint("not a key");
-        } catch (Exception error) {
-            System.out.println("ok: " + error);
+            PassboltFfi.getKeyFingerprint("not a key");
+        } catch (PassboltFfiException.Crypto error) {
+            System.out.println("ok: " + error.reason());
             return;
         }
         throw new IllegalStateException("expected a crypto error");
