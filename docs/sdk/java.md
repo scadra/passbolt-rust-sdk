@@ -110,3 +110,32 @@ The typed results (`FfiResource`, `FfiFolder`, `FfiUser`…) are Java records, r
 accessors (`created.id()`); lists are `java.util.List`. An absent value is `null`, as is an
 argument left out (`listFolders(null)`).
 
+## Errors
+
+```java
+import com.passbolt.sdk.PassboltFfi;
+import com.passbolt.sdk.PassboltFfiException;
+
+public class Errors {
+    public static void main(String[] args) {
+        try {
+            PassboltFfi.getKeyFingerprint("not a key");
+        } catch (PassboltFfiException.Crypto error) {
+            System.out.println("not a key: " + error.reason());
+        } catch (PassboltFfiException.Api error) {
+            System.out.println("the server answered " + error.status());
+        } catch (PassboltFfiException error) {
+            System.out.println("failed: " + error.getMessage());
+        }
+    }
+}
+```
+
+`PassboltFfiException` is a checked exception, with one nested subclass per variant of the
+[overview](README.md#concepts) (`Auth`, `Crypto`, `Api`, `NotFound`…): every call declares
+`throws PassboltFfiException`.
+
+The methods are those of the [overview](README.md#what-the-api-covers), in camelCase:
+`listFolders`, `createFolder`, `deleteUserWithTransfer`, `setResourceTags`… The stateless
+functions are static methods of `PassboltFfi`: `fetchServerKey`, `getKeyFingerprint`,
+`encryptMessage`, `decryptMessage`.
