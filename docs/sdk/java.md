@@ -78,3 +78,35 @@ public class PinnedLogin {
 }
 ```
 
+## Reading and writing
+
+```java
+import com.passbolt.sdk.FfiFolder;
+import com.passbolt.sdk.FfiResource;
+import com.passbolt.sdk.PassboltClient;
+import com.passbolt.sdk.PassboltFfiException;
+
+import java.util.List;
+
+public class ReadWrite {
+    static void example(PassboltClient client, String resourceId, String userId)
+            throws PassboltFfiException {
+        // JSON text: parse it with your JSON library.
+        System.out.println(client.getResourceView(resourceId));
+
+        FfiResource created = client.createResource(
+            "{\"name\": \"GitHub\", \"username\": \"ada\", \"password\": \"…\"}");
+        client.updateResource(created.id(), "{\"password\": \"new\"}");
+        client.shareResource(created.id(), List.of(userId), List.of(), 7);
+
+        for (FfiFolder folder : client.listFolders(null)) {
+            System.out.println(folder.id() + " " + folder.name());
+        }
+    }
+}
+```
+
+The typed results (`FfiResource`, `FfiFolder`, `FfiUser`…) are Java records, read with their
+accessors (`created.id()`); lists are `java.util.List`. An absent value is `null`, as is an
+argument left out (`listFolders(null)`).
+
