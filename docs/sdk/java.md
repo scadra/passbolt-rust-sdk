@@ -49,5 +49,32 @@ public class ListResources {
 `PassboltClient` is `AutoCloseable`: try-with-resources frees the native session, `logout` ends
 it on the server. The calls block: in a desktop app, keep them off the UI thread.
 
-The calls block, and throw the exception generated for `PassboltFfiError`, whose variants say
-what failed. The methods are those of the [overview](README.md#what-the-api-covers), in camelCase.
+## Pinning the server, MFA, TLS
+
+```java
+import com.passbolt.sdk.FfiLoginOptions;
+import com.passbolt.sdk.FfiServerKey;
+import com.passbolt.sdk.PassboltClient;
+import com.passbolt.sdk.PassboltFfi;
+import com.passbolt.sdk.PassboltFfiException;
+
+public class PinnedLogin {
+    static PassboltClient login(String privateKey, String passphrase) throws PassboltFfiException {
+        FfiServerKey serverKey = PassboltFfi.fetchServerKey("https://passbolt.example.com", false);
+        System.out.println("Check this fingerprint with your administrator: " + serverKey.fingerprint());
+
+        FfiLoginOptions options = new FfiLoginOptions(
+            false,                    // tlsSkipVerify
+            null,                     // proxy
+            null,                     // mfaTotpToken: the base32 TOTP secret, for an account with TOTP
+            serverKey.armoredKey(),   // serverPublicKey
+            null,                     // metadataKeyFingerprint
+            null,                     // timeoutSeconds: 60 by default, 0 waits forever
+            null,                     // clientCertificatePem
+            null);                    // clientKeyPem
+        return PassboltClient.loginWithConfig(
+            "https://passbolt.example.com", privateKey, passphrase, options);
+    }
+}
+```
+
