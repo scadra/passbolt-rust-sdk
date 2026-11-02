@@ -10,6 +10,8 @@ module_name = "PassboltSDK"
 link_frameworks = ["Security", "CoreFoundation"]
 # packaging/swift/Sources/PassboltSDK/PassboltSDK+Errors.swift gives the errors the Rust messages.
 omit_localized_error_conformance = true
+# The records are Codable: JSONEncoder can save them, JSONDecoder read them back.
+generate_codable_conformance = true
 
 [bindings.java]
 package_name = "com.passbolt.sdk"
