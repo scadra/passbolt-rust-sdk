@@ -552,8 +552,14 @@ jobs:
           (cd build && zip -qry "../dist/PassboltSDK-${{ needs.version.outputs.sdk }}.zip" PassboltSDK)
           # The XCFramework alone, attached to the release: the Swift package repository points at it.
           (cd "$pkg" && zip -qry "../../dist/PassboltSDKFFI.xcframework.zip" PassboltSDKFFI.xcframework)
+      - name: Smoke test, iOS
         working-directory: build/PassboltSDK
         run: xcodebuild build -scheme PassboltSDK -destination 'generic/platform=iOS Simulator' -quiet
+      # Links the library and runs it: a Rust error arrives as a PassboltFfiError.
+      - name: Smoke test, macOS
+        run: |
+          cp -R packaging/smoke/swift build/smoke-swift
+          swift run --package-path build/smoke-swift
       - uses: actions/upload-artifact@v4
         with:
           name: sdk-ios
