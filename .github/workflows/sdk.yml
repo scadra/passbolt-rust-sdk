@@ -504,7 +504,10 @@ jobs:
     needs: [version, bindings]
     runs-on: macos-14
     env:
-      TARGETS: aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+      TARGETS: aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-darwin x86_64-apple-darwin
+      # The oldest systems of packaging/swift/Package.swift.
+      IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - uses: actions/checkout@v4
       - name: Version from the tag
@@ -513,7 +516,7 @@ jobs:
         run: bash scripts/set-version.sh "${GITHUB_REF_NAME#v}"
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - uses: actions/download-artifact@v4
         with:
@@ -534,6 +537,10 @@ jobs:
             target/aarch64-apple-ios-sim/release/libpassbolt_ffi.a \
             target/x86_64-apple-ios/release/libpassbolt_ffi.a \
             -output build/simulator/libpassbolt_ffi.a
+          lipo -create \
+            target/aarch64-apple-darwin/release/libpassbolt_ffi.a \
+            target/x86_64-apple-darwin/release/libpassbolt_ffi.a \
+            -output build/macos/libpassbolt_ffi.a
           xcodebuild -create-xcframework \
             -library target/aarch64-apple-ios/release/libpassbolt_ffi.a -headers build/headers \
             -library build/simulator/libpassbolt_ffi.a -headers build/headers \
