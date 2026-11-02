@@ -2,6 +2,9 @@
 
 [bindings.kotlin]
 package_name = "com.passbolt.sdk"
+# The frameworks of the static library (the system root certificates), linked by the module map:
+# apps add nothing.
+link_frameworks = ["Security", "CoreFoundation"]
 
 [bindings.java]
 package_name = "com.passbolt.sdk"
