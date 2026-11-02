@@ -2,6 +2,9 @@
 
 [bindings.kotlin]
 package_name = "com.passbolt.sdk"
+[bindings.swift]
+# `import PassboltSDK`, over the C module PassboltSDKFFI of the XCFramework (packaging/swift).
+module_name = "PassboltSDK"
 # The frameworks of the static library (the system root certificates), linked by the module map:
 # apps add nothing.
 link_frameworks = ["Security", "CoreFoundation"]

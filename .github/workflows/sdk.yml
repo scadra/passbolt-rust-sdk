@@ -531,9 +531,9 @@ jobs:
       - name: Package
         run: |
           pkg=build/PassboltSDK
-          mkdir -p build/headers build/simulator "$pkg/Sources/PassboltSDK" dist
-          cp bindings/swift/passbolt_ffiFFI.h build/headers/
-          cp bindings/swift/passbolt_ffiFFI.modulemap build/headers/module.modulemap
+          mkdir -p build/headers build/simulator build/macos "$pkg/Sources/PassboltSDK" dist
+          cp bindings/swift/PassboltSDKFFI.h build/headers/
+          cp bindings/swift/PassboltSDKFFI.modulemap build/headers/module.modulemap
           lipo -create \
             target/aarch64-apple-ios-sim/release/libpassbolt_ffi.a \
             target/x86_64-apple-ios/release/libpassbolt_ffi.a \
@@ -545,13 +545,13 @@ jobs:
           xcodebuild -create-xcframework \
             -library target/aarch64-apple-ios/release/libpassbolt_ffi.a -headers build/headers \
             -library build/simulator/libpassbolt_ffi.a -headers build/headers \
-            -output "$pkg/passbolt_ffiFFI.xcframework"
-          cp bindings/swift/passbolt_ffi.swift "$pkg/Sources/PassboltSDK/"
+            -library build/macos/libpassbolt_ffi.a -headers build/headers \
+            -output "$pkg/PassboltSDKFFI.xcframework"
+          cp bindings/swift/PassboltSDK.swift packaging/swift/Sources/PassboltSDK/*.swift "$pkg/Sources/PassboltSDK/"
           cp packaging/swift/Package.swift LICENSE "$pkg/"
-          (cd build && zip -qry "../dist/PassboltSDK-ios-${{ needs.version.outputs.sdk }}.zip" PassboltSDK)
+          (cd build && zip -qry "../dist/PassboltSDK-${{ needs.version.outputs.sdk }}.zip" PassboltSDK)
           # The XCFramework alone, attached to the release: the Swift package repository points at it.
-          (cd "$pkg" && zip -qry "../../dist/passbolt_ffiFFI.xcframework.zip" passbolt_ffiFFI.xcframework)
-      - name: Smoke test
+          (cd "$pkg" && zip -qry "../../dist/PassboltSDKFFI.xcframework.zip" PassboltSDKFFI.xcframework)
         working-directory: build/PassboltSDK
         run: xcodebuild build -scheme PassboltSDK -destination 'generic/platform=iOS Simulator' -quiet
       - uses: actions/upload-artifact@v4
@@ -853,14 +853,14 @@ jobs:
           TOKEN: ${{ secrets.SDK_REPOSITORIES_TOKEN }}
           VERSION: ${{ needs.version.outputs.sdk }}
         run: |
-          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/passbolt_ffiFFI.xcframework.zip"
-          checksum=$(sha256sum dist/passbolt_ffiFFI.xcframework.zip | cut -d' ' -f1)
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/PassboltSDKFFI.xcframework.zip"
+          checksum=$(sha256sum dist/PassboltSDKFFI.xcframework.zip | cut -d' ' -f1)
           git clone "https://x-access-token:${TOKEN}@github.com/${SWIFT_REPOSITORY}.git" package
           find package -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           mkdir -p package/Sources/PassboltSDK
-          cp bindings/swift/passbolt_ffi.swift package/Sources/PassboltSDK/
+          cp bindings/swift/PassboltSDK.swift packaging/swift/Sources/PassboltSDK/*.swift package/Sources/PassboltSDK/
           cp LICENSE package/
-          sed 's#\.binaryTarget(name: "passbolt_ffiFFI", path: "passbolt_ffiFFI.xcframework")#.binaryTarget(name: "passbolt_ffiFFI", url: "'"$url"'", checksum: "'"$checksum"'")#' \
+          sed 's#\.binaryTarget(name: "PassboltSDKFFI", path: "PassboltSDKFFI.xcframework")#.binaryTarget(name: "PassboltSDKFFI", url: "'"$url"'", checksum: "'"$checksum"'")#' \
             packaging/swift/Package.swift > package/Package.swift
           grep -q "$checksum" package/Package.swift
           cd package

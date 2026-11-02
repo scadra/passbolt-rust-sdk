@@ -9,10 +9,10 @@ let package = Package(
         .library(name: "PassboltSDK", targets: ["PassboltSDK"]),
     ],
     targets: [
-        .binaryTarget(name: "passbolt_ffiFFI", path: "passbolt_ffiFFI.xcframework"),
+        .binaryTarget(name: "PassboltSDKFFI", path: "PassboltSDKFFI.xcframework"),
         .target(
             name: "PassboltSDK",
-            dependencies: ["passbolt_ffiFFI"],
+            dependencies: ["PassboltSDKFFI"],
             path: "Sources/PassboltSDK"
         ),
     ]
