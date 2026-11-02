@@ -5,6 +5,8 @@ package_name = "com.passbolt.sdk"
 # The frameworks of the static library (the system root certificates), linked by the module map:
 # apps add nothing.
 link_frameworks = ["Security", "CoreFoundation"]
+# packaging/swift/Sources/PassboltSDK/PassboltSDK+Errors.swift gives the errors the Rust messages.
+omit_localized_error_conformance = true
 
 [bindings.java]
 package_name = "com.passbolt.sdk"
