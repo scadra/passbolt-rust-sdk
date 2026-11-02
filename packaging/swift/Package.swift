@@ -1,10 +1,10 @@
 // swift-tools-version:5.9
-// Passbolt SDK for iOS: the Rust library as an XCFramework, under its UniFFI Swift bindings.
+// Passbolt SDK for iOS and macOS: the Rust library as an XCFramework, under its UniFFI Swift bindings.
 import PackageDescription
 
 let package = Package(
     name: "PassboltSDK",
-    platforms: [.iOS(.v15)],
+    platforms: [.iOS(.v15), .macOS(.v12)],
     products: [
         .library(name: "PassboltSDK", targets: ["PassboltSDK"]),
     ],
