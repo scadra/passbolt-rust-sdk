@@ -40,4 +40,6 @@ kotlin {
 dependencies {
     // The bindings call the library through JNA; its AAR brings libjnidispatch for each ABI.
     api("net.java.dev.jna:jna:5.14.0@aar")
+    // @RequiresApi of the bindings' cleaner (uniffi.toml `android = true`): not needed at run time.
+    compileOnly("androidx.annotation:annotation:1.9.1")
 }
