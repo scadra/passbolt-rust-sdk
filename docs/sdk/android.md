@@ -29,29 +29,45 @@ Its R8 rules keep the classes JNA reads by reflection: nothing to add to minifie
 
 ## Log in and list
 
-The calls block: run them off the main thread.
+Everything is in the package `com.passbolt.sdk`. The calls block until the server answers: they
+are not `suspend` functions, so run them on `Dispatchers.IO`, never on the main thread.
+
+`PassboltClient` is `AutoCloseable`: `use { }` frees its native memory. `close()` does not end
+the server session, `logout()` does.
 
 ```kotlin
 import com.passbolt.sdk.PassboltClient
-import com.passbolt.sdk.PassboltFfiException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 
 suspend fun resourceNames(serverUrl: String, privateKey: String, passphrase: String): List<String> =
     withContext(Dispatchers.IO) {
-        val client = PassboltClient.login(serverUrl, privateKey, passphrase)
-        try {
-            val views = JSONArray(client.listResourceViews(null, false))
-            List(views.length()) { index -> views.getJSONObject(index).getString("name") }
-        } finally {
-            client.logout()
-            client.close()
+        PassboltClient.login(serverUrl, privateKey, passphrase).use { client ->
+            try {
+                // JSON, the v5 metadata decrypted: one object per resource.
+                val views = JSONArray(client.listResourceViews(search = null, withSecrets = false))
+                List(views.length()) { index -> views.getJSONObject(index).getString("name") }
+            } finally {
+                client.logout()
+            }
         }
     }
 ```
 
+The other methods return Kotlin data classes, prefixed with `Ffi`: `FfiResource`, `FfiFolder`,
+`FfiUser`… Their optional fields are nullable, their lists `List`, and the numbers that cannot
+be negative unsigned (`UInt`, `ULong`).
+
+```kotlin
+val folders: List<FfiFolder> = client.listFolders(search = null)
+val secret: FfiSecretData = client.decryptResourceSecret(resourceId)
+val password: String? = secret.password
+```
+
 ## Pinning the server, MFA, TLS
+
+`FfiLoginOptions` has no default values: name each argument.
 
 ```kotlin
 import com.passbolt.sdk.FfiLoginOptions
