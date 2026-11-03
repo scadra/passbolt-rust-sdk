@@ -61,6 +61,9 @@ let secret: FfiSecretData = try client.decryptResourceSecret(resourceId: resourc
 let password: String? = secret.password
 ```
 
+## Pinning the server, MFA, TLS
+
+`FfiLoginOptions` has no default values: give each argument.
 
 ```swift
 let serverKey = try fetchServerKey(serverUrl: serverUrl, tlsSkipVerify: false)
@@ -69,13 +72,26 @@ let options = FfiLoginOptions(
     tlsSkipVerify: false, proxy: nil, mfaTotpToken: nil,
     serverPublicKey: serverKey.armoredKey, metadataKeyFingerprint: nil,
     timeoutSeconds: nil, clientCertificatePem: nil, clientKeyPem: nil)
+let client = try PassboltClient.loginWithConfig(
+    serverUrl: serverUrl, privateKeyArmored: privateKey, passphrase: passphrase, options: options)
+```
 
+## Errors
+
+Every failing call throws a `PassboltFfiError`: `.Crypto`, `.Api` (with its HTTP `status`),
+`.Auth`, `.NotFound`, `.Transport`, `.Config`, `.InvalidArgument`, `.Other`, each with its
+`reason`. The cases keep the capital of their Rust names. `localizedDescription` gives the
+message, such as `Auth error: …`.
+
+```swift
 do {
-    let client = try PassboltClient.loginWithConfig(
-        serverUrl: serverUrl, privateKeyArmored: privateKey, passphrase: passphrase, options: options)
-    _ = client
-} catch PassboltFfiError.Auth(let reason) {
-    print("login refused: \(reason)")
+    _ = try client.getResourceView(id: id)
+} catch PassboltFfiError.NotFound {
+    // gone, or not shared with this user
+} catch PassboltFfiError.Api(let status, let reason) {
+    print("HTTP \(status): \(reason)")
+} catch {
+    print(error.localizedDescription)
 }
 ```
 
