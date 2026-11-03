@@ -1,42 +1,69 @@
 ---
-title: Swift (iOS)
+title: Swift (iOS, macOS)
 sidebar_position: 10
 ---
 
-# Swift (iOS)
+# Swift (iOS, macOS)
 
-The Swift bindings over an XCFramework for devices (arm64) and simulators (arm64, x86_64), iOS 15
-or later. In Xcode, File → Add Package Dependencies, or in `Package.swift`:
+The Swift bindings over an XCFramework for iOS 15 devices (arm64) and simulators (arm64, x86_64),
+and macOS 12 (arm64, x86_64). In Xcode, File → Add Package Dependencies, or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/scadra/passbolt-sdk-swift", from: "0.1.1")
+dependencies: [
+    .package(url: "https://github.com/scadra/passbolt-sdk-swift", from: "0.1.1"),
+],
+targets: [
+    .target(name: "MyApp", dependencies: [
+        .product(name: "PassboltSDK", package: "passbolt-sdk-swift"),
+    ]),
+]
 ```
 
-then the product `PassboltSDK`. The `PassboltSDK-ios-<version>.zip` of each release is the same
-package with the XCFramework inside, to add as a local package.
+The `PassboltSDK-<version>.zip` of each release is the same package with the XCFramework inside,
+to add as a local package.
 
 ## Log in and list
 
-The calls block: run them off the main thread.
+The calls are synchronous and `throws`, not `async`: each one waits for the server. Run them off
+the main actor, in a detached task for instance. ARC frees the client; `logout()` ends the server
+session.
 
 ```swift
 import Foundation
 import PassboltSDK
+
+/// The fields of `listResourceViews` this app reads; the JSON has more.
+struct ResourceView: Decodable {
+    let id: String
+    let name: String
+    let username: String
+}
 
 func resourceNames(serverUrl: String, privateKey: String, passphrase: String) async throws -> [String] {
     try await Task.detached {
         let client = try PassboltClient.login(
             serverUrl: serverUrl, privateKeyArmored: privateKey, passphrase: passphrase)
         defer { client.logout() }
-        let views = try JSONSerialization.jsonObject(
-            with: Data(try client.listResourceViews(search: nil, withSecrets: false).utf8)
-        ) as? [[String: Any]] ?? []
-        return views.compactMap { $0["name"] as? String }
+        // JSON, the v5 metadata decrypted: one object per resource.
+        let json = try client.listResourceViews(search: nil, withSecrets: false)
+        return try JSONDecoder().decode([ResourceView].self, from: Data(json.utf8)).map(\.name)
     }.value
 }
 ```
 
-## Pinning the server and errors
+The other methods return structs, prefixed with `Ffi`: `FfiResource`, `FfiFolder`, `FfiUser`…
+Their optional fields are optionals, and they are `Equatable`, `Hashable`, `Sendable` and
+`Codable`.
+
+```swift
+let folders: [FfiFolder] = try client.listFolders(search: nil)
+let secret: FfiSecretData = try client.decryptResourceSecret(resourceId: resourceId)
+let password: String? = secret.password
+```
+
+## Pinning the server, MFA, TLS
+
+`FfiLoginOptions` has no default values: give each argument.
 
 ```swift
 let serverKey = try fetchServerKey(serverUrl: serverUrl, tlsSkipVerify: false)
@@ -45,13 +72,26 @@ let options = FfiLoginOptions(
     tlsSkipVerify: false, proxy: nil, mfaTotpToken: nil,
     serverPublicKey: serverKey.armoredKey, metadataKeyFingerprint: nil,
     timeoutSeconds: nil, clientCertificatePem: nil, clientKeyPem: nil)
+let client = try PassboltClient.loginWithConfig(
+    serverUrl: serverUrl, privateKeyArmored: privateKey, passphrase: passphrase, options: options)
+```
 
+## Errors
+
+Every failing call throws a `PassboltFfiError`: `.Crypto`, `.Api` (with its HTTP `status`),
+`.Auth`, `.NotFound`, `.Transport`, `.Config`, `.InvalidArgument`, `.Other`, each with its
+`reason`. The cases keep the capital of their Rust names. `localizedDescription` gives the
+message, such as `Auth error: …`.
+
+```swift
 do {
-    let client = try PassboltClient.loginWithConfig(
-        serverUrl: serverUrl, privateKeyArmored: privateKey, passphrase: passphrase, options: options)
-    _ = client
-} catch PassboltFfiError.Auth(let reason) {
-    print("login refused: \(reason)")
+    _ = try client.getResourceView(id: id)
+} catch PassboltFfiError.NotFound {
+    // gone, or not shared with this user
+} catch PassboltFfiError.Api(let status, let reason) {
+    print("HTTP \(status): \(reason)")
+} catch {
+    print(error.localizedDescription)
 }
 ```
 

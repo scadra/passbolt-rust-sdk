@@ -29,39 +29,55 @@ Its R8 rules keep the classes JNA reads by reflection: nothing to add to minifie
 
 ## Log in and list
 
-The calls block: run them off the main thread.
+Everything is in the package `com.passbolt.sdk`. The calls block until the server answers: they
+are not `suspend` functions, so run them on `Dispatchers.IO`, never on the main thread.
+
+`PassboltClient` is `AutoCloseable`: `use { }` frees its native memory. `close()` does not end
+the server session, `logout()` does.
 
 ```kotlin
 import com.passbolt.sdk.PassboltClient
-import com.passbolt.sdk.PassboltFfiException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 
 suspend fun resourceNames(serverUrl: String, privateKey: String, passphrase: String): List<String> =
     withContext(Dispatchers.IO) {
-        val client = PassboltClient.login(serverUrl, privateKey, passphrase)
-        try {
-            val views = JSONArray(client.listResourceViews(null, false))
-            List(views.length()) { index -> views.getJSONObject(index).getString("name") }
-        } finally {
-            client.logout()
-            client.close()
+        PassboltClient.login(serverUrl, privateKey, passphrase).use { client ->
+            try {
+                // JSON, the v5 metadata decrypted: one object per resource.
+                val views = JSONArray(client.listResourceViews(search = null, withSecrets = false))
+                List(views.length()) { index -> views.getJSONObject(index).getString("name") }
+            } finally {
+                client.logout()
+            }
         }
     }
 ```
 
+The other methods return Kotlin data classes, prefixed with `Ffi`: `FfiResource`, `FfiFolder`,
+`FfiUser`… Their optional fields are nullable, their lists `List`, and the numbers that cannot
+be negative unsigned (`UInt`, `ULong`).
+
+```kotlin
+val folders: List<FfiFolder> = client.listFolders(search = null)
+val secret: FfiSecretData = client.decryptResourceSecret(resourceId)
+val password: String? = secret.password
+```
+
 ## Pinning the server, MFA, TLS
+
+`FfiLoginOptions` has no default values: name each argument.
 
 ```kotlin
 import com.passbolt.sdk.FfiLoginOptions
 import com.passbolt.sdk.fetchServerKey
 
-val serverKey = fetchServerKey(serverUrl, false)   // show serverKey.fingerprint to the user
+val serverKey = fetchServerKey(serverUrl, tlsSkipVerify = false)   // show serverKey.fingerprint
 val options = FfiLoginOptions(
     tlsSkipVerify = false,
     proxy = null,
-    mfaTotpToken = null,                            // the base32 TOTP secret, if any
+    mfaTotpToken = null,                                           // the base32 TOTP secret, if any
     serverPublicKey = serverKey.armoredKey,
     metadataKeyFingerprint = null,
     timeoutSeconds = null,
@@ -73,15 +89,23 @@ val client = PassboltClient.loginWithConfig(serverUrl, privateKey, passphrase, o
 
 ## Errors
 
-`PassboltFfiException` is a sealed class: `PassboltFfiException.Crypto`, `.Api` (with its
-`status`), `.Auth`, `.NotFound`, `.Transport`…
+Every failing call throws a `PassboltFfiException`, a sealed class: `PassboltFfiException.Crypto`,
+`.Api` (with its HTTP `status`), `.Auth`, `.NotFound`, `.Transport`, `.Config`,
+`.InvalidArgument`, `.Other`. Each case has the explanation in `reason`; `message` reads
+`reason=…`.
 
 ```kotlin
+import com.passbolt.sdk.PassboltFfiException
+
 try {
     client.getResourceView(id)
 } catch (error: PassboltFfiException.NotFound) {
     // gone, or not shared with this user
+} catch (error: PassboltFfiException.Api) {
+    Log.w("passbolt", "HTTP ${error.status}: ${error.reason}")
 }
 ```
+
+A `when` over a caught `PassboltFfiException` lists every case, without `else`.
 
 The methods are those of the [overview](README.md#what-the-api-covers), in camelCase.

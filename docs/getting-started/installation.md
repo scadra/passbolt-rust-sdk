@@ -60,4 +60,4 @@ concept; each [language page](../sdk/README.md) tells how to use them.
 | .NET | NuGet `SwitchCase.Passbolt.Sdk` |
 | Ruby | RubyGems `switch-case-passbolt-sdk` |
 | Go | `github.com/scadra/passbolt-sdk-go` |
-| Swift (iOS) | Swift package `https://github.com/scadra/passbolt-sdk-swift` |
+| Swift (iOS, macOS) | Swift package `https://github.com/scadra/passbolt-sdk-swift` |
