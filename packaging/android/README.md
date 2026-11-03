@@ -16,10 +16,11 @@ dependencies {
 ```kotlin
 import com.passbolt.sdk.PassboltClient
 
-// Blocking network calls: run them off the main thread.
-val client = PassboltClient.login(serverUrl, privateKeyArmored, passphrase)
-val resources = client.listResources(null, false, false)
-client.logout()
+// Blocking network calls: run them on Dispatchers.IO. `use` frees the client, `logout` the session.
+PassboltClient.login(serverUrl, privateKeyArmored, passphrase).use { client ->
+    val resources = client.listResources(search = null, favoritesOnly = false, ownedByMe = false)
+    client.logout()
+}
 ```
 
 Its R8 rules keep the classes JNA reads by reflection. Build it locally from the repository
