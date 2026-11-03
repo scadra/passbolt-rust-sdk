@@ -73,11 +73,11 @@ val password: String? = secret.password
 import com.passbolt.sdk.FfiLoginOptions
 import com.passbolt.sdk.fetchServerKey
 
-val serverKey = fetchServerKey(serverUrl, false)   // show serverKey.fingerprint to the user
+val serverKey = fetchServerKey(serverUrl, tlsSkipVerify = false)   // show serverKey.fingerprint
 val options = FfiLoginOptions(
     tlsSkipVerify = false,
     proxy = null,
-    mfaTotpToken = null,                            // the base32 TOTP secret, if any
+    mfaTotpToken = null,                                           // the base32 TOTP secret, if any
     serverPublicKey = serverKey.armoredKey,
     metadataKeyFingerprint = null,
     timeoutSeconds = null,
