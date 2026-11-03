@@ -89,15 +89,23 @@ val client = PassboltClient.loginWithConfig(serverUrl, privateKey, passphrase, o
 
 ## Errors
 
-`PassboltFfiException` is a sealed class: `PassboltFfiException.Crypto`, `.Api` (with its
-`status`), `.Auth`, `.NotFound`, `.Transport`…
+Every failing call throws a `PassboltFfiException`, a sealed class: `PassboltFfiException.Crypto`,
+`.Api` (with its HTTP `status`), `.Auth`, `.NotFound`, `.Transport`, `.Config`,
+`.InvalidArgument`, `.Other`. Each case has the explanation in `reason`; `message` reads
+`reason=…`.
 
 ```kotlin
+import com.passbolt.sdk.PassboltFfiException
+
 try {
     client.getResourceView(id)
 } catch (error: PassboltFfiException.NotFound) {
     // gone, or not shared with this user
+} catch (error: PassboltFfiException.Api) {
+    Log.w("passbolt", "HTTP ${error.status}: ${error.reason}")
 }
 ```
+
+A `when` over a caught `PassboltFfiException` lists every case, without `else`.
 
 The methods are those of the [overview](README.md#what-the-api-covers), in camelCase.
