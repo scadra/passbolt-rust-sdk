@@ -24,26 +24,43 @@ to add as a local package.
 
 ## Log in and list
 
-The calls block: run them off the main thread.
+The calls are synchronous and `throws`, not `async`: each one waits for the server. Run them off
+the main actor, in a detached task for instance. ARC frees the client; `logout()` ends the server
+session.
 
 ```swift
 import Foundation
 import PassboltSDK
+
+/// The fields of `listResourceViews` this app reads; the JSON has more.
+struct ResourceView: Decodable {
+    let id: String
+    let name: String
+    let username: String
+}
 
 func resourceNames(serverUrl: String, privateKey: String, passphrase: String) async throws -> [String] {
     try await Task.detached {
         let client = try PassboltClient.login(
             serverUrl: serverUrl, privateKeyArmored: privateKey, passphrase: passphrase)
         defer { client.logout() }
-        let views = try JSONSerialization.jsonObject(
-            with: Data(try client.listResourceViews(search: nil, withSecrets: false).utf8)
-        ) as? [[String: Any]] ?? []
-        return views.compactMap { $0["name"] as? String }
+        // JSON, the v5 metadata decrypted: one object per resource.
+        let json = try client.listResourceViews(search: nil, withSecrets: false)
+        return try JSONDecoder().decode([ResourceView].self, from: Data(json.utf8)).map(\.name)
     }.value
 }
 ```
 
-## Pinning the server and errors
+The other methods return structs, prefixed with `Ffi`: `FfiResource`, `FfiFolder`, `FfiUser`…
+Their optional fields are optionals, and they are `Equatable`, `Hashable`, `Sendable` and
+`Codable`.
+
+```swift
+let folders: [FfiFolder] = try client.listFolders(search: nil)
+let secret: FfiSecretData = try client.decryptResourceSecret(resourceId: resourceId)
+let password: String? = secret.password
+```
+
 
 ```swift
 let serverKey = try fetchServerKey(serverUrl: serverUrl, tlsSkipVerify: false)
