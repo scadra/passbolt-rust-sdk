@@ -1,19 +1,26 @@
 ---
-title: Swift (iOS)
+title: Swift (iOS, macOS)
 sidebar_position: 10
 ---
 
-# Swift (iOS)
+# Swift (iOS, macOS)
 
-The Swift bindings over an XCFramework for devices (arm64) and simulators (arm64, x86_64), iOS 15
-or later. In Xcode, File → Add Package Dependencies, or in `Package.swift`:
+The Swift bindings over an XCFramework for iOS 15 devices (arm64) and simulators (arm64, x86_64),
+and macOS 12 (arm64, x86_64). In Xcode, File → Add Package Dependencies, or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/scadra/passbolt-sdk-swift", from: "0.1.1")
+dependencies: [
+    .package(url: "https://github.com/scadra/passbolt-sdk-swift", from: "0.1.1"),
+],
+targets: [
+    .target(name: "MyApp", dependencies: [
+        .product(name: "PassboltSDK", package: "passbolt-sdk-swift"),
+    ]),
+]
 ```
 
-then the product `PassboltSDK`. The `PassboltSDK-ios-<version>.zip` of each release is the same
-package with the XCFramework inside, to add as a local package.
+The `PassboltSDK-<version>.zip` of each release is the same package with the XCFramework inside,
+to add as a local package.
 
 ## Log in and list
 
