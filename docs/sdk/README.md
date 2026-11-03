@@ -28,7 +28,7 @@ only the way they are called differs.
 | .NET (C#) | [.NET](dotnet.md) | blocking |
 | Go | [Go](go.md) | blocking |
 | Ruby | [Ruby](ruby.md) | blocking |
-| Swift (iOS) | [Swift](swift.md) | blocking |
+| Swift (iOS, macOS) | [Swift](swift.md) | blocking |
 
 The blocking bindings run the network calls on their own runtime: on mobile, call them off the
 main thread.
