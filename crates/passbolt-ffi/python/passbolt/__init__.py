@@ -235,3 +235,16 @@ class Client(PassboltClient):
 
     # Resource views and writes: JSON on the FFI side, dicts here.
 
+    def get_resource_view(self, id: str) -> JsonObject:  # type: ignore[override]
+        """A resource with its metadata and secret decrypted: ``name``, ``username``, ``uris``,
+        ``description``, ``password``, ``metadata``, ``secret``…"""
+        return cast(JsonObject, json.loads(super().get_resource_view(id)))
+
+    def list_resource_views(  # type: ignore[override]
+        self, search: Optional[str] = None, with_secrets: bool = False
+    ) -> List[JsonObject]:
+        """The resources with their metadata decrypted, searched by name; with their secrets too
+        with ``with_secrets``. One that does not decrypt has an ``error``."""
+        views = super().list_resource_views(search, with_secrets)
+        return cast(List[JsonObject], json.loads(views))
+
