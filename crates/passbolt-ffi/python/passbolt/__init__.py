@@ -227,3 +227,11 @@ class Client(PassboltClient):
         client = cls.login_with_config(server_url, private_key_armored, passphrase, options)
         return cast(Client, client)
 
+    def __enter__(self) -> Client:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.logout()
+
+    # Resource views and writes: JSON on the FFI side, dicts here.
+
