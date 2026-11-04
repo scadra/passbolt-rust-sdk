@@ -162,3 +162,19 @@ UserProfile = FfiUserProfile
 UserQuery = FfiUserQuery
 
 
+class PermissionType(IntEnum):
+    """Passbolt's permission types, for ``share_resource`` and ``share_folder``."""
+
+    READ = 1
+    UPDATE = 7
+    OWNER = 15
+    #: Removes the access of the users and groups given.
+    REVOKE = -1
+
+
+def fetch_server_key(server_url: str, *, tls_skip_verify: bool = False) -> ServerKey:
+    """The server public key and its fingerprint, to pin with
+    ``Client.login(server_public_key=…)`` once the user confirmed the fingerprint."""
+    return _fetch_server_key(server_url, tls_skip_verify)
+
+
