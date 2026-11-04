@@ -118,3 +118,12 @@ ConfigError = PassboltFfiError.Config
 InvalidArgumentError = PassboltFfiError.InvalidArgument
 
 
+def _error_message(error: PassboltFfiError) -> str:
+    reason = str(getattr(error, "reason", ""))
+    status = getattr(error, "status", None)
+    return f"{reason} (HTTP {status})" if status is not None else reason
+
+
+# The generated message is "reason='…'": show the reason itself.
+PassboltFfiError.__str__ = _error_message  # type: ignore[assignment]
+
