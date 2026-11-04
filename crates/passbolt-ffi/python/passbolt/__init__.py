@@ -275,3 +275,55 @@ class Client(PassboltClient):
 
     # Optional arguments.
 
+    def list_resources(
+        self, search: Optional[str] = None, favorites_only: bool = False, owned_by_me: bool = False
+    ) -> List[Resource]:
+        return super().list_resources(search, favorites_only, owned_by_me)
+
+    def list_folders(self, search: Optional[str] = None) -> List[Folder]:
+        return super().list_folders(search)
+
+    def list_users(
+        self, search: Optional[str] = None, group_id: Optional[str] = None, admin_only: bool = False
+    ) -> List[User]:
+        return super().list_users(search, group_id, admin_only)
+
+    def create_folder(self, name: str, folder_parent_id: Optional[str] = None) -> Folder:
+        return super().create_folder(name, folder_parent_id)
+
+    def move_resource(self, id: str, folder_id: Optional[str] = None) -> None:
+        super().move_resource(id, folder_id)
+
+    def move_folder(self, id: str, folder_id: Optional[str] = None) -> None:
+        super().move_folder(id, folder_id)
+
+    def update_user(
+        self,
+        id: str,
+        first_name: Optional[str] = None,
+        last_name: Optional[str] = None,
+        role: Optional[str] = None,
+    ) -> User:
+        return super().update_user(id, first_name, last_name, role)
+
+    def create_group(
+        self, name: str, member_ids: Sequence[str] = (), manager_ids: Sequence[str] = ()
+    ) -> Group:
+        return super().create_group(name, list(member_ids), list(manager_ids))
+
+    def update_group(
+        self,
+        id: str,
+        name: Optional[str] = None,
+        add_member_ids: Sequence[str] = (),
+        add_manager_ids: Sequence[str] = (),
+        remove_member_ids: Sequence[str] = (),
+    ) -> Group:
+        return super().update_group(
+            id, name, list(add_member_ids), list(add_manager_ids), list(remove_member_ids)
+        )
+
+    def create_comment(
+        self, resource_id: str, content: str, parent_id: Optional[str] = None
+    ) -> Comment:
+        return super().create_comment(resource_id, content, parent_id)
