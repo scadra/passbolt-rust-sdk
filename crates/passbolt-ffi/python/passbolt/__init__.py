@@ -104,3 +104,17 @@ __all__ = [
     "get_key_fingerprint",
 ]
 
+# ── Errors ──────────────────────────────────────────────────────────────────
+
+#: Base class of every error the SDK raises; its subclasses say what failed.
+PassboltError = PassboltFfiError
+TransportError = PassboltFfiError.Transport
+AuthError = PassboltFfiError.Auth
+CryptoError = PassboltFfiError.Crypto
+#: The server answered with an error: ``status`` is the HTTP status.
+ApiError = PassboltFfiError.Api
+NotFoundError = PassboltFfiError.NotFound
+ConfigError = PassboltFfiError.Config
+InvalidArgumentError = PassboltFfiError.InvalidArgument
+
+
