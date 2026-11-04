@@ -178,3 +178,52 @@ def fetch_server_key(server_url: str, *, tls_skip_verify: bool = False) -> Serve
     return _fetch_server_key(server_url, tls_skip_verify)
 
 
+# ── Client ──────────────────────────────────────────────────────────────────
+
+JsonObject = Dict[str, Any]
+
+
+class Client(PassboltClient):
+    """A logged-in session. Use it as a context manager to log out at the end::
+
+        with passbolt.Client.login(url, private_key, passphrase) as client:
+            ...
+
+    The methods not redefined here are those of the generated ``PassboltClient``.
+    """
+
+    @classmethod
+    def login(  # type: ignore[override]
+        cls,
+        server_url: str,
+        private_key_armored: str,
+        passphrase: str,
+        *,
+        server_public_key: Optional[str] = None,
+        metadata_key_fingerprint: Optional[str] = None,
+        mfa_totp_token: Optional[str] = None,
+        timeout_seconds: Optional[int] = None,
+        tls_skip_verify: bool = False,
+        proxy: Optional[str] = None,
+        client_certificate_pem: Optional[str] = None,
+        client_key_pem: Optional[str] = None,
+    ) -> Client:
+        """Log in with GPGAuth.
+
+        ``server_public_key`` and ``metadata_key_fingerprint`` pin the keys saved earlier;
+        ``mfa_totp_token`` is the base32 TOTP secret of an account with TOTP;
+        ``timeout_seconds`` is 60 by default, 0 waits forever.
+        """
+        options = LoginOptions(
+            tls_skip_verify=tls_skip_verify,
+            proxy=proxy,
+            mfa_totp_token=mfa_totp_token,
+            server_public_key=server_public_key,
+            metadata_key_fingerprint=metadata_key_fingerprint,
+            timeout_seconds=timeout_seconds,
+            client_certificate_pem=client_certificate_pem,
+            client_key_pem=client_key_pem,
+        )
+        client = cls.login_with_config(server_url, private_key_armored, passphrase, options)
+        return cast(Client, client)
+
