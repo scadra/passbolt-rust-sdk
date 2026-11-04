@@ -32,3 +32,6 @@ namespace = "Passbolt.Sdk"
 access_modifier = "public"
 # The class of the stateless functions, named as in Java (default: PassboltFfiMethods).
 global_methods_class_name = "PassboltFfi"
+
+# Python: the generated module is passbolt._ffi (module-name in pyproject.toml), wrapped by the
+# `passbolt` package of python/.

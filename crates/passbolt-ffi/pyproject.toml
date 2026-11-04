@@ -1,4 +1,5 @@
 # Python wheels: `maturin build --release`, bindings from the crate's own uniffi-bindgen.
+# `import passbolt`: python/passbolt wraps the generated module, passbolt._ffi.
 [build-system]
 requires = ["maturin>=1.8,<2"]
 build-backend = "maturin"
@@ -8,7 +9,10 @@ name = "switch-case-passbolt-sdk"
 description = "Passbolt SDK — Python bindings of the Rust SDK"
 license = { text = "AGPL-3.0-or-later" }
 requires-python = ">=3.9"
+classifiers = ["Typing :: Typed"]
 dynamic = ["version"]
 
 [tool.maturin]
 bindings = "uniffi"
+module-name = "passbolt._ffi"
+python-source = "python"

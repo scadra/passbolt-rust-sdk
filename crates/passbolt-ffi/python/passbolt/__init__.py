@@ -1,0 +1,106 @@
+"""Passbolt SDK: the Rust SDK, with Python names.
+
+    import passbolt
+
+    with passbolt.Client.login(url, private_key, passphrase) as client:
+        for view in client.list_resource_views("github"):
+            print(view["name"], view["username"])
+
+The calls block. The generated UniFFI module is ``passbolt._ffi``; this package adds keyword
+arguments, a context manager, parsed JSON and Python names for its types and errors.
+"""
+
+from __future__ import annotations
+
+import json
+from enum import IntEnum
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Union, cast
+
+from ._ffi.passbolt_ffi import (
+    FfiAro,
+    FfiComment,
+    FfiDeleteBlockers,
+    FfiFavorite,
+    FfiFolder,
+    FfiFolderQuery,
+    FfiFolderTreeNode,
+    FfiGpgKey,
+    FfiGroup,
+    FfiGroupDeleteDryRun,
+    FfiGroupUser,
+    FfiLoginOptions,
+    FfiManagedGroup,
+    FfiMetadataKeysSettings,
+    FfiMetadataTypesSettings,
+    FfiOwnedItem,
+    FfiPasswordExpirySettings,
+    FfiPermission,
+    FfiResource,
+    FfiResourceQuery,
+    FfiResourceType,
+    FfiRole,
+    FfiSecret,
+    FfiSecretData,
+    FfiServerKey,
+    FfiTag,
+    FfiTotpData,
+    FfiUser,
+    FfiUserDeleteDryRun,
+    FfiUserProfile,
+    FfiUserQuery,
+    PassboltClient,
+    PassboltFfiError,
+    decrypt_message,
+    encrypt_message,
+    fetch_server_key as _fetch_server_key,
+    get_key_fingerprint,
+)
+
+__all__ = [
+    "ApiError",
+    "Aro",
+    "AuthError",
+    "Client",
+    "Comment",
+    "ConfigError",
+    "CryptoError",
+    "DeleteBlockers",
+    "Favorite",
+    "Folder",
+    "FolderQuery",
+    "FolderTreeNode",
+    "GpgKey",
+    "Group",
+    "GroupDeleteDryRun",
+    "GroupUser",
+    "InvalidArgumentError",
+    "LoginOptions",
+    "ManagedGroup",
+    "MetadataKeysSettings",
+    "MetadataTypesSettings",
+    "NotFoundError",
+    "OwnedItem",
+    "PassboltError",
+    "PasswordExpirySettings",
+    "Permission",
+    "PermissionType",
+    "Resource",
+    "ResourceQuery",
+    "ResourceType",
+    "Role",
+    "Secret",
+    "SecretData",
+    "ServerKey",
+    "Tag",
+    "TotpData",
+    "TransportError",
+    "User",
+    "UserDeleteDryRun",
+    "UserProfile",
+    "UserQuery",
+    "decrypt_message",
+    "encrypt_message",
+    "fetch_server_key",
+    "get_key_fingerprint",
+]
+
