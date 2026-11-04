@@ -127,3 +127,38 @@ def _error_message(error: PassboltFfiError) -> str:
 # The generated message is "reason='…'": show the reason itself.
 PassboltFfiError.__str__ = _error_message  # type: ignore[assignment]
 
+# ── Types ───────────────────────────────────────────────────────────────────
+
+Aro = FfiAro
+Comment = FfiComment
+DeleteBlockers = FfiDeleteBlockers
+Favorite = FfiFavorite
+Folder = FfiFolder
+FolderQuery = FfiFolderQuery
+FolderTreeNode = FfiFolderTreeNode
+GpgKey = FfiGpgKey
+Group = FfiGroup
+GroupDeleteDryRun = FfiGroupDeleteDryRun
+GroupUser = FfiGroupUser
+LoginOptions = FfiLoginOptions
+ManagedGroup = FfiManagedGroup
+MetadataKeysSettings = FfiMetadataKeysSettings
+MetadataTypesSettings = FfiMetadataTypesSettings
+OwnedItem = FfiOwnedItem
+PasswordExpirySettings = FfiPasswordExpirySettings
+Permission = FfiPermission
+Resource = FfiResource
+ResourceQuery = FfiResourceQuery
+ResourceType = FfiResourceType
+Role = FfiRole
+Secret = FfiSecret
+SecretData = FfiSecretData
+ServerKey = FfiServerKey
+Tag = FfiTag
+TotpData = FfiTotpData
+User = FfiUser
+UserDeleteDryRun = FfiUserDeleteDryRun
+UserProfile = FfiUserProfile
+UserQuery = FfiUserQuery
+
+
