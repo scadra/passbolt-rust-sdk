@@ -183,6 +183,14 @@ def fetch_server_key(server_url: str, *, tls_skip_verify: bool = False) -> Serve
 JsonObject = Dict[str, Any]
 
 
+def _json_fields(fields: Union[Mapping[str, Any], str, None], extra: Mapping[str, Any]) -> str:
+    if isinstance(fields, str):
+        if extra:
+            raise TypeError("give the fields as JSON text or as keyword arguments, not both")
+        return fields
+    return json.dumps({**(fields or {}), **extra})
+
+
 class Client(PassboltClient):
     """A logged-in session. Use it as a context manager to log out at the end::
 
@@ -247,4 +255,23 @@ class Client(PassboltClient):
         with ``with_secrets``. One that does not decrypt has an ``error``."""
         views = super().list_resource_views(search, with_secrets)
         return cast(List[JsonObject], json.loads(views))
+
+    def create_resource(  # type: ignore[override]
+        self, fields: Union[Mapping[str, Any], str, None] = None, /, **kwargs: Any
+    ) -> Resource:
+        """Create a resource of any type: ``create_resource(name="GitHub", password="…")``.
+
+        The fields: ``name``, ``username``, ``uris``, ``description``, ``password``, ``totp``,
+        ``note``, ``pin_code``, ``custom_fields``, ``folder_parent_id``, ``expired``,
+        ``resource_type``, ``metadata_fields``, ``secret_fields``."""
+        return super().create_resource(_json_fields(fields, kwargs))
+
+    def update_resource(  # type: ignore[override]
+        self, id: str, changes: Union[Mapping[str, Any], str, None] = None, /, **kwargs: Any
+    ) -> Resource:
+        """Change the fields given, keep the others: ``update_resource(id, password="new")``;
+        ``expired=None`` clears the expiry."""
+        return super().update_resource(id, _json_fields(changes, kwargs))
+
+    # Optional arguments.
 
