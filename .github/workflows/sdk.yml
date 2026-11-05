@@ -484,15 +484,7 @@ jobs:
       - name: Smoke test
         run: |
           gem install --no-document dist/*.gem
-          ruby -e '
-            require "passbolt_sdk"
-            begin
-              PassboltFfi.get_key_fingerprint("not a key")
-            rescue StandardError => e
-              puts "ok: #{e.class}"
-            else
-              abort "expected a crypto error"
-            end'
+          ruby packaging/smoke/smoke.rb
       - uses: actions/upload-artifact@v4
         with:
           name: sdk-ruby
