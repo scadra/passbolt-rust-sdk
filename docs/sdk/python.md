@@ -34,23 +34,24 @@ The `with` block logs out at the end; without it, call `client.logout()`.
 ## Pinning the server, MFA, TLS
 
 ```python
-server_key = passbolt_ffi.fetch_server_key("https://passbolt.example.com", False)
+server_key = passbolt.fetch_server_key("https://passbolt.example.com")
 print("Check this fingerprint with your administrator:", server_key.fingerprint)
 
-options = passbolt_ffi.FfiLoginOptions(
+client = passbolt.Client.login(
+    "https://passbolt.example.com",
+    private_key,
+    passphrase,
+    server_public_key=server_key.armored_key,
+    mfa_totp_token=None,          # the base32 TOTP secret, for an account with TOTP
+    metadata_key_fingerprint=None,
+    timeout_seconds=None,         # 60 by default, 0 waits forever
     tls_skip_verify=False,
     proxy=None,
-    mfa_totp_token=None,               # the base32 TOTP secret, for an account with TOTP
-    server_public_key=server_key.armored_key,
-    metadata_key_fingerprint=None,
-    timeout_seconds=None,              # 60 by default, 0 waits forever
-    client_certificate_pem=None,
-    client_key_pem=None,
-)
-client = passbolt_ffi.PassboltClient.login_with_config(
-    "https://passbolt.example.com", private_key, passphrase, options
+    client_certificate_pem=None,  # and client_key_pem, for mTLS
 )
 ```
+
+Every keyword is optional.
 
 ## Reading and writing
 
