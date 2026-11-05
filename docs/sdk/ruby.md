@@ -49,6 +49,22 @@ client = Passbolt::Client.login(
 
 Every keyword is optional.
 
+## Reading and writing
+
+```ruby
+view = client.get_resource_view(resource_id)
+puts view["password"]
+
+created = client.create_resource(name: "GitHub", username: "ada", password: "…")
+client.update_resource(created.id, password: "new")
+client.share_resource(created.id, user_ids: [user_id], permission_type: Passbolt::PermissionType::UPDATE)
+
+folder = client.create_folder("Ops")
+client.move_resource(created.id, folder.id)
+```
+
+Resource views are Hashes parsed from the server's JSON; the other calls return objects with
+readers: `Passbolt::Resource`, `Passbolt::Folder`, `Passbolt::User`…
 
 ## Errors
 
