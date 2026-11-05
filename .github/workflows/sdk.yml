@@ -462,14 +462,13 @@ jobs:
       - name: Package
         run: |
           pkg=build/ruby
-          mkdir -p "$pkg/lib" dist
+          mkdir -p "$pkg/lib/passbolt" dist
           cp packaging/ruby/passbolt-sdk.gemspec LICENSE "$pkg/"
-          cp packaging/ruby/passbolt_sdk.rb "$pkg/lib/"
-          # Load the library shipped in the gem, not one from the system library path.
-          sed "s/ffi_lib 'passbolt_ffi'/ffi_lib PASSBOLT_FFI_LIBRARY/" bindings/ruby/passbolt_ffi.rb \
-            > "$pkg/lib/passbolt_ffi.rb"
-          grep -q "ffi_lib PASSBOLT_FFI_LIBRARY" "$pkg/lib/passbolt_ffi.rb"
-          # FFI::Platform::OS-ARCH, as lib/passbolt_sdk.rb looks it up.
+          cp packaging/ruby/passbolt.rb packaging/ruby/passbolt_sdk.rb "$pkg/lib/"
+          cp bindings/ruby/passbolt_ffi.rb "$pkg/lib/passbolt/"
+          # The library shipped in the gem, not one from the system library path (uniffi.toml).
+          grep -q "ffi_lib Passbolt::NATIVE_LIBRARY" "$pkg/lib/passbolt/passbolt_ffi.rb"
+          # FFI::Platform::OS-ARCH, as lib/passbolt.rb looks it up.
           declare -A platform=(
             [x86_64-unknown-linux-gnu]=linux-x86_64 [aarch64-unknown-linux-gnu]=linux-aarch64
             [x86_64-apple-darwin]=darwin-x86_64 [aarch64-apple-darwin]=darwin-aarch64

@@ -35,3 +35,7 @@ global_methods_class_name = "PassboltFfi"
 
 # Python: the generated module is passbolt._ffi (module-name in pyproject.toml), wrapped by the
 # `passbolt` package of python/.
+
+# Ruby: the gem's lib/passbolt.rb sets the path of the native library it ships.
+[bindings.ruby]
+cdylib_path = "Passbolt::NATIVE_LIBRARY"
