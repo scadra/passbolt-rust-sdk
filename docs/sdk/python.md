@@ -56,13 +56,20 @@ Every keyword is optional.
 ## Reading and writing
 
 ```python
-view = json.loads(client.get_resource_view(resource_id))
+view = client.get_resource_view(resource_id)
 print(view["password"])
 
-created = client.create_resource(json.dumps({"name": "GitHub", "username": "ada", "password": "…"}))
-client.update_resource(created.id, json.dumps({"password": "new"}))
-client.share_resource(created.id, [user_id], [], 7)
+created = client.create_resource(name="GitHub", username="ada", password="…")
+client.update_resource(created.id, password="new")
+client.share_resource(created.id, [user_id], [], passbolt.PermissionType.UPDATE)
+
+folder = client.create_folder("Ops")
+client.move_resource(created.id, folder.id)
 ```
+
+Resource views are `dict`s parsed from the server's JSON; `create_resource` and
+`update_resource` take the fields as keyword arguments (or as one `dict`). The other calls return
+typed objects: `passbolt.Resource`, `passbolt.Folder`, `passbolt.User`…
 
 ## Errors
 
