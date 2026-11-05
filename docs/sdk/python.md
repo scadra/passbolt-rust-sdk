@@ -9,30 +9,27 @@ sidebar_position: 4
 pip install switch-case-passbolt-sdk
 ```
 
-Python 3.9 or later, on Linux (x86_64, aarch64), macOS and Windows. The module is `passbolt_ffi`;
-its calls block.
+Python 3.9 or later, on Linux (x86_64, aarch64), macOS and Windows. The package is `passbolt`;
+its calls block. It ships type hints (`py.typed`).
 
 ## Log in and list
 
 ```python
-import json
 import os
 
-import passbolt_ffi
+import passbolt
 
 with open("private.asc") as key_file:
     private_key = key_file.read()
 
-client = passbolt_ffi.PassboltClient.login(
+with passbolt.Client.login(
     "https://passbolt.example.com", private_key, os.environ["PASSBOLT_PASSPHRASE"]
-)
-try:
-    views = json.loads(client.list_resource_views("github", False))
-    for view in views:
+) as client:
+    for view in client.list_resource_views("github"):
         print(view["id"], view["name"], view["username"])
-finally:
-    client.logout()
 ```
+
+The `with` block logs out at the end; without it, call `client.logout()`.
 
 ## Pinning the server, MFA, TLS
 
