@@ -75,12 +75,20 @@ typed objects: `passbolt.Resource`, `passbolt.Folder`, `passbolt.User`…
 
 ```python
 try:
-    passbolt_ffi.get_key_fingerprint("not a key")
-except passbolt_ffi.PassboltFfiError.Crypto as error:
-    print("not a key:", error.reason)
-except passbolt_ffi.PassboltFfiError.Api as error:
-    print("the server answered", error.status)
+    passbolt.get_key_fingerprint("not a key")
+except passbolt.CryptoError as error:
+    print("not a key:", error)
+except passbolt.ApiError as error:
+    print("the server answered", error.status, error.reason)
+except passbolt.PassboltError as error:
+    print("failed:", error)
 ```
 
+`passbolt.PassboltError` is the base of `TransportError`, `AuthError`, `CryptoError`, `ApiError`,
+`NotFoundError`, `ConfigError` and `InvalidArgumentError`.
+
 The methods are those of the [overview](README.md#what-the-api-covers), in snake_case:
-`list_folders`, `create_folder`, `delete_user_with_transfer`, `set_resource_tags`…
+`list_folders`, `create_folder`, `delete_user_with_transfer`, `set_resource_tags`… The
+listing and optional arguments have defaults (`list_resources(search=None, favorites_only=False,
+owned_by_me=False)`); the others are positional. The generated bindings stay available as
+`passbolt._ffi`.
