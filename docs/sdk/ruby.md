@@ -70,13 +70,21 @@ readers: `Passbolt::Resource`, `Passbolt::Folder`, `Passbolt::User`…
 
 ```ruby
 begin
-  PassboltFfi.get_key_fingerprint("not a key")
-rescue PassboltFfi::PassboltFfiError::Crypto => error
-  puts "not a key: #{error.reason}"
+  Passbolt.get_key_fingerprint("not a key")
+rescue Passbolt::CryptoError => e
+  puts "not a key: #{e.message}"
+rescue Passbolt::ApiError => e
+  puts "the server answered #{e.status}: #{e.reason}"
+rescue Passbolt::Error => e
+  puts "failed: #{e.message}"
 end
 ```
 
-`PassboltFfi::PassboltClient.login_with_config` takes a `PassboltFfi::FfiLoginOptions.new(...)`,
-with the keyword arguments of the [Python](python.md#pinning-the-server-mfa-tls) example. The
-calls block. The methods are those of the [overview](README.md#what-the-api-covers), in
-snake_case.
+Every error of the SDK is a `Passbolt::Error`: `TransportError`, `AuthError`, `CryptoError`,
+`ApiError`, `NotFoundError`, `ConfigError` or `InvalidArgumentError`.
+
+The methods are those of the [overview](README.md#what-the-api-covers), in snake_case. Flags and
+optional arguments are keywords (`list_resources(search = nil, favorites_only: false,
+owned_by_me: false)`, `list_users(group_id:, admin_only:)`, `share_folder(id, permission_type:,
+user_ids:, group_ids:, with_content:)`); the others are positional. The generated bindings stay
+available as `PassboltFfi`.
