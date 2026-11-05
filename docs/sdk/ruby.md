@@ -10,25 +10,25 @@ gem install switch-case-passbolt-sdk
 ```
 
 Ruby 3.0 or later, with the `ffi` gem; the gem holds the native library of Linux (x86_64,
-aarch64), macOS and Windows.
+aarch64), macOS and Windows. Its calls block.
 
 ## Log in and list
 
 ```ruby
-require "json"
-require "passbolt_sdk"
+require "passbolt"
 
-client = PassboltFfi::PassboltClient.login(
+Passbolt::Client.login(
   "https://passbolt.example.com", File.read("private.asc"), ENV.fetch("PASSBOLT_PASSPHRASE")
-)
-begin
-  JSON.parse(client.list_resource_views("github", false)).each do |view|
+) do |client|
+  client.list_resource_views("github").each do |view|
     puts "#{view["id"]} #{view["name"]}"
   end
-ensure
-  client.logout
 end
 ```
+
+With a block, `login` logs out at the end; without one it returns the client: call
+`client.logout` when done.
+
 
 ## Errors
 
