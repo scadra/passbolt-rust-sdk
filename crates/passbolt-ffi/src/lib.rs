@@ -21,11 +21,10 @@
 //!
 //! ## Quick start (Python)
 //! ```python
-//! from passbolt_ffi import PassboltClient
+//! import passbolt
 //!
-//! client = PassboltClient.login("https://passbolt.example.com", private_key, passphrase)
-//! resources = client.list_resources(None, False, False)
-//! client.logout()
+//! with passbolt.Client.login("https://passbolt.example.com", private_key, passphrase) as client:
+//!     resources = client.list_resources()
 //! ```
 
 mod error;
