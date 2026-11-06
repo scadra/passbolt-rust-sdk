@@ -36,7 +36,7 @@ out empty.
 | Package | Built from |
 |---|---|
 | npm | `packaging/js/` and the `bundler` and `nodejs` builds of `wasm-bindgen` |
-| Python wheels | `crates/passbolt-ffi/pyproject.toml`, with maturin |
+| Python wheels | `crates/passbolt-ffi/pyproject.toml` and the `passbolt` package of `crates/passbolt-ffi/python/`, with maturin |
 | Java jar | the Java bindings, the libraries under JNA's `<os>-<arch>/` resource folders |
 | Android AAR | `packaging/android/` (Gradle), the libraries of `cargo ndk` |
 | NuGet | `packaging/dotnet/`, the libraries under `runtimes/<rid>/native` |
