@@ -54,7 +54,7 @@ concept; each [language page](../sdk/README.md) tells how to use them.
 |---|---|
 | Rust | crates.io `switch-case-passbolt-sdk` (imported as `passbolt_sdk`) |
 | JavaScript / TypeScript | npm `@switch-case/passbolt-sdk` |
-| Python | PyPI `switch-case-passbolt-sdk` (imported as `passbolt_ffi`) |
+| Python | PyPI `switch-case-passbolt-sdk` (imported as `passbolt`) |
 | Java | Maven `io.github.scadra:passbolt-sdk` |
 | Android | Maven `io.github.scadra:passbolt-sdk-android` (AAR) |
 | .NET | NuGet `SwitchCase.Passbolt.Sdk` |
