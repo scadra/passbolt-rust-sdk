@@ -1,5 +1,6 @@
 // The objects the session takes and returns, as the SDK serializes them: the Passbolt API field
-// names, `null` for an absent value, dates as RFC 3339 strings.
+// names, `null` for an absent value, dates as RFC 3339 strings. The options of the methods
+// (filters, shares, users and groups to create or change) are camelCase, as `LoginOptions`.
 
 /** A date and time, RFC 3339 (`2024-01-01T10:00:00Z`). */
 export type Timestamp = string;
@@ -21,6 +22,42 @@ export interface LoginOptions {
   openpgp?: object;
 }
 
+/** What every rejected promise and thrown error of the SDK carries in `code`. */
+export type PassboltErrorCode =
+  | "NETWORK"
+  | "TIMEOUT"
+  | "LOGIN_FAILED"
+  | "MFA_REQUIRED"
+  | "MFA_FAILED"
+  | "MFA_UNSUPPORTED"
+  | "MFA_LOCKED_OUT"
+  | "SESSION_EXPIRED"
+  | "SERVER_IDENTITY_MISMATCH"
+  | "INVALID_KEY"
+  | "DECRYPTION_FAILED"
+  | "ENCRYPTION_FAILED"
+  | "UNTRUSTED_METADATA_KEY"
+  | "CRYPTO"
+  | "NOT_FOUND"
+  | "API"
+  | "INVALID_RESPONSE"
+  | "CONFIG"
+  | "INVALID_ARGUMENT"
+  | "UNKNOWN";
+
+/**
+ * The errors the SDK throws: an `Error` named `PassboltError`; `isPassboltError` tells them
+ * apart from others.
+ */
+export interface PassboltError extends Error {
+  name: "PassboltError";
+  code: PassboltErrorCode;
+  /** The HTTP status of an API error. */
+  status?: number;
+  /** The fields the server refused, by field name, for an API error. */
+  validationErrors?: Json;
+}
+
 export interface ServerKey {
   /** Computed from the key, to show to the user. */
   fingerprint: string;
@@ -29,6 +66,81 @@ export interface ServerKey {
 
 /** 1 read, 7 update, 15 owner. */
 export type PermissionType = 1 | 7 | 15;
+
+/** `listResources`: every field is optional. */
+export interface ResourceFilter {
+  /** Part of the name. */
+  search?: string;
+  favoritesOnly?: boolean;
+  ownedByMe?: boolean;
+}
+
+/** `listResourceViews`: every field is optional. */
+export interface ResourceViewFilter {
+  /** Part of the decrypted name. */
+  search?: string;
+  /** Decrypt the secrets too. */
+  withSecrets?: boolean;
+}
+
+/** `listFolders`. */
+export interface FolderFilter {
+  /** Part of the name. */
+  search?: string;
+}
+
+/** `listUsers`: every field is optional. */
+export interface UserFilter {
+  search?: string;
+  /** Members of this group only. */
+  groupId?: string;
+  adminOnly?: boolean;
+}
+
+/** `shareResource`: the users and groups to give `permissionType` to, or to revoke with -1. */
+export interface Share {
+  userIds?: string[];
+  groupIds?: string[];
+  permissionType: PermissionType | -1;
+}
+
+/** `shareFolder`. */
+export interface FolderShare extends Share {
+  /** Share the sub-folders and the resources the user owns in it too. */
+  withContent?: boolean;
+}
+
+/** `createUser`. */
+export interface NewUser {
+  /** The email address. */
+  username: string;
+  firstName: string;
+  lastName: string;
+  /** `user` (default) or `admin`. */
+  role?: "user" | "admin";
+}
+
+/** `updateUser`: only the fields to change. */
+export interface UserChanges {
+  firstName?: string;
+  lastName?: string;
+  role?: "user" | "admin";
+}
+
+/** `createGroup`: a manager is also a member. */
+export interface NewGroup {
+  name: string;
+  memberIds?: string[];
+  managerIds?: string[];
+}
+
+/** `updateGroup`: only the changes. */
+export interface GroupChanges {
+  name?: string;
+  addMemberIds?: string[];
+  addManagerIds?: string[];
+  removeMemberIds?: string[];
+}
 
 export interface Permission {
   id: string | null;

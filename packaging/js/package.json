@@ -2,8 +2,12 @@
   "name": "@switch-case/passbolt-sdk",
   "version": "0.0.0",
   "description": "Passbolt SDK — JavaScript and TypeScript bindings of the Rust SDK (WebAssembly)",
+  "keywords": ["passbolt", "password-manager", "openpgp", "webassembly", "sdk"],
   "license": "AGPL-3.0-or-later",
   "repository": "github:scadra/passbolt-rust-sdk",
+  "engines": {
+    "node": ">=20.19"
+  },
   "files": ["bundler", "node", "README.md"],
   "main": "./node/passbolt_wasm.js",
   "module": "./bundler/passbolt_wasm.js",
@@ -13,7 +17,8 @@
       "types": "./bundler/passbolt_wasm.d.ts",
       "node": "./node/passbolt_wasm.js",
       "default": "./bundler/passbolt_wasm.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "sideEffects": ["./bundler/passbolt_wasm.js", "./bundler/snippets/*"]
 }

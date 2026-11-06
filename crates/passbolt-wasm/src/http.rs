@@ -10,7 +10,8 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use js_sys::{Array, Uint8Array};
@@ -55,15 +56,16 @@ fn build_request_headers<'header>(
 const CSRF_COOKIE: &str = "csrfToken";
 
 thread_local! {
-    /// JS function giving the `csrfToken` cookie, sync or as a promise: `fetch` cannot read
-    /// `Set-Cookie`. WASM runs on one thread, and a JS function is not `Send`.
-    static CSRF_TOKEN_PROVIDER: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
+    /// The JS functions giving the `csrfToken` cookie, sync or as a promise, of each client that
+    /// has one: `fetch` cannot read `Set-Cookie`. WASM runs on one thread, and a JS function is
+    /// not `Send`, so the clients hold their key here, not the function.
+    static CSRF_TOKEN_PROVIDERS: RefCell<HashMap<u32, js_sys::Function>> =
+        RefCell::new(HashMap::new());
+    static NEXT_PROVIDER_KEY: Cell<u32> = const { Cell::new(0) };
 }
 
-/// Read the CSRF token with `provider` (e.g. `browser.cookies.get` in an extension), instead of
-/// `document.cookie`, which only pages served by Passbolt can read.
-pub fn set_csrf_token_provider(provider: Option<js_sys::Function>) {
-    CSRF_TOKEN_PROVIDER.with(|stored| *stored.borrow_mut() = provider);
+fn csrf_token_provider(key: u32) -> Option<js_sys::Function> {
+    CSRF_TOKEN_PROVIDERS.with(|providers| providers.borrow().get(&key).cloned())
 }
 
 /// HTTP client using `fetch()` with cookie credentials.
@@ -75,6 +77,16 @@ pub fn set_csrf_token_provider(provider: Option<js_sys::Function>) {
 pub struct WasmHttpClient {
     csrf_token: Mutex<Option<String>>,
     cookies: Mutex<Vec<(String, String)>>,
+    /// The key of its CSRF token provider in `CSRF_TOKEN_PROVIDERS`.
+    csrf_token_provider: Option<u32>,
+}
+
+impl Drop for WasmHttpClient {
+    fn drop(&mut self) {
+        if let Some(key) = self.csrf_token_provider {
+            CSRF_TOKEN_PROVIDERS.with(|providers| providers.borrow_mut().remove(&key));
+        }
+    }
 }
 
 impl WasmHttpClient {
@@ -83,11 +95,33 @@ impl WasmHttpClient {
         Self {
             csrf_token: Mutex::new(None),
             cookies: Mutex::new(Vec::new()),
+            csrf_token_provider: None,
+        }
+    }
+
+    /// A client reading the CSRF token with `provider` (e.g. `browser.cookies.get` in an
+    /// extension) instead of `document.cookie`, which only pages served by Passbolt can read.
+    /// Each client has its own: two sessions can talk to two servers.
+    #[must_use]
+    pub fn with_csrf_token_provider(provider: Option<js_sys::Function>) -> Self {
+        let csrf_token_provider = provider.map(|provider| {
+            let key = NEXT_PROVIDER_KEY.with(|next| {
+                let key = next.get();
+                next.set(key.wrapping_add(1));
+                key
+            });
+            CSRF_TOKEN_PROVIDERS.with(|providers| providers.borrow_mut().insert(key, provider));
+            key
+        });
+        Self {
+            csrf_token: Mutex::new(None),
+            cookies: Mutex::new(Vec::new()),
+            csrf_token_provider,
         }
     }
 
     async fn refresh_csrf_token(&self) {
-        let provider = CSRF_TOKEN_PROVIDER.with(|stored| stored.borrow().clone());
+        let provider = self.csrf_token_provider.and_then(csrf_token_provider);
         let token = match provider {
             Some(provider) => provided_token(&provider).await,
             None => document_cookie()
@@ -437,10 +471,8 @@ mod wasm_tests {
 
     /// The CSRF token the client holds after a response, read with `provider`.
     async fn token_after_a_response(provider: Option<js_sys::Function>) -> Option<String> {
-        set_csrf_token_provider(provider);
-        let client = WasmHttpClient::new();
+        let client = WasmHttpClient::with_csrf_token_provider(provider);
         client.get(JSON_DATA_URL, &[]).await.unwrap();
-        set_csrf_token_provider(None);
         client.cookie(JSON_DATA_URL, CSRF_COOKIE)
     }
 
@@ -452,6 +484,40 @@ mod wasm_tests {
             token_after_a_response(Some(provider)).await.as_deref(),
             Some("from-provider")
         );
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_each_client_reads_the_token_with_its_own_provider() {
+        let first = WasmHttpClient::with_csrf_token_provider(Some(js_sys::Function::new_no_args(
+            "return 'first';",
+        )));
+        let second = WasmHttpClient::with_csrf_token_provider(Some(js_sys::Function::new_no_args(
+            "return 'second';",
+        )));
+
+        first.get(JSON_DATA_URL, &[]).await.unwrap();
+        second.get(JSON_DATA_URL, &[]).await.unwrap();
+
+        assert_eq!(
+            first.cookie(JSON_DATA_URL, CSRF_COOKIE).as_deref(),
+            Some("first")
+        );
+        assert_eq!(
+            second.cookie(JSON_DATA_URL, CSRF_COOKIE).as_deref(),
+            Some("second")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn test_a_dropped_client_releases_its_provider() {
+        let client = WasmHttpClient::with_csrf_token_provider(Some(js_sys::Function::new_no_args(
+            "return 'token';",
+        )));
+        let key = client.csrf_token_provider.unwrap();
+
+        drop(client);
+
+        assert!(csrf_token_provider(key).is_none());
     }
 
     #[wasm_bindgen_test]
