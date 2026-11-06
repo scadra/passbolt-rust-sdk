@@ -47,6 +47,8 @@ const session = await PassboltSession.login(serverUrl, privateKeyArmored, passph
 });
 ```
 
+Each session has its own provider: two sessions can talk to two servers.
+
 ## Login options
 
 | Option | |
@@ -55,8 +57,20 @@ const session = await PassboltSession.login(serverUrl, privateKeyArmored, passph
 | `totpCode` | The TOTP code answering the MFA challenge |
 | `serverPublicKey` | The armored server key pinned with `PassboltSession.fetchServerKey(serverUrl)` |
 | `metadataKeyFingerprint` | The shared metadata key pinned with `session.metadataKeyFingerprint()` |
+| `openpgp` | The OpenPGP.js module (`import * as openpgp from "openpgp"`) to read and write messages with; default: the SDK's own |
 
 TLS and proxies are the browser's or the runtime's business.
+
+```ts
+import { PassboltSession } from "@switch-case/passbolt-sdk";
+
+const { fingerprint, armoredKey } = await PassboltSession.fetchServerKey(serverUrl);
+console.log(`Check this fingerprint with your administrator: ${fingerprint}`);
+const session = await PassboltSession.login(serverUrl, privateKeyArmored, passphrase, {
+  serverPublicKey: armoredKey,
+  totpCode: "123456",
+});
+```
 
 ## Reading and writing
 
