@@ -96,6 +96,59 @@ await session.updateGroup(group.id, { name: "Infra", removeMemberIds: [betty.id]
 
 Permission types are `1` read, `7` update, `15` owner, `-1` to revoke.
 
+## Errors
+
+Every failure rejects the promise (or throws, for the synchronous helpers) with an `Error` named
+`PassboltError`, whose `code` says what failed; an API error also has the HTTP `status` and the
+`validationErrors` of the server. `isPassboltError` narrows an unknown error to it:
+
+```ts
+import { isPassboltError } from "@switch-case/passbolt-sdk";
+
+try {
+  await session.getResource(id);
+} catch (error) {
+  if (!isPassboltError(error)) throw error;
+  switch (error.code) {
+    case "NOT_FOUND":
+      console.log("No such resource");
+      break;
+    case "SESSION_EXPIRED":
+      console.log("Log in again");
+      break;
+    default:
+      console.error(error.code, error.status, error.message);
+  }
+}
+```
+
+| `code` | |
+|---|---|
+| `NETWORK`, `TIMEOUT` | The server could not be reached |
+| `LOGIN_FAILED`, `SESSION_EXPIRED` | The login failed, or the session ended |
+| `MFA_REQUIRED`, `MFA_FAILED`, `MFA_UNSUPPORTED`, `MFA_LOCKED_OUT` | The MFA challenge: no `totpCode`, a wrong one, no TOTP provider, too many attempts |
+| `SERVER_IDENTITY_MISMATCH`, `UNTRUSTED_METADATA_KEY` | A pinned key does not match |
+| `INVALID_KEY`, `DECRYPTION_FAILED`, `ENCRYPTION_FAILED`, `CRYPTO` | OpenPGP |
+| `NOT_FOUND` | No such item (an API 404 too) |
+| `API` | Another API error, with its `status` |
+| `INVALID_ARGUMENT` | An argument, or an option, the SDK refuses before any request |
+| `INVALID_RESPONSE`, `CONFIG`, `UNKNOWN` | Anything else |
+
+## Session lifetime
+
+`logout()` ends the session on the server. The session object also holds WebAssembly memory,
+released when it is garbage collected, or at once with `free()`; with TypeScript 5.2+, `using`
+frees it at the end of the block:
+
+```ts
+import { PassboltSession } from "@switch-case/passbolt-sdk";
+
+{
+  using session = await PassboltSession.login(serverUrl, privateKeyArmored, passphrase);
+  console.log(session.userId, session.baseUrl);
+  await session.logout();
+}
+```
 
 ## Methods
 
