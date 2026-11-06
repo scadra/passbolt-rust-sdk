@@ -172,13 +172,12 @@ impl PassboltSession {
         options: Option<LoginOptions>,
     ) -> Result<Self, JsError> {
         let options = options.map_or(JsValue::UNDEFINED, JsValue::from);
-        crate::http::set_csrf_token_provider(
-            option(&options, "csrfTokenProvider").and_then(|provider| provider.dyn_into().ok()),
-        );
+        let csrf_token_provider =
+            option(&options, "csrfTokenProvider").and_then(|provider| provider.dyn_into().ok());
         let mfa_provider = option(&options, "totpCode")
             .and_then(|code| code.as_string())
             .map(|code| Box::new(GivenTotpCode(code)) as Box<dyn passbolt_sdk::MfaProvider>);
-        let http = WasmHttpClient::new();
+        let http = WasmHttpClient::with_csrf_token_provider(csrf_token_provider);
         let pin = |name: &str| {
             option(&options, name)
                 .and_then(|value| value.as_string())
@@ -1366,7 +1365,6 @@ mod wasm_tests {
         .await;
 
         js_sys::Reflect::set(&global, &"fetch".into(), &real_fetch).unwrap();
-        crate::http::set_csrf_token_provider(None);
         if let Err(error) = session {
             let error = JsValue::from(error);
             panic!("{:?}", js_sys::Reflect::get(&error, &"message".into()));
