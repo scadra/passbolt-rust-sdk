@@ -154,35 +154,46 @@ import { PassboltSession } from "@switch-case/passbolt-sdk";
 
 | Area | Methods |
 |---|---|
-| Session | `login`, `fetchServerKey` (static), `logout`, `keepAlive`, `checkAuth`, `metadataKeyFingerprint`, `userId`, `baseUrl` |
-| Resources | `listResources(search?, favoritesOnly?, ownedByMe?)`, `getResource`, `getResourcesByIds`, `getResourceView`, `listResourceViews(search?, withSecrets)`, `decryptResourceSecret`, `createResource`, `updateResource`, `deleteResource`, `deleteResources`, `shareResource`, `moveResource`, `getResourcePermissions` |
-| Folders | `listFolders(search?)`, `getFolder`, `getFolderTree`, `createFolder`, `renameFolder`, `deleteFolder`, `deleteFolderWithContent`, `shareFolder`, `moveFolder`, `getFolderPermissions` |
-| Users | `listUsers(search?, groupId?, adminOnly?)`, `getMe`, `getUser`, `createUser`, `updateUser`, `deleteUser`, `deleteUserDryRun`, `userDeleteBlockers`, `deleteUserWithTransfer` |
-| Groups | `listGroups`, `getGroup`, `createGroup`, `updateGroup`, `deleteGroup`, `deleteGroupDryRun`, `groupDeleteBlockers`, `deleteGroupWithTransfer` |
-| Tags, comments, favorites | `getTags`, `addTagToResource`, `setResourceTags`, `renameTag`, `deleteTag`, `getComments`, `createComment`, `deleteComment`, `addFavorite`, `removeFavorite` |
+| Session | `login`, `fetchServerKey` (static), `logout`, `keepAlive`, `checkAuth`, `metadataKeyFingerprint`, `userId`, `baseUrl`, `free` |
+| Resources | `listResources({ search?, favoritesOnly?, ownedByMe? })`, `getResource`, `getResourcesByIds`, `getResourceView`, `listResourceViews({ search?, withSecrets? })`, `decryptResourceSecret`, `createResource`, `updateResource`, `deleteResource`, `deleteResources`, `shareResource(id, { userIds?, groupIds?, permissionType })`, `moveResource(id, folderId?)`, `getResourcePermissions` |
+| Folders | `listFolders({ search? })`, `getFolder`, `getFolderTree`, `createFolder(name, parentId?)`, `renameFolder`, `deleteFolder`, `deleteFolderWithContent`, `shareFolder(id, { userIds?, groupIds?, permissionType, withContent? })`, `moveFolder(id, folderId?)`, `getFolderPermissions` |
+| Users | `listUsers({ search?, groupId?, adminOnly? })`, `getMe`, `getUser`, `createUser({ username, firstName, lastName, role? })`, `updateUser(id, { firstName?, lastName?, role? })`, `deleteUser`, `deleteUserDryRun`, `userDeleteBlockers`, `deleteUserWithTransfer(id, successorId)` |
+| Groups | `listGroups`, `getGroup`, `createGroup({ name, memberIds?, managerIds? })`, `updateGroup(id, { name?, addMemberIds?, addManagerIds?, removeMemberIds? })`, `deleteGroup`, `deleteGroupDryRun`, `groupDeleteBlockers`, `deleteGroupWithTransfer(id, successorId)` |
+| Tags, comments, favorites | `getTags`, `addTagToResource`, `setResourceTags`, `renameTag`, `deleteTag`, `getComments`, `createComment(resourceId, content, parentId?)`, `deleteComment`, `addFavorite`, `removeFavorite` |
 | Settings | `getPasswordExpirySettings`, `savePasswordExpirySettings`, `deletePasswordExpirySettings`, `listResourceTypes`, `getMetadataTypesSettings`, `saveMetadataTypesSettings`, `getMetadataKeysSettings`, `saveMetadataKeysSettings` |
-| Other | `searchAros`, `checkPasswordPwned` |
+| Other | `searchAros`, `checkPasswordPwned` (a `number`) |
 
-Stateless helpers, outside a session: `encryptMessage(plaintext, publicKeys)`,
-`decryptMessage(armored, privateKey, passphrase)`, `getKeyFingerprint(privateKey)`.
+Stateless helpers, outside a session: `encryptMessage(plaintext, publicKeysArmored)`,
+`decryptMessage(armoredMessage, privateKeyArmored, passphrase)`,
+`getKeyFingerprint(privateKeyArmored)`, `isPassboltError(error)`.
+
+```ts
+import { decryptMessage, encryptMessage } from "@switch-case/passbolt-sdk";
+
+const armored = await encryptMessage(new TextEncoder().encode("hello"), [publicKeyArmored]);
+const plaintext = new TextDecoder().decode(await decryptMessage(armored, privateKeyArmored, passphrase));
+```
 
 ## Types
 
-The declarations type what each method takes and returns, with the field names of the Passbolt
-API (`folder_parent_id`, `groups_users`…), `null` for an absent value and dates as RFC 3339
-strings:
+The declarations type what each method takes and returns. The options of the methods are
+camelCase; the objects of the Passbolt API keep its field names (`folder_parent_id`,
+`groups_users`…), with `null` for an absent value and dates as RFC 3339 strings:
 
 ```ts
 import { PassboltSession } from "@switch-case/passbolt-sdk";
 import type { LoginOptions, NewResource, Resource, ResourceView } from "@switch-case/passbolt-sdk";
 
 const options: LoginOptions = { totpCode: "123456" };
-const session = await PassboltSession.login(serverUrl, privateKey, passphrase, options);
-const views: ResourceView[] = await session.listResourceViews(undefined, false);
+const session = await PassboltSession.login(serverUrl, privateKeyArmored, passphrase, options);
+const views: ResourceView[] = await session.listResourceViews();
 const created: Resource = await session.createResource({ name: "GitHub" } satisfies NewResource);
+console.log(views.length, created.folder_parent_id);
 ```
 
 Main types: `Resource`, `ResourceView`, `SecretData`, `NewResource`, `ResourceChanges`, `Folder`,
 `FolderTreeNode`, `User`, `Group`, `Permission`, `DeleteBlockers`, `Tag`, `Comment`, `Favorite`,
 `Aro`, `ResourceType`, `PasswordExpirySettings`, `MetadataTypesSettings`, `MetadataKeysSettings`,
-`LoginOptions`, `ServerKey`.
+`LoginOptions`, `ServerKey`, `PassboltError`, `PassboltErrorCode`; the options `ResourceFilter`,
+`ResourceViewFilter`, `FolderFilter`, `UserFilter`, `Share`, `FolderShare`, `NewUser`,
+`UserChanges`, `NewGroup`, `GroupChanges`.
