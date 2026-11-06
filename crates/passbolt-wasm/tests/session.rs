@@ -18,7 +18,7 @@
 #![allow(clippy::future_not_send)]
 
 use futures_executor::block_on;
-use passbolt_wasm::{encrypt_message, get_key_fingerprint, PassboltSession};
+use passbolt_wasm::{encrypt_message, get_key_fingerprint, is_passbolt_error, PassboltSession};
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -193,13 +193,20 @@ impl Passbolt {
 }
 
 /// The value, or a panic with the message of the JS error.
-fn ok<T>(result: Result<T, JsError>) -> T {
-    result.unwrap_or_else(|error| panic!("{}", message(error)))
+fn ok<T>(result: Result<T, JsValue>) -> T {
+    result.unwrap_or_else(|error| panic!("{}", message(&error)))
 }
 
-fn message(error: JsError) -> String {
-    let error = JsValue::from(error);
-    js_sys::Reflect::get(&error, &"message".into())
+fn message(error: &JsValue) -> String {
+    js_sys::Reflect::get(error, &"message".into())
+        .unwrap()
+        .as_string()
+        .unwrap_or_default()
+}
+
+/// The `code` of a `PassboltError`.
+fn code(error: &JsValue) -> String {
+    js_sys::Reflect::get(error, &"code".into())
         .unwrap()
         .as_string()
         .unwrap_or_default()
@@ -303,12 +310,50 @@ async fn the_favorite_resources_are_listed() {
     ok(passbolt
         .login()
         .await
-        .list_resources(None, Some(true), None)
+        .list_resources(from_json(&json!({"favoritesOnly": true})))
         .await);
 
     let query = passbolt.queries("GET", "/resources.json")[0].to_string();
     assert!(query.contains("filter[is-favorite]=1"), "{query}");
     assert!(!query.contains("is-owned-by-me"), "{query}");
+}
+
+#[wasm_bindgen_test]
+async fn a_misspelled_filter_is_refused_before_the_request() {
+    let passbolt = Passbolt::new();
+
+    let listed = passbolt
+        .login()
+        .await
+        .list_resources(from_json(&json!({"favoriteOnly": true})))
+        .await;
+
+    let Err(error) = listed else {
+        panic!("listed with a misspelled filter")
+    };
+    assert_eq!(code(&error), "INVALID_ARGUMENT");
+    assert_eq!(
+        passbolt.received("GET", "/resources.json"),
+        Vec::<Value>::new()
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_missing_resource_throws_a_not_found_passbolt_error() {
+    let passbolt = Passbolt::new();
+
+    let resource = passbolt
+        .login()
+        .await
+        .get_resource(RESOURCE_ID.into())
+        .await;
+
+    let Err(error) = resource else {
+        panic!("got a missing resource")
+    };
+    assert!(is_passbolt_error(error.clone()));
+    assert!(error.is_instance_of::<js_sys::Error>());
+    assert_eq!(code(&error), "NOT_FOUND");
 }
 
 #[wasm_bindgen_test]
@@ -357,12 +402,11 @@ async fn a_user_is_created_with_the_id_of_their_role() {
     ok(passbolt
         .login()
         .await
-        .create_user(
-            "betty@passbolt.test".into(),
-            "Betty".into(),
-            "Test".into(),
-            "user".into(),
-        )
+        .create_user(from_json(&json!({
+            "username": "betty@passbolt.test",
+            "firstName": "Betty",
+            "lastName": "Test",
+        })))
         .await);
 
     let created = &passbolt.requests("POST", "/users.json")[0];
@@ -382,7 +426,11 @@ async fn a_group_is_created_with_its_managers_and_members() {
     ok(passbolt
         .login()
         .await
-        .create_group("Ops".into(), vec![BETTY_ID.into()], vec![ADA_ID.into()])
+        .create_group(from_json(&json!({
+            "name": "Ops",
+            "memberIds": [BETTY_ID],
+            "managerIds": [ADA_ID],
+        })))
         .await);
 
     let memberships: Vec<(Value, Value)> = passbolt.requests("POST", "/groups.json")[0]
@@ -416,13 +464,7 @@ async fn a_group_is_renamed() {
     ok(passbolt
         .login()
         .await
-        .update_group(
-            GROUP_ID.into(),
-            Some("Infra".into()),
-            vec![],
-            vec![],
-            vec![],
-        )
+        .update_group(GROUP_ID.into(), from_json(&json!({"name": "Infra"})))
         .await);
 
     assert_eq!(
@@ -586,7 +628,8 @@ async fn invalid_password_expiry_settings_are_refused_before_the_request() {
     let Err(error) = saved else {
         panic!("saved invalid settings")
     };
-    assert!(message(error).starts_with("Invalid settings"));
+    assert!(message(&error).contains("Invalid settings"));
+    assert_eq!(code(&error), "INVALID_ARGUMENT");
     assert_eq!(
         passbolt.received("POST", "/password-expiry/settings.json"),
         Vec::<Value>::new()

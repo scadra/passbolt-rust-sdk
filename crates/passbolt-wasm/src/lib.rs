@@ -24,7 +24,7 @@ use passbolt_sdk::config::SdkConfig;
 use passbolt_sdk::error::PassboltError;
 use passbolt_sdk::types::{SecretData, TotpData};
 use passbolt_sdk::PassboltSdk;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use crate::http::WasmHttpClient;
@@ -43,14 +43,114 @@ extern "C" {
 
 // ── Error conversion ─────────────────────────────────────────────────────────
 
-fn to_js_error(e: PassboltError) -> JsError {
-    JsError::new(&e.to_string())
+/// The `name` of the errors the SDK throws, which `isPassboltError` checks.
+const ERROR_NAME: &str = "PassboltError";
+
+/// The `code` of the `PassboltError` thrown for `error`: one of `PassboltErrorCode` in
+/// `types.d.ts`. An API 404 is `NOT_FOUND`, as a resource the SDK did not find.
+const fn error_code(error: &PassboltError) -> &'static str {
+    use passbolt_sdk::error::{AuthError, CryptoError, TransportError};
+
+    match error {
+        PassboltError::Transport(TransportError::Timeout(_)) => "TIMEOUT",
+        PassboltError::Transport(_) => "NETWORK",
+        PassboltError::Auth(auth) => match auth {
+            AuthError::MfaRequired => "MFA_REQUIRED",
+            AuthError::MfaFailed { .. } => "MFA_FAILED",
+            AuthError::MfaUnsupported { .. } => "MFA_UNSUPPORTED",
+            AuthError::MfaLockedOut(_) => "MFA_LOCKED_OUT",
+            AuthError::SessionExpired => "SESSION_EXPIRED",
+            AuthError::ServerIdentityMismatch(_) | AuthError::KeyCrossCheckFailed => {
+                "SERVER_IDENTITY_MISMATCH"
+            }
+            _ => "LOGIN_FAILED",
+        },
+        PassboltError::Crypto(crypto) => match crypto {
+            CryptoError::KeyParse(_) => "INVALID_KEY",
+            CryptoError::Decrypt(_) => "DECRYPTION_FAILED",
+            CryptoError::Encrypt(_) => "ENCRYPTION_FAILED",
+            CryptoError::UntrustedMetadataKey { .. } => "UNTRUSTED_METADATA_KEY",
+            _ => "CRYPTO",
+        },
+        PassboltError::Api(api) if api.status == 404 => "NOT_FOUND",
+        PassboltError::Api(_) => "API",
+        PassboltError::NotFound(_) => "NOT_FOUND",
+        PassboltError::Json(_) => "INVALID_RESPONSE",
+        PassboltError::Config(_) => "CONFIG",
+        PassboltError::InvalidArgument(_) => "INVALID_ARGUMENT",
+        _ => "UNKNOWN",
+    }
+}
+
+/// A JS `Error` named `PassboltError`, with its `code`, and for an API error the HTTP `status`
+/// and the `validationErrors` of the server.
+fn to_js_error(error: impl Into<PassboltError>) -> JsValue {
+    let error = error.into();
+    let js_error = js_sys::Error::new(&error.to_string());
+    js_error.set_name(ERROR_NAME);
+    let set = |name: &str, value: &JsValue| {
+        let _ = js_sys::Reflect::set(&js_error, &JsValue::from_str(name), value);
+    };
+    set("code", &JsValue::from_str(error_code(&error)));
+    if let PassboltError::Api(api) = &error {
+        set("status", &JsValue::from(api.status));
+        if let Some(validation_errors) = &api.validation_errors {
+            if let Ok(value) = to_js_value(validation_errors) {
+                set("validationErrors", &value);
+            }
+        }
+    }
+    js_error.into()
+}
+
+fn invalid_argument(message: String) -> JsValue {
+    to_js_error(PassboltError::InvalidArgument(message))
+}
+
+/// Whether `error` is an error the SDK threw, a `PassboltError` with a `code`.
+#[must_use]
+#[wasm_bindgen(
+    js_name = "isPassboltError",
+    unchecked_return_type = "error is PassboltError"
+)]
+pub fn is_passbolt_error(#[wasm_bindgen(unchecked_param_type = "unknown")] error: JsValue) -> bool {
+    error
+        .dyn_ref::<js_sys::Error>()
+        .is_some_and(|error| error.name() == ERROR_NAME)
 }
 
 /// Plain JS objects, not `Map`s: what JSON gives, so `metadata` and `secret` read as objects.
-fn to_js_value<T: serde::Serialize>(val: &T) -> Result<JsValue, JsError> {
+fn to_js_value<T: serde::Serialize>(val: &T) -> Result<JsValue, JsValue> {
     val.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
-        .map_err(|error| JsError::new(&error.to_string()))
+        .map_err(|error| to_js_error(PassboltError::Other(error.to_string())))
+}
+
+/// The `T` a JS argument gives.
+fn from_js<T: serde::de::DeserializeOwned>(value: JsValue, what: &str) -> Result<T, JsValue> {
+    serde_wasm_bindgen::from_value(value)
+        .map_err(|error| invalid_argument(format!("Invalid {what}: {error}")))
+}
+
+/// The `T` an options object gives, through JSON: `serde_wasm_bindgen` reads the fields of `T`
+/// only, so a misspelled option would be dropped rather than refused by `deny_unknown_fields`.
+fn object_from_js<T: serde::de::DeserializeOwned>(
+    value: JsValue,
+    what: &str,
+) -> Result<T, JsValue> {
+    let json: serde_json::Value = from_js(value, what)?;
+    serde_json::from_value(json)
+        .map_err(|error| invalid_argument(format!("Invalid {what}: {error}")))
+}
+
+/// The options object of a method: `undefined` or `null` give the defaults.
+fn options_from_js<T: serde::de::DeserializeOwned + Default>(
+    value: JsValue,
+    what: &str,
+) -> Result<T, JsValue> {
+    if value.is_undefined() || value.is_null() {
+        return Ok(T::default());
+    }
+    object_from_js(value, what)
 }
 
 /// The MFA code given at login: verified once, when the server asks.
@@ -101,6 +201,96 @@ impl From<SecretData> for JsSecretData {
             totp: secret.totp,
         }
     }
+}
+
+/// `listResources(filter)`.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ResourceFilter {
+    search: Option<String>,
+    favorites_only: Option<bool>,
+    owned_by_me: Option<bool>,
+}
+
+/// `listResourceViews(filter)`.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ResourceViewFilter {
+    search: Option<String>,
+    with_secrets: Option<bool>,
+}
+
+/// `listFolders(filter)`.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FolderFilter {
+    search: Option<String>,
+}
+
+/// `listUsers(filter)`.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UserFilter {
+    search: Option<String>,
+    group_id: Option<String>,
+    admin_only: Option<bool>,
+}
+
+/// `shareResource(id, share)`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Share {
+    user_ids: Option<Vec<String>>,
+    group_ids: Option<Vec<String>>,
+    permission_type: i32,
+}
+
+/// `shareFolder(id, share)`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FolderShare {
+    user_ids: Option<Vec<String>>,
+    group_ids: Option<Vec<String>>,
+    permission_type: i32,
+    with_content: Option<bool>,
+}
+
+/// `createUser(newUser)`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NewUser {
+    username: String,
+    first_name: String,
+    last_name: String,
+    role: Option<String>,
+}
+
+/// `updateUser(id, changes)`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UserChanges {
+    first_name: Option<String>,
+    last_name: Option<String>,
+    role: Option<String>,
+}
+
+/// `createGroup(newGroup)`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NewGroup {
+    name: String,
+    member_ids: Option<Vec<String>>,
+    manager_ids: Option<Vec<String>>,
+}
+
+/// `updateGroup(id, changes)`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct GroupChanges {
+    name: Option<String>,
+    add_member_ids: Option<Vec<String>>,
+    add_manager_ids: Option<Vec<String>>,
+    remove_member_ids: Option<Vec<String>>,
 }
 
 /// The pins are the armored server key and the metadata key fingerprint; empty for none.
@@ -166,11 +356,11 @@ impl PassboltSession {
     ///   write messages with it, as the browser extension does. Default: rpgp.
     #[wasm_bindgen]
     pub async fn login(
-        server_url: String,
-        private_key_armored: String,
+        #[wasm_bindgen(js_name = "serverUrl")] server_url: String,
+        #[wasm_bindgen(js_name = "privateKeyArmored")] private_key_armored: String,
         passphrase: String,
         options: Option<LoginOptions>,
-    ) -> Result<Self, JsError> {
+    ) -> Result<Self, JsValue> {
         let options = options.map_or(JsValue::UNDEFINED, JsValue::from);
         let csrf_token_provider =
             option(&options, "csrfTokenProvider").and_then(|provider| provider.dyn_into().ok());
@@ -202,7 +392,9 @@ impl PassboltSession {
     /// The server public key to pin, `{ fingerprint, armoredKey }`, the fingerprint computed
     /// from the key: show it to the user, then pass `armoredKey` as `serverPublicKey`.
     #[wasm_bindgen(js_name = "fetchServerKey", unchecked_return_type = "ServerKey")]
-    pub async fn fetch_server_key(server_url: String) -> Result<JsValue, JsError> {
+    pub async fn fetch_server_key(
+        #[wasm_bindgen(js_name = "serverUrl")] server_url: String,
+    ) -> Result<JsValue, JsValue> {
         let http = WasmHttpClient::new();
         let (fingerprint, armored_key) = passbolt_sdk::auth::fetch_server_key(
             &http,
@@ -217,7 +409,7 @@ impl PassboltSession {
     /// The fingerprint of the active shared metadata key, to pin as `metadataKeyFingerprint`;
     /// `undefined` without one.
     #[wasm_bindgen(js_name = "metadataKeyFingerprint")]
-    pub async fn metadata_key_fingerprint(&self) -> Result<Option<String>, JsError> {
+    pub async fn metadata_key_fingerprint(&self) -> Result<Option<String>, JsValue> {
         let metadata_keys = self.client.metadata_keys().await.map_err(to_js_error)?;
         Ok(metadata_keys.active_fingerprint())
     }
@@ -242,13 +434,13 @@ impl PassboltSession {
 
     /// Keep the session alive, as the browser extension does every few minutes.
     #[wasm_bindgen(js_name = "keepAlive")]
-    pub async fn keep_alive(&self) -> Result<(), JsError> {
+    pub async fn keep_alive(&self) -> Result<(), JsValue> {
         self.client.keep_alive().await.map_err(to_js_error)
     }
 
     /// Check if the session is still valid.
     #[wasm_bindgen(js_name = "checkAuth")]
-    pub async fn check_auth(&self) -> Result<bool, JsError> {
+    pub async fn check_auth(&self) -> Result<bool, JsValue> {
         self.client.check_auth_status().await.map_err(to_js_error)
     }
 
@@ -259,14 +451,13 @@ impl PassboltSession {
     #[wasm_bindgen(js_name = "listResources", unchecked_return_type = "Resource[]")]
     pub async fn list_resources(
         &self,
-        search: Option<String>,
-        favorites_only: Option<bool>,
-        owned_by_me: Option<bool>,
-    ) -> Result<JsValue, JsError> {
+        #[wasm_bindgen(unchecked_optional_param_type = "ResourceFilter")] filter: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let filter: ResourceFilter = options_from_js(filter, "filter")?;
         let query = passbolt_sdk::ResourceQuery {
-            search,
-            favorites_only: favorites_only.unwrap_or_default(),
-            owned_by_me: owned_by_me.unwrap_or_default(),
+            search: filter.search,
+            favorites_only: filter.favorites_only.unwrap_or_default(),
+            owned_by_me: filter.owned_by_me.unwrap_or_default(),
             ..Default::default()
         };
         let resources = self
@@ -279,14 +470,14 @@ impl PassboltSession {
 
     /// Get a single resource by ID.
     #[wasm_bindgen(js_name = "getResource", unchecked_return_type = "Resource")]
-    pub async fn get_resource(&self, id: String) -> Result<JsValue, JsError> {
+    pub async fn get_resource(&self, id: String) -> Result<JsValue, JsValue> {
         let resource = self.client.get_resource(&id).await.map_err(to_js_error)?;
         to_js_value(&resource)
     }
 
     /// Get the resources of these IDs.
     #[wasm_bindgen(js_name = "getResourcesByIds", unchecked_return_type = "Resource[]")]
-    pub async fn get_resources_by_ids(&self, ids: Vec<String>) -> Result<JsValue, JsError> {
+    pub async fn get_resources_by_ids(&self, ids: Vec<String>) -> Result<JsValue, JsValue> {
         let resources = self
             .client
             .get_resources_by_ids(&ids)
@@ -300,7 +491,7 @@ impl PassboltSession {
         js_name = "getResourcePermissions",
         unchecked_return_type = "Permission[]"
     )]
-    pub async fn get_resource_permissions(&self, id: String) -> Result<JsValue, JsError> {
+    pub async fn get_resource_permissions(&self, id: String) -> Result<JsValue, JsValue> {
         let permissions = self
             .client
             .get_resource_permissions(&id)
@@ -316,11 +507,9 @@ impl PassboltSession {
     )]
     pub async fn decrypt_resource_secret(
         &self,
-        #[wasm_bindgen(unchecked_param_type = "Resource")] resource_js: JsValue,
-    ) -> Result<JsValue, JsError> {
-        let resource: passbolt_sdk::types::Resource =
-            serde_wasm_bindgen::from_value(resource_js)
-                .map_err(|error| JsError::new(&format!("Invalid resource: {error}")))?;
+        #[wasm_bindgen(unchecked_param_type = "Resource")] resource: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let resource: passbolt_sdk::types::Resource = from_js(resource, "resource")?;
         let secret = self
             .client
             .decrypt_resource_secret(&resource)
@@ -332,7 +521,7 @@ impl PassboltSession {
     /// A resource with its v5 metadata and its secret decrypted, for every resource type:
     /// `name`, `username`, `uris`, `description`, `password`, `metadata`, `secret`…
     #[wasm_bindgen(js_name = "getResourceView", unchecked_return_type = "ResourceView")]
-    pub async fn get_resource_view(&self, id: String) -> Result<JsValue, JsError> {
+    pub async fn get_resource_view(&self, id: String) -> Result<JsValue, JsValue> {
         let view = passbolt_sdk::resource::get::get_resource_view(&self.client, &id)
             .await
             .map_err(to_js_error)?;
@@ -347,11 +536,12 @@ impl PassboltSession {
     )]
     pub async fn list_resource_views(
         &self,
-        search: Option<String>,
-        with_secrets: bool,
-    ) -> Result<JsValue, JsError> {
+        #[wasm_bindgen(unchecked_optional_param_type = "ResourceViewFilter")] filter: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let filter: ResourceViewFilter = options_from_js(filter, "filter")?;
+        let with_secrets = filter.with_secrets.unwrap_or_default();
         let query = passbolt_sdk::ResourceQuery {
-            search,
+            search: filter.search,
             ..Default::default()
         };
         let views = passbolt_sdk::resource::list::list_resources(
@@ -371,11 +561,11 @@ impl PassboltSession {
     #[wasm_bindgen(js_name = "createResource", unchecked_return_type = "Resource")]
     pub async fn create_resource(
         &self,
-        #[wasm_bindgen(unchecked_param_type = "NewResource")] new_resource: JsValue,
-    ) -> Result<JsValue, JsError> {
+        #[wasm_bindgen(js_name = "newResource", unchecked_param_type = "NewResource")]
+        new_resource: JsValue,
+    ) -> Result<JsValue, JsValue> {
         let new_resource: passbolt_sdk::resource::create::NewResource =
-            serde_wasm_bindgen::from_value(new_resource)
-                .map_err(|error| JsError::new(&format!("Invalid resource: {error}")))?;
+            from_js(new_resource, "resource")?;
         let resource = passbolt_sdk::resource::create::create_resource(&self.client, &new_resource)
             .await
             .map_err(to_js_error)?;
@@ -389,10 +579,8 @@ impl PassboltSession {
         &self,
         id: String,
         #[wasm_bindgen(unchecked_param_type = "ResourceChanges")] changes: JsValue,
-    ) -> Result<JsValue, JsError> {
-        let changes: passbolt_sdk::resource::update::ResourceChanges =
-            serde_wasm_bindgen::from_value(changes)
-                .map_err(|error| JsError::new(&format!("Invalid changes: {error}")))?;
+    ) -> Result<JsValue, JsValue> {
+        let changes: passbolt_sdk::resource::update::ResourceChanges = from_js(changes, "changes")?;
         let resource = passbolt_sdk::resource::update::update_resource(&self.client, &id, &changes)
             .await
             .map_err(to_js_error)?;
@@ -404,16 +592,15 @@ impl PassboltSession {
     pub async fn share_resource(
         &self,
         id: String,
-        user_ids: Vec<String>,
-        group_ids: Vec<String>,
-        permission_type: i32,
-    ) -> Result<(), JsError> {
+        #[wasm_bindgen(unchecked_param_type = "Share")] share: JsValue,
+    ) -> Result<(), JsValue> {
+        let share: Share = object_from_js(share, "share")?;
         passbolt_sdk::resource::share::share_resource(
             &self.client,
             &id,
-            &user_ids,
-            &group_ids,
-            permission_type,
+            &share.user_ids.unwrap_or_default(),
+            &share.group_ids.unwrap_or_default(),
+            share.permission_type,
         )
         .await
         .map_err(to_js_error)
@@ -424,18 +611,16 @@ impl PassboltSession {
     pub async fn share_folder(
         &self,
         id: String,
-        user_ids: Vec<String>,
-        group_ids: Vec<String>,
-        permission_type: i32,
-        with_content: bool,
-    ) -> Result<(), JsError> {
+        #[wasm_bindgen(unchecked_param_type = "FolderShare")] share: JsValue,
+    ) -> Result<(), JsValue> {
+        let share: FolderShare = object_from_js(share, "share")?;
         passbolt_sdk::folder::share::share_folder(
             &self.client,
             &id,
-            &user_ids,
-            &group_ids,
-            permission_type,
-            with_content,
+            &share.user_ids.unwrap_or_default(),
+            &share.group_ids.unwrap_or_default(),
+            share.permission_type,
+            share.with_content.unwrap_or_default(),
         )
         .await
         .map_err(to_js_error)
@@ -446,8 +631,8 @@ impl PassboltSession {
     pub async fn move_resource(
         &self,
         id: String,
-        folder_id: Option<String>,
-    ) -> Result<(), JsError> {
+        #[wasm_bindgen(js_name = "folderId")] folder_id: Option<String>,
+    ) -> Result<(), JsValue> {
         self.client
             .move_resource(&id, folder_id.as_deref())
             .await
@@ -456,7 +641,11 @@ impl PassboltSession {
 
     /// Move a folder into another one, or to the root without one.
     #[wasm_bindgen(js_name = "moveFolder")]
-    pub async fn move_folder(&self, id: String, folder_id: Option<String>) -> Result<(), JsError> {
+    pub async fn move_folder(
+        &self,
+        id: String,
+        #[wasm_bindgen(js_name = "folderId")] folder_id: Option<String>,
+    ) -> Result<(), JsValue> {
         self.client
             .move_folder(&id, folder_id.as_deref())
             .await
@@ -465,13 +654,13 @@ impl PassboltSession {
 
     /// Delete a resource.
     #[wasm_bindgen(js_name = "deleteResource")]
-    pub async fn delete_resource(&self, id: String) -> Result<(), JsError> {
+    pub async fn delete_resource(&self, id: String) -> Result<(), JsValue> {
         self.client.delete_resource(&id).await.map_err(to_js_error)
     }
 
     /// Delete several resources.
     #[wasm_bindgen(js_name = "deleteResources")]
-    pub async fn delete_resources(&self, ids: Vec<String>) -> Result<(), JsError> {
+    pub async fn delete_resources(&self, ids: Vec<String>) -> Result<(), JsValue> {
         self.client
             .delete_resources(&ids)
             .await
@@ -482,7 +671,10 @@ impl PassboltSession {
 
     /// Add a resource to the favorites; the favorite's `id` removes it.
     #[wasm_bindgen(js_name = "addFavorite", unchecked_return_type = "Favorite")]
-    pub async fn add_favorite(&self, resource_id: String) -> Result<JsValue, JsError> {
+    pub async fn add_favorite(
+        &self,
+        #[wasm_bindgen(js_name = "resourceId")] resource_id: String,
+    ) -> Result<JsValue, JsValue> {
         let favorite = self
             .client
             .add_favorite(&resource_id)
@@ -493,7 +685,10 @@ impl PassboltSession {
 
     /// Remove a favorite.
     #[wasm_bindgen(js_name = "removeFavorite")]
-    pub async fn remove_favorite(&self, favorite_id: String) -> Result<(), JsError> {
+    pub async fn remove_favorite(
+        &self,
+        #[wasm_bindgen(js_name = "favoriteId")] favorite_id: String,
+    ) -> Result<(), JsValue> {
         self.client
             .remove_favorite(&favorite_id)
             .await
@@ -504,9 +699,13 @@ impl PassboltSession {
 
     /// List all folders, or those whose name holds `search`.
     #[wasm_bindgen(js_name = "listFolders", unchecked_return_type = "Folder[]")]
-    pub async fn list_folders(&self, search: Option<String>) -> Result<JsValue, JsError> {
+    pub async fn list_folders(
+        &self,
+        #[wasm_bindgen(unchecked_optional_param_type = "FolderFilter")] filter: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let filter: FolderFilter = options_from_js(filter, "filter")?;
         let query = passbolt_sdk::FolderQuery {
-            search,
+            search: filter.search,
             ..Default::default()
         };
         let folders = self.client.get_folders(query).await.map_err(to_js_error)?;
@@ -515,19 +714,19 @@ impl PassboltSession {
 
     /// Get a single folder by ID.
     #[wasm_bindgen(js_name = "getFolder", unchecked_return_type = "Folder")]
-    pub async fn get_folder(&self, id: String) -> Result<JsValue, JsError> {
+    pub async fn get_folder(&self, id: String) -> Result<JsValue, JsValue> {
         let folder = self.client.get_folder(&id).await.map_err(to_js_error)?;
         to_js_value(&folder)
     }
 
-    /// Create a folder, at the root or in `folderParentId`; in a parent folder it gets the
+    /// Create a folder, at the root or in `parentId`; in a parent folder it gets the
     /// parent's permissions.
     #[wasm_bindgen(js_name = "createFolder", unchecked_return_type = "Folder")]
     pub async fn create_folder(
         &self,
         name: String,
-        folder_parent_id: Option<String>,
-    ) -> Result<JsValue, JsError> {
+        #[wasm_bindgen(js_name = "parentId")] folder_parent_id: Option<String>,
+    ) -> Result<JsValue, JsValue> {
         let folder = passbolt_sdk::folder::create::create_folder(
             &self.client,
             &name,
@@ -540,7 +739,7 @@ impl PassboltSession {
 
     /// Rename a folder.
     #[wasm_bindgen(js_name = "renameFolder", unchecked_return_type = "Folder")]
-    pub async fn rename_folder(&self, id: String, name: String) -> Result<JsValue, JsError> {
+    pub async fn rename_folder(&self, id: String, name: String) -> Result<JsValue, JsValue> {
         let payload = passbolt_sdk::types::UpdateFolderPayload { name };
         let folder = self
             .client
@@ -552,13 +751,13 @@ impl PassboltSession {
 
     /// Delete a folder; its content moves to the root.
     #[wasm_bindgen(js_name = "deleteFolder")]
-    pub async fn delete_folder(&self, id: String) -> Result<(), JsError> {
+    pub async fn delete_folder(&self, id: String) -> Result<(), JsValue> {
         self.client.delete_folder(&id).await.map_err(to_js_error)
     }
 
     /// Delete a folder with its sub-folders and the resources the user may delete in them.
     #[wasm_bindgen(js_name = "deleteFolderWithContent")]
-    pub async fn delete_folder_with_content(&self, id: String) -> Result<(), JsError> {
+    pub async fn delete_folder_with_content(&self, id: String) -> Result<(), JsValue> {
         self.client
             .delete_folder_with_content(&id)
             .await
@@ -570,7 +769,7 @@ impl PassboltSession {
         js_name = "getFolderPermissions",
         unchecked_return_type = "Permission[]"
     )]
-    pub async fn get_folder_permissions(&self, id: String) -> Result<JsValue, JsError> {
+    pub async fn get_folder_permissions(&self, id: String) -> Result<JsValue, JsValue> {
         let permissions = self
             .client
             .get_folder_permissions(&id)
@@ -581,7 +780,7 @@ impl PassboltSession {
 
     /// The folders as a tree: `[{ folder, children: [...] }]`, the root folders first.
     #[wasm_bindgen(js_name = "getFolderTree", unchecked_return_type = "FolderTreeNode[]")]
-    pub async fn get_folder_tree(&self) -> Result<JsValue, JsError> {
+    pub async fn get_folder_tree(&self) -> Result<JsValue, JsValue> {
         let folders = self
             .client
             .get_folders(passbolt_sdk::FolderQuery::default())
@@ -596,14 +795,13 @@ impl PassboltSession {
     #[wasm_bindgen(js_name = "listUsers", unchecked_return_type = "User[]")]
     pub async fn list_users(
         &self,
-        search: Option<String>,
-        group_id: Option<String>,
-        admin_only: Option<bool>,
-    ) -> Result<JsValue, JsError> {
+        #[wasm_bindgen(unchecked_optional_param_type = "UserFilter")] filter: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let filter: UserFilter = options_from_js(filter, "filter")?;
         let query = passbolt_sdk::UserQuery {
-            search,
-            group_ids: group_id.into_iter().collect(),
-            admin_only: admin_only.unwrap_or_default(),
+            search: filter.search,
+            group_ids: filter.group_id.into_iter().collect(),
+            admin_only: filter.admin_only.unwrap_or_default(),
             ..Default::default()
         };
         let users = self.client.get_users(query).await.map_err(to_js_error)?;
@@ -612,47 +810,46 @@ impl PassboltSession {
 
     /// Get a user by ID.
     #[wasm_bindgen(js_name = "getUser", unchecked_return_type = "User")]
-    pub async fn get_user(&self, id: String) -> Result<JsValue, JsError> {
+    pub async fn get_user(&self, id: String) -> Result<JsValue, JsValue> {
         let user = self.client.get_user(&id).await.map_err(to_js_error)?;
         to_js_value(&user)
     }
 
-    /// Create a user with the role named `role` (`user` or `admin`).
+    /// Create a user from `{ username, firstName, lastName, role? }`, the role `user` (default)
+    /// or `admin`.
     #[wasm_bindgen(js_name = "createUser", unchecked_return_type = "User")]
     pub async fn create_user(
         &self,
-        username: String,
-        first_name: String,
-        last_name: String,
-        role: String,
-    ) -> Result<JsValue, JsError> {
+        #[wasm_bindgen(js_name = "newUser", unchecked_param_type = "NewUser")] new_user: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let new_user: NewUser = object_from_js(new_user, "user")?;
         let user = passbolt_sdk::user::create::create_user(
             &self.client,
-            &username,
-            &first_name,
-            &last_name,
-            &role,
+            &new_user.username,
+            &new_user.first_name,
+            &new_user.last_name,
+            new_user.role.as_deref().unwrap_or("user"),
         )
         .await
         .map_err(to_js_error)?;
         to_js_value(&user)
     }
 
-    /// Update a user's names or role; `undefined` keeps the value.
+    /// Update a user's names or role from `{ firstName?, lastName?, role? }`; a missing field
+    /// keeps its value.
     #[wasm_bindgen(js_name = "updateUser", unchecked_return_type = "User")]
     pub async fn update_user(
         &self,
         id: String,
-        first_name: Option<String>,
-        last_name: Option<String>,
-        role: Option<String>,
-    ) -> Result<JsValue, JsError> {
+        #[wasm_bindgen(unchecked_param_type = "UserChanges")] changes: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let changes: UserChanges = object_from_js(changes, "changes")?;
         let user = passbolt_sdk::user::update::update_user(
             &self.client,
             &id,
-            first_name.as_deref(),
-            last_name.as_deref(),
-            role.as_deref(),
+            changes.first_name.as_deref(),
+            changes.last_name.as_deref(),
+            changes.role.as_deref(),
         )
         .await
         .map_err(to_js_error)?;
@@ -661,7 +858,7 @@ impl PassboltSession {
 
     /// Delete a user.
     #[wasm_bindgen(js_name = "deleteUser")]
-    pub async fn delete_user(&self, id: String) -> Result<(), JsError> {
+    pub async fn delete_user(&self, id: String) -> Result<(), JsValue> {
         self.client.delete_user(&id).await.map_err(to_js_error)
     }
 
@@ -670,7 +867,7 @@ impl PassboltSession {
         js_name = "deleteUserDryRun",
         unchecked_return_type = "UserDeleteDryRun"
     )]
-    pub async fn delete_user_dry_run(&self, id: String) -> Result<JsValue, JsError> {
+    pub async fn delete_user_dry_run(&self, id: String) -> Result<JsValue, JsValue> {
         let dry_run = self
             .client
             .delete_user_dry_run(&id)
@@ -681,7 +878,7 @@ impl PassboltSession {
 
     /// Get the currently logged-in user.
     #[wasm_bindgen(js_name = "getMe", unchecked_return_type = "User")]
-    pub async fn get_me(&self) -> Result<JsValue, JsError> {
+    pub async fn get_me(&self) -> Result<JsValue, JsValue> {
         let me = self.client.get_me().await.map_err(to_js_error)?;
         to_js_value(&me)
     }
@@ -692,7 +889,7 @@ impl PassboltSession {
         js_name = "userDeleteBlockers",
         unchecked_return_type = "DeleteBlockers"
     )]
-    pub async fn user_delete_blockers(&self, id: String) -> Result<JsValue, JsError> {
+    pub async fn user_delete_blockers(&self, id: String) -> Result<JsValue, JsValue> {
         let blockers = self
             .client
             .user_delete_blockers(&id)
@@ -707,8 +904,8 @@ impl PassboltSession {
     pub async fn delete_user_with_transfer(
         &self,
         id: String,
-        successor_id: String,
-    ) -> Result<(), JsError> {
+        #[wasm_bindgen(js_name = "successorId")] successor_id: String,
+    ) -> Result<(), JsValue> {
         let blockers = self
             .client
             .user_delete_blockers(&id)
@@ -728,7 +925,7 @@ impl PassboltSession {
 
     /// List all groups.
     #[wasm_bindgen(js_name = "listGroups", unchecked_return_type = "Group[]")]
-    pub async fn list_groups(&self) -> Result<JsValue, JsError> {
+    pub async fn list_groups(&self) -> Result<JsValue, JsValue> {
         let groups = self
             .client
             .get_groups(passbolt_sdk::GroupQuery::default())
@@ -739,43 +936,46 @@ impl PassboltSession {
 
     /// Get a group by ID.
     #[wasm_bindgen(js_name = "getGroup", unchecked_return_type = "Group")]
-    pub async fn get_group(&self, id: String) -> Result<JsValue, JsError> {
+    pub async fn get_group(&self, id: String) -> Result<JsValue, JsValue> {
         let group = self.client.get_group(&id).await.map_err(to_js_error)?;
         to_js_value(&group)
     }
 
-    /// Create a group; a manager is also a member.
+    /// Create a group from `{ name, memberIds?, managerIds? }`; a manager is also a member.
     #[wasm_bindgen(js_name = "createGroup", unchecked_return_type = "Group")]
     pub async fn create_group(
         &self,
-        name: String,
-        member_ids: Vec<String>,
-        manager_ids: Vec<String>,
-    ) -> Result<JsValue, JsError> {
+        #[wasm_bindgen(js_name = "newGroup", unchecked_param_type = "NewGroup")] new_group: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let new_group: NewGroup = object_from_js(new_group, "group")?;
         let group = passbolt_sdk::group::create::create_group(
             &self.client,
-            &name,
-            &member_ids,
-            &manager_ids,
+            &new_group.name,
+            &new_group.member_ids.unwrap_or_default(),
+            &new_group.manager_ids.unwrap_or_default(),
         )
         .await
         .map_err(to_js_error)?;
         to_js_value(&group)
     }
 
-    /// Rename a group and change its members: the removed ones first, then the added ones,
-    /// who get the secrets of the group's resources. Giving a user the role they have, or
-    /// removing a non-member, is an error.
+    /// Rename a group and change its members, from `{ name?, addMemberIds?, addManagerIds?,
+    /// removeMemberIds? }`: the removed ones first, then the added ones, who get the secrets
+    /// of the group's resources. Giving a user the role they have, or removing a non-member,
+    /// is an error.
     #[wasm_bindgen(js_name = "updateGroup", unchecked_return_type = "Group")]
     pub async fn update_group(
         &self,
         id: String,
-        name: Option<String>,
-        add_member_ids: Vec<String>,
-        add_manager_ids: Vec<String>,
-        remove_member_ids: Vec<String>,
-    ) -> Result<JsValue, JsError> {
+        #[wasm_bindgen(unchecked_param_type = "GroupChanges")] changes: JsValue,
+    ) -> Result<JsValue, JsValue> {
         use passbolt_sdk::group::update::update_group;
+
+        let changes: GroupChanges = object_from_js(changes, "changes")?;
+        let name = changes.name;
+        let add_member_ids = changes.add_member_ids.unwrap_or_default();
+        let add_manager_ids = changes.add_manager_ids.unwrap_or_default();
+        let remove_member_ids = changes.remove_member_ids.unwrap_or_default();
 
         let adds = !add_member_ids.is_empty() || !add_manager_ids.is_empty();
         let mut name = name.as_deref();
@@ -807,7 +1007,7 @@ impl PassboltSession {
 
     /// Delete a group.
     #[wasm_bindgen(js_name = "deleteGroup")]
-    pub async fn delete_group(&self, id: String) -> Result<(), JsError> {
+    pub async fn delete_group(&self, id: String) -> Result<(), JsValue> {
         self.client.delete_group(&id).await.map_err(to_js_error)
     }
 
@@ -816,7 +1016,7 @@ impl PassboltSession {
         js_name = "deleteGroupDryRun",
         unchecked_return_type = "GroupDeleteDryRun"
     )]
-    pub async fn delete_group_dry_run(&self, id: String) -> Result<JsValue, JsError> {
+    pub async fn delete_group_dry_run(&self, id: String) -> Result<JsValue, JsValue> {
         let dry_run = self
             .client
             .delete_group_dry_run(&id)
@@ -831,7 +1031,7 @@ impl PassboltSession {
         js_name = "groupDeleteBlockers",
         unchecked_return_type = "DeleteBlockers"
     )]
-    pub async fn group_delete_blockers(&self, id: String) -> Result<JsValue, JsError> {
+    pub async fn group_delete_blockers(&self, id: String) -> Result<JsValue, JsValue> {
         let blockers = self
             .client
             .group_delete_blockers(&id)
@@ -846,8 +1046,8 @@ impl PassboltSession {
     pub async fn delete_group_with_transfer(
         &self,
         id: String,
-        successor_id: String,
-    ) -> Result<(), JsError> {
+        #[wasm_bindgen(js_name = "successorId")] successor_id: String,
+    ) -> Result<(), JsValue> {
         let blockers = self
             .client
             .group_delete_blockers(&id)
@@ -867,7 +1067,7 @@ impl PassboltSession {
 
     /// List all tags.
     #[wasm_bindgen(js_name = "getTags", unchecked_return_type = "Tag[]")]
-    pub async fn get_tags(&self) -> Result<JsValue, JsError> {
+    pub async fn get_tags(&self) -> Result<JsValue, JsValue> {
         let tags = self.client.get_tags().await.map_err(to_js_error)?;
         to_js_value(&tags)
     }
@@ -876,9 +1076,9 @@ impl PassboltSession {
     #[wasm_bindgen(js_name = "addTagToResource", unchecked_return_type = "Tag[]")]
     pub async fn add_tag_to_resource(
         &self,
-        resource_id: String,
+        #[wasm_bindgen(js_name = "resourceId")] resource_id: String,
         slug: String,
-    ) -> Result<JsValue, JsError> {
+    ) -> Result<JsValue, JsValue> {
         let tags = self
             .client
             .add_tag_to_resource(&resource_id, &slug)
@@ -891,9 +1091,9 @@ impl PassboltSession {
     #[wasm_bindgen(js_name = "setResourceTags", unchecked_return_type = "Tag[]")]
     pub async fn set_resource_tags(
         &self,
-        resource_id: String,
+        #[wasm_bindgen(js_name = "resourceId")] resource_id: String,
         slugs: Vec<String>,
-    ) -> Result<JsValue, JsError> {
+    ) -> Result<JsValue, JsValue> {
         let tags = self
             .client
             .update_resource_tags(&resource_id, &slugs)
@@ -904,7 +1104,7 @@ impl PassboltSession {
 
     /// Rename a tag.
     #[wasm_bindgen(js_name = "renameTag", unchecked_return_type = "Tag")]
-    pub async fn rename_tag(&self, id: String, slug: String) -> Result<JsValue, JsError> {
+    pub async fn rename_tag(&self, id: String, slug: String) -> Result<JsValue, JsValue> {
         let tag = self
             .client
             .update_tag(&id, &slug)
@@ -915,7 +1115,7 @@ impl PassboltSession {
 
     /// Delete a tag.
     #[wasm_bindgen(js_name = "deleteTag")]
-    pub async fn delete_tag(&self, id: String) -> Result<(), JsError> {
+    pub async fn delete_tag(&self, id: String) -> Result<(), JsValue> {
         self.client.delete_tag(&id).await.map_err(to_js_error)
     }
 
@@ -923,7 +1123,10 @@ impl PassboltSession {
 
     /// Get comments for a resource.
     #[wasm_bindgen(js_name = "getComments", unchecked_return_type = "Comment[]")]
-    pub async fn get_comments(&self, resource_id: String) -> Result<JsValue, JsError> {
+    pub async fn get_comments(
+        &self,
+        #[wasm_bindgen(js_name = "resourceId")] resource_id: String,
+    ) -> Result<JsValue, JsValue> {
         let comments = self
             .client
             .get_comments(&resource_id)
@@ -936,10 +1139,10 @@ impl PassboltSession {
     #[wasm_bindgen(js_name = "createComment", unchecked_return_type = "Comment")]
     pub async fn create_comment(
         &self,
-        resource_id: String,
+        #[wasm_bindgen(js_name = "resourceId")] resource_id: String,
         content: String,
-        parent_id: Option<String>,
-    ) -> Result<JsValue, JsError> {
+        #[wasm_bindgen(js_name = "parentId")] parent_id: Option<String>,
+    ) -> Result<JsValue, JsValue> {
         let comment = self
             .client
             .create_comment(&resource_id, &content, parent_id.as_deref())
@@ -950,7 +1153,7 @@ impl PassboltSession {
 
     /// Delete a comment.
     #[wasm_bindgen(js_name = "deleteComment")]
-    pub async fn delete_comment(&self, id: String) -> Result<(), JsError> {
+    pub async fn delete_comment(&self, id: String) -> Result<(), JsValue> {
         self.client.delete_comment(&id).await.map_err(to_js_error)
     }
 
@@ -958,7 +1161,7 @@ impl PassboltSession {
 
     /// Search for users and groups (AROs) for sharing.
     #[wasm_bindgen(js_name = "searchAros", unchecked_return_type = "Aro[]")]
-    pub async fn search_aros(&self, search: String) -> Result<JsValue, JsError> {
+    pub async fn search_aros(&self, search: String) -> Result<JsValue, JsValue> {
         let aros = self
             .client
             .search_aros(&search)
@@ -975,7 +1178,7 @@ impl PassboltSession {
         js_name = "getPasswordExpirySettings",
         unchecked_return_type = "PasswordExpirySettings"
     )]
-    pub async fn get_password_expiry_settings(&self) -> Result<JsValue, JsError> {
+    pub async fn get_password_expiry_settings(&self) -> Result<JsValue, JsValue> {
         let settings = self
             .client
             .get_password_expiry_settings()
@@ -992,10 +1195,8 @@ impl PassboltSession {
     pub async fn save_password_expiry_settings(
         &self,
         #[wasm_bindgen(unchecked_param_type = "PasswordExpirySettings")] settings: JsValue,
-    ) -> Result<JsValue, JsError> {
-        let settings: passbolt_sdk::types::PasswordExpirySettings =
-            serde_wasm_bindgen::from_value(settings)
-                .map_err(|error| JsError::new(&format!("Invalid settings: {error}")))?;
+    ) -> Result<JsValue, JsValue> {
+        let settings: passbolt_sdk::types::PasswordExpirySettings = from_js(settings, "settings")?;
         let saved = self
             .client
             .save_password_expiry_settings(&settings)
@@ -1006,7 +1207,7 @@ impl PassboltSession {
 
     /// Delete the password expiry settings (admin): the defaults apply again.
     #[wasm_bindgen(js_name = "deletePasswordExpirySettings")]
-    pub async fn delete_password_expiry_settings(&self, id: String) -> Result<(), JsError> {
+    pub async fn delete_password_expiry_settings(&self, id: String) -> Result<(), JsValue> {
         self.client
             .delete_password_expiry_settings(&id)
             .await
@@ -1020,7 +1221,7 @@ impl PassboltSession {
         js_name = "listResourceTypes",
         unchecked_return_type = "ResourceType[]"
     )]
-    pub async fn list_resource_types(&self) -> Result<JsValue, JsError> {
+    pub async fn list_resource_types(&self) -> Result<JsValue, JsValue> {
         let resource_types = self.client.resource_types().await.map_err(to_js_error)?;
         to_js_value(&*resource_types)
     }
@@ -1030,7 +1231,7 @@ impl PassboltSession {
         js_name = "getMetadataTypesSettings",
         unchecked_return_type = "MetadataTypesSettings"
     )]
-    pub async fn get_metadata_types_settings(&self) -> Result<JsValue, JsError> {
+    pub async fn get_metadata_types_settings(&self) -> Result<JsValue, JsValue> {
         let settings = self
             .client
             .get_metadata_types_settings()
@@ -1047,10 +1248,8 @@ impl PassboltSession {
     pub async fn save_metadata_types_settings(
         &self,
         #[wasm_bindgen(unchecked_param_type = "MetadataTypesSettings")] settings: JsValue,
-    ) -> Result<JsValue, JsError> {
-        let settings: passbolt_sdk::types::MetadataTypesSettings =
-            serde_wasm_bindgen::from_value(settings)
-                .map_err(|error| JsError::new(&format!("Invalid settings: {error}")))?;
+    ) -> Result<JsValue, JsValue> {
+        let settings: passbolt_sdk::types::MetadataTypesSettings = from_js(settings, "settings")?;
         let saved = self
             .client
             .save_metadata_types_settings(&settings)
@@ -1064,7 +1263,7 @@ impl PassboltSession {
         js_name = "getMetadataKeysSettings",
         unchecked_return_type = "MetadataKeysSettings"
     )]
-    pub async fn get_metadata_keys_settings(&self) -> Result<JsValue, JsError> {
+    pub async fn get_metadata_keys_settings(&self) -> Result<JsValue, JsValue> {
         let settings = self
             .client
             .get_metadata_keys_settings()
@@ -1081,10 +1280,8 @@ impl PassboltSession {
     pub async fn save_metadata_keys_settings(
         &self,
         #[wasm_bindgen(unchecked_param_type = "MetadataKeysSettings")] settings: JsValue,
-    ) -> Result<JsValue, JsError> {
-        let settings: passbolt_sdk::types::MetadataKeysSettings =
-            serde_wasm_bindgen::from_value(settings)
-                .map_err(|error| JsError::new(&format!("Invalid settings: {error}")))?;
+    ) -> Result<JsValue, JsValue> {
+        let settings: passbolt_sdk::types::MetadataKeysSettings = from_js(settings, "settings")?;
         let saved = self
             .client
             .save_metadata_keys_settings(&settings)
@@ -1096,13 +1293,17 @@ impl PassboltSession {
     // ── HIBP ─────────────────────────────────────────────────────────────
 
     /// Check if a password has been exposed in data breaches.
-    /// Returns the number of times found (0 = not breached).
+    /// Returns the number of times found (0 = not breached), a `number` rather than a `bigint`:
+    /// a count reaches no 2^53.
     #[wasm_bindgen(js_name = "checkPasswordPwned")]
-    pub async fn check_password_pwned(&self, password: String) -> Result<u64, JsError> {
-        self.client
+    pub async fn check_password_pwned(&self, password: String) -> Result<f64, JsValue> {
+        let count = self
+            .client
             .check_password_pwned(&password)
             .await
-            .map_err(to_js_error)
+            .map_err(to_js_error)?;
+        #[allow(clippy::cast_precision_loss)]
+        Ok(count as f64)
     }
 }
 
@@ -1112,15 +1313,14 @@ impl PassboltSession {
 /// For progressive openpgp.js replacement.
 #[wasm_bindgen(js_name = "decryptMessage")]
 pub async fn decrypt_message(
-    armored_message: &str,
-    private_key_armored: &str,
+    #[wasm_bindgen(js_name = "armoredMessage")] armored_message: &str,
+    #[wasm_bindgen(js_name = "privateKeyArmored")] private_key_armored: &str,
     passphrase: &str,
-) -> Result<Vec<u8>, JsError> {
-    let key = passbolt_sdk::crypto::parse_private_key(private_key_armored)
-        .map_err(|error| JsError::new(&error.to_string()))?;
+) -> Result<Vec<u8>, JsValue> {
+    let key = passbolt_sdk::crypto::parse_private_key(private_key_armored).map_err(to_js_error)?;
     passbolt_sdk::crypto::decrypt_message(armored_message, &key, passphrase)
         .await
-        .map_err(|error| JsError::new(&error.to_string()))
+        .map_err(to_js_error)
 }
 
 /// Encrypt a plaintext message for one or more PGP public keys.
@@ -1128,30 +1328,32 @@ pub async fn decrypt_message(
 #[wasm_bindgen(js_name = "encryptMessage")]
 pub async fn encrypt_message(
     plaintext: &[u8],
-    public_keys_armored: Vec<String>,
-) -> Result<String, JsError> {
+    #[wasm_bindgen(js_name = "publicKeysArmored")] public_keys_armored: Vec<String>,
+) -> Result<String, JsValue> {
     let parsed: Result<Vec<_>, _> = public_keys_armored
         .iter()
         .map(|armored_key| passbolt_sdk::crypto::parse_public_key(armored_key))
         .collect();
-    let keys = parsed.map_err(|error| JsError::new(&error.to_string()))?;
+    let keys = parsed.map_err(to_js_error)?;
     let key_refs: Vec<_> = keys.iter().collect();
     passbolt_sdk::crypto::encrypt_message(plaintext, &key_refs)
         .await
-        .map_err(|error| JsError::new(&error.to_string()))
+        .map_err(to_js_error)
 }
 
 /// Parse a PGP private key and return its fingerprint (hex uppercase).
 #[wasm_bindgen(js_name = "getKeyFingerprint")]
-pub fn get_key_fingerprint(private_key_armored: &str) -> Result<String, JsError> {
-    let key = passbolt_sdk::crypto::parse_private_key(private_key_armored)
-        .map_err(|error| JsError::new(&error.to_string()))?;
+pub fn get_key_fingerprint(
+    #[wasm_bindgen(js_name = "privateKeyArmored")] private_key_armored: &str,
+) -> Result<String, JsValue> {
+    let key = passbolt_sdk::crypto::parse_private_key(private_key_armored).map_err(to_js_error)?;
     Ok(key.fingerprint.clone())
 }
 
 #[cfg(test)]
 mod tests {
     use futures_executor::block_on;
+    use passbolt_sdk::error::{ApiError, AuthError, CryptoError, TransportError};
     use rstest::rstest;
     use secrecy::ExposeSecret;
     use serde_json::json;
@@ -1212,6 +1414,32 @@ mod tests {
         assert_eq!(serialized["description"], "note");
         assert_eq!(serialized["totp"]["secret_key"], "JBSWY3DPEHPK3PXP");
         assert_eq!(serialized["totp"]["digits"], 6);
+    }
+
+    #[rstest]
+    #[case::timeout(TransportError::Timeout("30s".into()).into(), "TIMEOUT")]
+    #[case::network(TransportError::Network("refused".into()).into(), "NETWORK")]
+    #[case::login(AuthError::LoginFailed("bad key".into()).into(), "LOGIN_FAILED")]
+    #[case::mfa_required(AuthError::MfaRequired.into(), "MFA_REQUIRED")]
+    #[case::session_expired(AuthError::SessionExpired.into(), "SESSION_EXPIRED")]
+    #[case::key_cross_check(AuthError::KeyCrossCheckFailed.into(), "SERVER_IDENTITY_MISMATCH")]
+    #[case::decrypt(CryptoError::Decrypt("no key".into()).into(), "DECRYPTION_FAILED")]
+    #[case::api_404(api_error(404), "NOT_FOUND")]
+    #[case::api_400(api_error(400), "API")]
+    #[case::not_found(PassboltError::NotFound("r1".into()), "NOT_FOUND")]
+    #[case::invalid_argument(PassboltError::InvalidArgument("id".into()), "INVALID_ARGUMENT")]
+    #[case::other(PassboltError::Other("as is".into()), "UNKNOWN")]
+    fn test_error_code(#[case] error: PassboltError, #[case] expected: &str) {
+        assert_eq!(error_code(&error), expected);
+    }
+
+    fn api_error(status: u16) -> PassboltError {
+        ApiError {
+            status,
+            message: "refused".into(),
+            validation_errors: None,
+        }
+        .into()
     }
 
     #[test]
@@ -1366,7 +1594,6 @@ mod wasm_tests {
 
         js_sys::Reflect::set(&global, &"fetch".into(), &real_fetch).unwrap();
         if let Err(error) = session {
-            let error = JsValue::from(error);
             panic!("{:?}", js_sys::Reflect::get(&error, &"message".into()));
         }
     }
@@ -1418,7 +1645,7 @@ mod wasm_tests {
         let Err(error) = session else {
             panic!("logged in to a server without the pinned key")
         };
-        let message = js_sys::Reflect::get(&JsValue::from(error), &"message".into()).unwrap();
+        let message = js_sys::Reflect::get(&error, &"message".into()).unwrap();
         assert!(
             message.as_string().unwrap_or_default().contains("identity"),
             "{message:?}"
