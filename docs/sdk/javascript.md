@@ -9,22 +9,28 @@ sidebar_position: 3
 npm install @switch-case/passbolt-sdk
 ```
 
-The SDK compiled to WebAssembly. Bundlers (webpack, Vite…) take its `bundler/` build, Node.js its
-`node/` build; both ship TypeScript declarations. Every session method returns a promise.
+The SDK compiled to WebAssembly, with its TypeScript declarations. Node.js (20.19 or later), Deno
+and Bun load its `node/` build, with `import` or `require`; bundlers (webpack, Vite…) its
+`bundler/` build. Every session method returns a promise.
 
 ## Node.js, Deno, Bun
 
-Node 20 or later. These runtimes keep no cookies: the session keeps those the server sets and
-sends them back, nothing to configure.
+These runtimes keep no cookies: the session keeps those the server sets and sends them back,
+nothing to configure.
 
-```js
-const { PassboltSession } = require("@switch-case/passbolt-sdk");
+```ts
+import { PassboltSession } from "@switch-case/passbolt-sdk";
 
 const session = await PassboltSession.login(serverUrl, privateKeyArmored, passphrase);
-const views = await session.listResourceViews("github", false);
-for (const view of views) console.log(view.id, view.name, view.username);
-await session.logout();
+try {
+  const views = await session.listResourceViews({ search: "github" });
+  for (const view of views) console.log(view.id, view.name, view.username);
+} finally {
+  await session.logout();
+}
 ```
+
+CommonJS takes the same exports: `const { PassboltSession } = require("@switch-case/passbolt-sdk");`.
 
 ## Browsers and extensions
 
