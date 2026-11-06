@@ -74,15 +74,28 @@ const session = await PassboltSession.login(serverUrl, privateKeyArmored, passph
 
 ## Reading and writing
 
-```js
-const view = await session.getResourceView(id);          // name, username, uris, password, secret…
-const created = await session.createResource({ name: "GitHub", username: "ada", password: "…" });
+Methods with optional arguments take an options object.
+
+```ts
+const view = await session.getResourceView(id); // name, username, uris, password, secret…
+const withSecrets = await session.listResourceViews({ search: "github", withSecrets: true });
+const favorites = await session.listResources({ favoritesOnly: true });
+
+const created = await session.createResource({ name: "GitHub", username: "ada", password: "s3cret" });
 await session.updateResource(created.id, { password: "new" });
-await session.shareResource(created.id, [userId], [], 7);
+await session.shareResource(created.id, { userIds: [userId], permissionType: 7 });
 await session.moveResource(created.id, folderId);
+
+const folder = await session.createFolder("Ops");
+await session.shareFolder(folder.id, { groupIds: [groupId], permissionType: 1, withContent: true });
+
+const betty = await session.createUser({ username: "betty@example.com", firstName: "Betty", lastName: "Holberton" });
+const group = await session.createGroup({ name: "Ops", managerIds: [session.userId], memberIds: [betty.id] });
+await session.updateGroup(group.id, { name: "Infra", removeMemberIds: [betty.id] });
 ```
 
-Errors are thrown as `Error` with the message of the SDK.
+Permission types are `1` read, `7` update, `15` owner, `-1` to revoke.
+
 
 ## Methods
 
