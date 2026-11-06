@@ -487,6 +487,40 @@ mod wasm_tests {
     }
 
     #[wasm_bindgen_test]
+    async fn test_each_client_reads_the_token_with_its_own_provider() {
+        let first = WasmHttpClient::with_csrf_token_provider(Some(js_sys::Function::new_no_args(
+            "return 'first';",
+        )));
+        let second = WasmHttpClient::with_csrf_token_provider(Some(js_sys::Function::new_no_args(
+            "return 'second';",
+        )));
+
+        first.get(JSON_DATA_URL, &[]).await.unwrap();
+        second.get(JSON_DATA_URL, &[]).await.unwrap();
+
+        assert_eq!(
+            first.cookie(JSON_DATA_URL, CSRF_COOKIE).as_deref(),
+            Some("first")
+        );
+        assert_eq!(
+            second.cookie(JSON_DATA_URL, CSRF_COOKIE).as_deref(),
+            Some("second")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn test_a_dropped_client_releases_its_provider() {
+        let client = WasmHttpClient::with_csrf_token_provider(Some(js_sys::Function::new_no_args(
+            "return 'token';",
+        )));
+        let key = client.csrf_token_provider.unwrap();
+
+        drop(client);
+
+        assert!(csrf_token_provider(key).is_none());
+    }
+
+    #[wasm_bindgen_test]
     async fn test_the_provider_may_return_a_promise() {
         let provider = js_sys::Function::new_no_args("return Promise.resolve('from-promise');");
 
