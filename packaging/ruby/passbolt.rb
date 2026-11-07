@@ -5,10 +5,9 @@
 #   require "passbolt"
 #
 #   Passbolt::Client.login(url, File.read("private.asc"), passphrase) do |client|
-#     client.list_resource_views("github").each { |view| puts view["name"] }
+#     client.list_resource_views("github").each { |view| puts view.name }
 #   end
 require "ffi"
-require "json"
 
 module Passbolt
   # The native library of this platform, shipped under lib/native/<os>-<arch>/: the generated
@@ -30,22 +29,27 @@ module Passbolt
     end
   end
 
-  PassboltFfi::PassboltFfiError.constants.each do |name|
-    PassboltFfi::PassboltFfiError.const_get(name).prepend(Error)
+  PassboltFfi::PassboltError.constants.each do |name|
+    PassboltFfi::PassboltError.const_get(name).prepend(Error)
   end
 
-  TransportError = PassboltFfi::PassboltFfiError::Transport
-  AuthError = PassboltFfi::PassboltFfiError::Auth
-  CryptoError = PassboltFfi::PassboltFfiError::Crypto
-  ApiError = PassboltFfi::PassboltFfiError::Api
-  NotFoundError = PassboltFfi::PassboltFfiError::NotFound
-  ConfigError = PassboltFfi::PassboltFfiError::Config
-  InvalidArgumentError = PassboltFfi::PassboltFfiError::InvalidArgument
+  TransportError = PassboltFfi::PassboltError::Transport
+  AuthError = PassboltFfi::PassboltError::Auth
+  CryptoError = PassboltFfi::PassboltError::Crypto
+  ApiError = PassboltFfi::PassboltError::Api
+  NotFoundError = PassboltFfi::PassboltError::NotFound
+  ConfigError = PassboltFfi::PassboltError::Config
+  InvalidArgumentError = PassboltFfi::PassboltError::InvalidArgument
 
-  # The records without their Ffi prefix: Passbolt::Resource, Passbolt::Folder, Passbolt::User…
-  PassboltFfi.constants.grep(/\AFfi./).each do |name|
-    const_set(name.to_s.delete_prefix("Ffi"), PassboltFfi.const_get(name))
-  end
+  # The records, under Passbolt: Passbolt::ResourceView, Passbolt::NewResource, Passbolt::Folder…
+  RECORDS = %i[
+    Aro Comment DeleteBlockers Favorite Folder FolderQuery FolderTreeNode GpgKey Group
+    GroupDeleteDryRun GroupUser LoginOptions ManagedGroup MetadataKeysSettings
+    MetadataTypesSettings NewResource OwnedItem PasswordExpirySettings Permission Resource
+    ResourceChanges ResourceQuery ResourceType ResourceView Role Secret SecretData ServerKey Tag
+    TotpData User UserDeleteDryRun UserProfile UserQuery
+  ].freeze
+  RECORDS.each { |name| const_set(name, PassboltFfi.const_get(name)) }
 
   # Passbolt's permission types, for share_resource and share_folder.
   module PermissionType
@@ -77,7 +81,7 @@ module Passbolt
   end
 
   # A logged-in session. The calls block; the methods not redefined here are those of
-  # PassboltFfi::PassboltClient, with positional arguments.
+  # PassboltFfi::PassboltClient.
   class Client < PassboltFfi::PassboltClient
     # Log in with GPGAuth. With a block, yields the client and logs out at the end.
     #
@@ -104,36 +108,15 @@ module Passbolt
       end
     end
 
-    # A resource with its metadata and secret decrypted, as a Hash: "name", "username",
-    # "uris", "description", "password", "metadata", "secret"…
-    def get_resource_view(id)
-      JSON.parse(super)
-    end
+    # The flags and optional arguments below are keywords; the generated methods take them as
+    # positional arguments with defaults.
 
-    # The resources with their metadata decrypted, searched by name; with their secrets too
-    # with with_secrets. One that does not decrypt has an "error".
     def list_resource_views(search = nil, with_secrets: false)
-      JSON.parse(super(search, with_secrets))
-    end
-
-    # create_resource(name: "GitHub", username: "ada", password: "…"), or with a Hash. The
-    # fields: name, username, uris, description, password, totp, note, pin_code,
-    # custom_fields, folder_parent_id, expired, resource_type, metadata_fields, secret_fields.
-    def create_resource(fields = {}, **more)
-      super(JSON.generate(fields.merge(more)))
-    end
-
-    # Changes the fields given, keeps the others; expired: nil clears the expiry.
-    def update_resource(id, changes = {}, **more)
-      super(id, JSON.generate(changes.merge(more)))
+      super(search, with_secrets)
     end
 
     def list_resources(search = nil, favorites_only: false, owned_by_me: false)
       super(search, favorites_only, owned_by_me)
-    end
-
-    def list_folders(search = nil)
-      super
     end
 
     def list_users(search = nil, group_id: nil, admin_only: false)
@@ -141,19 +124,11 @@ module Passbolt
     end
 
     def share_resource(id, permission_type:, user_ids: [], group_ids: [])
-      super(id, user_ids, group_ids, permission_type)
+      super(id, permission_type, user_ids, group_ids)
     end
 
     def share_folder(id, permission_type:, user_ids: [], group_ids: [], with_content: false)
-      super(id, user_ids, group_ids, permission_type, with_content)
-    end
-
-    def move_resource(id, folder_id = nil)
-      super
-    end
-
-    def move_folder(id, folder_id = nil)
-      super
+      super(id, permission_type, user_ids, group_ids, with_content)
     end
 
     def create_folder(name, folder_parent_id: nil)

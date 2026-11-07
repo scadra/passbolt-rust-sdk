@@ -12,9 +12,7 @@ else
   abort "expected a crypto error"
 end
 
-missing = PassboltFfi.constants.grep(/\AFfi./).reject do |name|
-  Passbolt.const_defined?(name.to_s.delete_prefix("Ffi"), false)
-end
-abort "no alias in Passbolt for #{missing}" unless missing.empty?
+missing = Passbolt::RECORDS.reject { |name| Passbolt.const_get(name, false) == PassboltFfi.const_get(name) }
+abort "not under Passbolt: #{missing}" unless missing.empty?
 abort "Passbolt::Client" unless Passbolt::Client < PassboltFfi::PassboltClient
 puts "ok: Passbolt names"
