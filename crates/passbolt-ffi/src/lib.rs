@@ -86,21 +86,29 @@ fn build_http_config(options: &LoginOptions) -> NativeHttpConfig {
 /// How to log in, beyond the credentials.
 #[derive(uniffi::Record, Default)]
 pub struct LoginOptions {
+    #[uniffi(default = false)]
     pub tls_skip_verify: bool,
+    #[uniffi(default = None)]
     pub proxy: Option<String>,
     /// The base32 TOTP secret answering the MFA challenge without prompting.
+    #[uniffi(default = None)]
     pub mfa_totp_token: Option<String>,
     /// The armored server public key pinned with [`fetch_server_key`]: each login then checks
     /// the server holds its private key.
+    #[uniffi(default = None)]
     pub server_public_key: Option<String>,
     /// The shared metadata key fingerprint pinned with
     /// [`PassboltClient::metadata_key_fingerprint`]: shared metadata is then only encrypted
     /// for that key.
+    #[uniffi(default = None)]
     pub metadata_key_fingerprint: Option<String>,
     /// Seconds a request may take; `None` is 60, `0` waits forever.
+    #[uniffi(default = None)]
     pub timeout_seconds: Option<u64>,
     /// PEM certificate and private key, for a server asking for a client certificate (mTLS).
+    #[uniffi(default = None)]
     pub client_certificate_pem: Option<String>,
+    #[uniffi(default = None)]
     pub client_key_pem: Option<String>,
 }
 
