@@ -237,6 +237,7 @@ impl PassboltClient {
     // ── Resources ───────────────────────────────────────────────────────
 
     /// List resources with optional search and filters.
+    #[uniffi::method(default(search = None, favorites_only = false, owned_by_me = false))]
     pub fn list_resources(
         &self,
         search: Option<String>,
@@ -268,6 +269,7 @@ impl PassboltClient {
 
     /// Resources with their v5 metadata decrypted, searched by their decrypted name, as a JSON
     /// array; their secrets too with `with_secrets`. One that does not decrypt has an `error`.
+    #[uniffi::method(default(search = None, with_secrets = false))]
     pub fn list_resource_views(
         &self,
         search: Option<String>,
@@ -361,6 +363,7 @@ impl PassboltClient {
     }
 
     /// Move a resource into a folder, or to the root without one.
+    #[uniffi::method(default(folder_id = None))]
     pub fn move_resource(
         &self,
         id: String,
@@ -372,6 +375,7 @@ impl PassboltClient {
     }
 
     /// Move a folder into another one, or to the root without one.
+    #[uniffi::method(default(folder_id = None))]
     pub fn move_folder(&self, id: String, folder_id: Option<String>) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(self.inner.move_folder(&id, folder_id.as_deref()))
@@ -439,6 +443,7 @@ impl PassboltClient {
     // ── Folders ─────────────────────────────────────────────────────────
 
     /// List all folders.
+    #[uniffi::method(default(search = None))]
     pub fn list_folders(&self, search: Option<String>) -> Result<Vec<Folder>, PassboltError> {
         let query = FolderQuery { search };
         let folders = RUNTIME
@@ -457,6 +462,7 @@ impl PassboltClient {
 
     /// Create a folder, at the root or in `folder_parent_id`; in a parent folder it gets the
     /// parent's permissions.
+    #[uniffi::method(default(folder_parent_id = None))]
     pub fn create_folder(
         &self,
         name: String,
@@ -515,6 +521,7 @@ impl PassboltClient {
     // ── Users ───────────────────────────────────────────────────────────
 
     /// List all users.
+    #[uniffi::method(default(search = None, group_id = None, admin_only = false))]
     pub fn list_users(
         &self,
         search: Option<String>,
@@ -584,6 +591,7 @@ impl PassboltClient {
     }
 
     /// Update a user's names or role; `None` keeps the value.
+    #[uniffi::method(default(first_name = None, last_name = None, role = None))]
     pub fn update_user(
         &self,
         id: String,
@@ -664,6 +672,7 @@ impl PassboltClient {
     }
 
     /// Create a group; a manager is also a member.
+    #[uniffi::method(default(member_ids = [], manager_ids = []))]
     pub fn create_group(
         &self,
         name: String,
@@ -684,6 +693,7 @@ impl PassboltClient {
     /// Rename a group and change its members: the removed ones first, then the added ones,
     /// who get the secrets of the group's resources. Giving a user the role they have, or
     /// removing a non-member, is an error.
+    #[uniffi::method(default(name = None, add_member_ids = [], add_manager_ids = [], remove_member_ids = []))]
     pub fn update_group(
         &self,
         id: String,
@@ -805,6 +815,7 @@ impl PassboltClient {
     }
 
     /// Create a comment on a resource.
+    #[uniffi::method(default(parent_id = None))]
     pub fn create_comment(
         &self,
         resource_id: String,
@@ -971,7 +982,7 @@ impl PassboltClient {
 
 /// The server public key, to pin in [`LoginOptions::server_public_key`] once the user
 /// confirmed its fingerprint.
-#[uniffi::export]
+#[uniffi::export(default(tls_skip_verify = false))]
 pub fn fetch_server_key(
     server_url: String,
     tls_skip_verify: bool,
