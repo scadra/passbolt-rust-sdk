@@ -29,9 +29,11 @@
 
 mod error;
 mod mfa;
+mod resource;
 mod types;
 
 pub use error::PassboltError;
+pub use resource::{NewResource, ResourceChanges, ResourceView};
 pub use types::{MetadataKeysSettings, MetadataTypesSettings, PasswordExpirySettings};
 
 uniffi::setup_scaffolding!();

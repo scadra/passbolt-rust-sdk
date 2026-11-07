@@ -249,6 +249,18 @@ pub struct TotpData {
     pub issuer: Option<String>,
 }
 
+impl From<TotpData> for types::TotpData {
+    fn from(totp: TotpData) -> Self {
+        Self {
+            secret_key: totp.secret_key,
+            algorithm: totp.algorithm,
+            digits: totp.digits,
+            period: totp.period,
+            issuer: totp.issuer,
+        }
+    }
+}
+
 impl From<types::TotpData> for TotpData {
     fn from(t: types::TotpData) -> Self {
         Self {
