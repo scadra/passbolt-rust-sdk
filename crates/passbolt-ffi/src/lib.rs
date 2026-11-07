@@ -175,39 +175,11 @@ impl PassboltClient {
         private_key_armored: String,
         passphrase: String,
     ) -> Result<Arc<Self>, PassboltFfiError> {
-        Self::login_with_options(
-            server_url,
-            private_key_armored,
-            passphrase,
-            false,
-            None,
-            None,
-        )
-    }
-
-    /// Authenticate with advanced TLS/proxy options.
-    ///
-    /// `mfa_totp_token` is the base32 TOTP secret used to answer the MFA
-    /// challenge without prompting; `None` or an empty string disables it.
-    #[uniffi::constructor]
-    pub fn login_with_options(
-        server_url: String,
-        private_key_armored: String,
-        passphrase: String,
-        tls_skip_verify: bool,
-        proxy: Option<String>,
-        mfa_totp_token: Option<String>,
-    ) -> Result<Arc<Self>, PassboltFfiError> {
         Self::login_with_config(
             server_url,
             private_key_armored,
             passphrase,
-            FfiLoginOptions {
-                tls_skip_verify,
-                proxy,
-                mfa_totp_token,
-                ..FfiLoginOptions::default()
-            },
+            FfiLoginOptions::default(),
         )
     }
 
