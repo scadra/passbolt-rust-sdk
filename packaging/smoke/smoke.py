@@ -15,9 +15,9 @@ else:
 missing = [
     name
     for name in _ffi.passbolt_ffi.__all__
-    if name.startswith("Ffi") and not hasattr(passbolt, name[len("Ffi"):])
+    if name not in ("PassboltClient", "InternalError") and not hasattr(passbolt, name)
 ]
-assert not missing, f"no alias in passbolt for {missing}"
+assert not missing, f"not exported by passbolt: {missing}"
 assert all(hasattr(passbolt, name) for name in passbolt.__all__)
 assert issubclass(passbolt.Client, _ffi.PassboltClient)
 assert hasattr(passbolt.Client, "__enter__") and hasattr(passbolt.Client, "__exit__")
