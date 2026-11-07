@@ -17,8 +17,8 @@ use std::sync::Arc;
 use futures_executor::block_on;
 
 use passbolt_ffi::{
-    fetch_server_key, LoginOptions, MetadataKeysSettings, PassboltClient, PassboltError,
-    PasswordExpirySettings,
+    fetch_server_key, LoginOptions, MetadataKeysSettings, NewResource, PassboltClient,
+    PassboltError, PasswordExpirySettings,
 };
 use passbolt_sdk::crypto;
 use serde_json::{json, Value};
@@ -280,7 +280,7 @@ fn login_answers_the_gpgauth_challenge() {
 }
 
 #[test]
-fn a_resource_view_is_decrypted_json() {
+fn a_resource_view_is_decrypted() {
     let passbolt = Passbolt::new();
     passbolt.on(
         "GET",
@@ -289,22 +289,22 @@ fn a_resource_view_is_decrypted_json() {
     );
     passbolt.on("GET", "/resource-types.json", &resource_types());
 
-    let view: Value = serde_json::from_str(
-        &passbolt
-            .login()
-            .get_resource_view(RESOURCE_ID.into())
-            .unwrap(),
-    )
-    .unwrap();
+    let view = passbolt
+        .login()
+        .get_resource_view(RESOURCE_ID.into())
+        .unwrap();
 
-    assert_eq!(view["name"], "GitHub");
-    assert_eq!(view["password"], "s3cr3t");
-    assert_eq!(view["description"], "prod");
-    assert_eq!(view["resource_type"], "password-and-description");
+    assert_eq!(view.name, "GitHub");
+    assert_eq!(view.password.as_deref(), Some("s3cr3t"));
+    assert_eq!(view.description, "prod");
+    assert_eq!(
+        view.resource_type.as_deref(),
+        Some("password-and-description")
+    );
 }
 
 #[test]
-fn a_resource_is_created_from_json() {
+fn a_resource_is_created() {
     let passbolt = Passbolt::new();
     passbolt.on_status("GET", "/metadata/types/settings.json", 404, &Value::Null);
     passbolt.on("GET", "/resource-types.json", &resource_types());
@@ -312,7 +312,12 @@ fn a_resource_is_created_from_json() {
 
     passbolt
         .login()
-        .create_resource(r#"{"name": "GitHub", "username": "ada", "password": "s3cr3t"}"#.into())
+        .create_resource(NewResource {
+            name: "GitHub".into(),
+            username: Some("ada".into()),
+            password: Some("s3cr3t".into()),
+            ..NewResource::default()
+        })
         .unwrap();
 
     let created = &passbolt.requests("POST", "/resources.json")[0];
@@ -322,12 +327,16 @@ fn a_resource_is_created_from_json() {
 }
 
 #[test]
-fn an_invalid_resource_json_is_an_invalid_argument() {
+fn invalid_resource_fields_are_an_invalid_argument() {
     let passbolt = Passbolt::new();
 
     let error = passbolt
         .login()
-        .create_resource(r#"{"nmae": "typo"}"#.into())
+        .create_resource(NewResource {
+            name: "GitHub".into(),
+            metadata_fields_json: Some("{".into()),
+            ..NewResource::default()
+        })
         .err()
         .unwrap();
 
@@ -503,7 +512,8 @@ fn a_missing_resource_view_keeps_the_not_found_status() {
     let error = passbolt
         .login()
         .get_resource_view(RESOURCE_ID.into())
-        .unwrap_err();
+        .err()
+        .unwrap();
 
     assert!(
         matches!(

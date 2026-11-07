@@ -257,26 +257,25 @@ impl PassboltClient {
         Ok(resources.into_iter().map(Resource::from).collect())
     }
 
-    /// A resource with its v5 metadata and its secret decrypted, for every resource type, as
-    /// JSON: `name`, `username`, `uris`, `description`, `password`, `metadata`, `secret`…
-    pub fn get_resource_view(&self, id: String) -> Result<String, PassboltError> {
+    /// A resource with its v5 metadata and its secret decrypted, for every resource type.
+    pub fn get_resource_view(&self, id: String) -> Result<ResourceView, PassboltError> {
         let view = RUNTIME
             .block_on(passbolt_sdk::resource::get::get_resource_view(
                 &self.inner,
                 &id,
             ))
             .map_err(PassboltError::from)?;
-        to_json(&view)
+        Ok(ResourceView::from(view))
     }
 
-    /// Resources with their v5 metadata decrypted, searched by their decrypted name, as a JSON
-    /// array; their secrets too with `with_secrets`. One that does not decrypt has an `error`.
+    /// Resources with their v5 metadata decrypted, searched by their decrypted name; their
+    /// secrets too with `with_secrets`. One that does not decrypt has an `error`.
     #[uniffi::method(default(search = None, with_secrets = false))]
     pub fn list_resource_views(
         &self,
         search: Option<String>,
         with_secrets: bool,
-    ) -> Result<String, PassboltError> {
+    ) -> Result<Vec<ResourceView>, PassboltError> {
         let query = passbolt_sdk::ResourceQuery {
             search,
             ..Default::default()
@@ -289,14 +288,12 @@ impl PassboltClient {
                 with_secrets.then_some(0),
             ))
             .map_err(PassboltError::from)?;
-        to_json(&views)
+        Ok(views.into_iter().map(ResourceView::from).collect())
     }
 
-    /// Create a resource of any type from JSON: `{"name": …, "resource_type"?, "username"?,
-    /// "uris"?, "password"?, "totp"?, "note"?, "pin_code"?, "custom_fields"?,
-    /// "metadata_fields"?, "secret_fields"?, …}`. Returns the created resource.
-    pub fn create_resource(&self, new_resource_json: String) -> Result<Resource, PassboltError> {
-        let new_resource = from_json(&new_resource_json)?;
+    /// Create a resource of any type. Returns the created resource.
+    pub fn create_resource(&self, resource: NewResource) -> Result<Resource, PassboltError> {
+        let new_resource = resource.try_into()?;
         let resource = RUNTIME
             .block_on(passbolt_sdk::resource::create::create_resource(
                 &self.inner,
@@ -306,14 +303,13 @@ impl PassboltClient {
         Ok(Resource::from(resource))
     }
 
-    /// Update a resource from the JSON of the fields to change; `"expired": null` clears the
-    /// expiry. Other fields keep their value.
+    /// Update a resource; the fields left out keep their value.
     pub fn update_resource(
         &self,
         id: String,
-        changes_json: String,
+        changes: ResourceChanges,
     ) -> Result<Resource, PassboltError> {
-        let changes = from_json(&changes_json)?;
+        let changes = changes.try_into()?;
         let resource = RUNTIME
             .block_on(passbolt_sdk::resource::update::update_resource(
                 &self.inner,
@@ -1016,18 +1012,6 @@ pub fn fetch_server_key(
 // ── Stateless crypto functions ──────────────────────────────────────────────
 
 /// Decrypt a PGP-armored message with a private key.
-fn to_json<T: serde::Serialize>(value: &T) -> Result<String, PassboltError> {
-    serde_json::to_string(value).map_err(|error| PassboltError::Other {
-        reason: format!("Cannot write JSON: {error}"),
-    })
-}
-
-fn from_json<T: serde::de::DeserializeOwned>(json: &str) -> Result<T, PassboltError> {
-    serde_json::from_str(json).map_err(|error| PassboltError::InvalidArgument {
-        reason: format!("Invalid JSON: {error}"),
-    })
-}
-
 #[uniffi::export]
 pub fn decrypt_message(
     armored_message: String,
