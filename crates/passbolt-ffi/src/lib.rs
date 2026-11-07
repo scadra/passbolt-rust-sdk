@@ -323,12 +323,13 @@ impl PassboltClient {
     }
 
     /// Share a resource with users and groups (`permission_type` 1, 7 or 15), or revoke with -1.
+    #[uniffi::method(default(user_ids = [], group_ids = []))]
     pub fn share_resource(
         &self,
         id: String,
+        permission_type: i32,
         user_ids: Vec<String>,
         group_ids: Vec<String>,
-        permission_type: i32,
     ) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(passbolt_sdk::resource::share::share_resource(
@@ -342,12 +343,13 @@ impl PassboltClient {
     }
 
     /// Share a folder, and with `with_content` the sub-folders and resources the user owns.
+    #[uniffi::method(default(user_ids = [], group_ids = [], with_content = false))]
     pub fn share_folder(
         &self,
         id: String,
+        permission_type: i32,
         user_ids: Vec<String>,
         group_ids: Vec<String>,
-        permission_type: i32,
         with_content: bool,
     ) -> Result<(), PassboltError> {
         RUNTIME
