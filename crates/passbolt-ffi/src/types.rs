@@ -22,7 +22,8 @@ fn to_iso(dt: Option<DateTime<Utc>>) -> Option<String> {
 // ── Core domain types ───────────────────────────────────────────────────────
 
 #[derive(uniffi::Record)]
-pub struct FfiResource {
+#[allow(clippy::struct_field_names)] // the field names of the Passbolt API
+pub struct Resource {
     pub id: String,
     pub name: String,
     pub username: Option<String>,
@@ -35,9 +36,9 @@ pub struct FfiResource {
     pub created_by: Option<String>,
     pub modified_by: Option<String>,
     pub personal: Option<bool>,
-    pub favorite: Option<FfiFavorite>,
-    pub secrets: Vec<FfiSecret>,
-    pub permissions: Vec<FfiPermission>,
+    pub favorite: Option<Favorite>,
+    pub secrets: Vec<Secret>,
+    pub permissions: Vec<Permission>,
     pub expired: Option<String>,
     /// v5 only: PGP-armored encrypted metadata.
     #[uniffi(default = None)]
@@ -48,7 +49,7 @@ pub struct FfiResource {
     pub metadata_key_type: Option<String>,
 }
 
-impl From<types::Resource> for FfiResource {
+impl From<types::Resource> for Resource {
     fn from(r: types::Resource) -> Self {
         Self {
             metadata: r.armored_metadata().map(String::from),
@@ -66,16 +67,17 @@ impl From<types::Resource> for FfiResource {
             created_by: r.created_by,
             modified_by: r.modified_by,
             personal: r.personal,
-            favorite: r.favorite.map(FfiFavorite::from),
-            secrets: r.secrets.into_iter().map(FfiSecret::from).collect(),
-            permissions: r.permissions.into_iter().map(FfiPermission::from).collect(),
+            favorite: r.favorite.map(Favorite::from),
+            secrets: r.secrets.into_iter().map(Secret::from).collect(),
+            permissions: r.permissions.into_iter().map(Permission::from).collect(),
             expired: to_iso(r.expired),
         }
     }
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiFolder {
+#[allow(clippy::struct_field_names)] // the field names of the Passbolt API
+pub struct Folder {
     pub id: String,
     pub name: String,
     pub folder_parent_id: Option<String>,
@@ -84,10 +86,10 @@ pub struct FfiFolder {
     pub created_by: Option<String>,
     pub modified_by: Option<String>,
     pub personal: Option<bool>,
-    pub permissions: Vec<FfiPermission>,
+    pub permissions: Vec<Permission>,
 }
 
-impl From<types::Folder> for FfiFolder {
+impl From<types::Folder> for Folder {
     fn from(f: types::Folder) -> Self {
         Self {
             id: f.id,
@@ -98,13 +100,13 @@ impl From<types::Folder> for FfiFolder {
             created_by: f.created_by,
             modified_by: f.modified_by,
             personal: f.personal,
-            permissions: f.permissions.into_iter().map(FfiPermission::from).collect(),
+            permissions: f.permissions.into_iter().map(Permission::from).collect(),
         }
     }
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiUser {
+pub struct User {
     pub id: String,
     pub username: Option<String>,
     pub role_id: Option<String>,
@@ -112,13 +114,13 @@ pub struct FfiUser {
     pub modified: Option<String>,
     pub active: Option<bool>,
     pub deleted: Option<bool>,
-    pub profile: Option<FfiUserProfile>,
-    pub role: Option<FfiRole>,
-    pub gpg_key: Option<FfiGpgKey>,
+    pub profile: Option<UserProfile>,
+    pub role: Option<Role>,
+    pub gpg_key: Option<GpgKey>,
     // groups_users excluded to break User ↔ GroupUser cycle
 }
 
-impl From<types::User> for FfiUser {
+impl From<types::User> for User {
     fn from(u: types::User) -> Self {
         Self {
             id: u.id,
@@ -128,15 +130,15 @@ impl From<types::User> for FfiUser {
             modified: to_iso(u.modified),
             active: u.active,
             deleted: u.deleted,
-            profile: u.profile.map(FfiUserProfile::from),
-            role: u.role.map(FfiRole::from),
-            gpg_key: u.gpg_key.map(FfiGpgKey::from),
+            profile: u.profile.map(UserProfile::from),
+            role: u.role.map(Role::from),
+            gpg_key: u.gpg_key.map(GpgKey::from),
         }
     }
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiGroup {
+pub struct Group {
     pub id: String,
     pub name: String,
     pub created: Option<String>,
@@ -144,10 +146,10 @@ pub struct FfiGroup {
     pub created_by: Option<String>,
     pub modified_by: Option<String>,
     pub deleted: Option<bool>,
-    pub groups_users: Vec<FfiGroupUser>,
+    pub groups_users: Vec<GroupUser>,
 }
 
-impl From<types::Group> for FfiGroup {
+impl From<types::Group> for Group {
     fn from(g: types::Group) -> Self {
         Self {
             id: g.id,
@@ -157,7 +159,7 @@ impl From<types::Group> for FfiGroup {
             created_by: g.created_by,
             modified_by: g.modified_by,
             deleted: g.deleted,
-            groups_users: g.groups_users.into_iter().map(FfiGroupUser::from).collect(),
+            groups_users: g.groups_users.into_iter().map(GroupUser::from).collect(),
         }
     }
 }
@@ -165,7 +167,8 @@ impl From<types::Group> for FfiGroup {
 // ── Nested types ────────────────────────────────────────────────────────────
 
 #[derive(uniffi::Record)]
-pub struct FfiPermission {
+#[allow(clippy::struct_field_names)] // the field names of the Passbolt API
+pub struct Permission {
     pub id: Option<String>,
     pub aco: Option<String>,
     pub aco_foreign_key: Option<String>,
@@ -174,11 +177,11 @@ pub struct FfiPermission {
     pub permission_type: Option<i32>,
     pub created: Option<String>,
     pub modified: Option<String>,
-    pub user: Option<FfiUser>,
-    pub group: Option<FfiGroup>,
+    pub user: Option<User>,
+    pub group: Option<Group>,
 }
 
-impl From<types::Permission> for FfiPermission {
+impl From<types::Permission> for Permission {
     fn from(p: types::Permission) -> Self {
         Self {
             id: p.id,
@@ -189,14 +192,14 @@ impl From<types::Permission> for FfiPermission {
             permission_type: p.permission_type,
             created: to_iso(p.created),
             modified: to_iso(p.modified),
-            user: p.user.map(|user| FfiUser::from(*user)),
-            group: p.group.map(|group| FfiGroup::from(*group)),
+            user: p.user.map(|user| User::from(*user)),
+            group: p.group.map(|group| Group::from(*group)),
         }
     }
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiSecret {
+pub struct Secret {
     pub id: Option<String>,
     pub resource_id: Option<String>,
     pub user_id: Option<String>,
@@ -205,7 +208,7 @@ pub struct FfiSecret {
     pub modified: Option<String>,
 }
 
-impl From<types::Secret> for FfiSecret {
+impl From<types::Secret> for Secret {
     fn from(s: types::Secret) -> Self {
         Self {
             id: s.id,
@@ -219,26 +222,26 @@ impl From<types::Secret> for FfiSecret {
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiSecretData {
+pub struct SecretData {
     pub password: Option<String>,
     pub description: Option<String>,
-    pub totp: Option<FfiTotpData>,
+    pub totp: Option<TotpData>,
     pub raw: Option<String>,
 }
 
-impl From<types::SecretData> for FfiSecretData {
+impl From<types::SecretData> for SecretData {
     fn from(s: types::SecretData) -> Self {
         Self {
             password: s.password,
             description: s.description,
-            totp: s.totp.map(FfiTotpData::from),
+            totp: s.totp.map(TotpData::from),
             raw: s.raw,
         }
     }
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiTotpData {
+pub struct TotpData {
     pub secret_key: Option<String>,
     pub algorithm: Option<String>,
     pub digits: Option<u32>,
@@ -246,7 +249,7 @@ pub struct FfiTotpData {
     pub issuer: Option<String>,
 }
 
-impl From<types::TotpData> for FfiTotpData {
+impl From<types::TotpData> for TotpData {
     fn from(t: types::TotpData) -> Self {
         Self {
             secret_key: t.secret_key,
@@ -259,12 +262,12 @@ impl From<types::TotpData> for FfiTotpData {
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiUserProfile {
+pub struct UserProfile {
     pub first_name: Option<String>,
     pub last_name: Option<String>,
 }
 
-impl From<types::UserProfile> for FfiUserProfile {
+impl From<types::UserProfile> for UserProfile {
     fn from(p: types::UserProfile) -> Self {
         Self {
             first_name: p.first_name,
@@ -274,7 +277,7 @@ impl From<types::UserProfile> for FfiUserProfile {
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiGpgKey {
+pub struct GpgKey {
     pub id: Option<String>,
     pub user_id: Option<String>,
     pub armored_key: Option<String>,
@@ -283,7 +286,7 @@ pub struct FfiGpgKey {
     pub key_created: Option<String>,
 }
 
-impl From<types::GpgKey> for FfiGpgKey {
+impl From<types::GpgKey> for GpgKey {
     fn from(k: types::GpgKey) -> Self {
         Self {
             id: k.id,
@@ -297,7 +300,7 @@ impl From<types::GpgKey> for FfiGpgKey {
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiGroupUser {
+pub struct GroupUser {
     pub id: Option<String>,
     pub group_id: Option<String>,
     pub user_id: Option<String>,
@@ -306,7 +309,7 @@ pub struct FfiGroupUser {
     // `user` excluded to break cycle: User ↔ GroupUser
 }
 
-impl From<types::GroupUser> for FfiGroupUser {
+impl From<types::GroupUser> for GroupUser {
     fn from(gu: types::GroupUser) -> Self {
         Self {
             id: gu.id,
@@ -319,12 +322,12 @@ impl From<types::GroupUser> for FfiGroupUser {
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiRole {
+pub struct Role {
     pub id: Option<String>,
     pub name: Option<String>,
 }
 
-impl From<types::Role> for FfiRole {
+impl From<types::Role> for Role {
     fn from(r: types::Role) -> Self {
         Self {
             id: r.id,
@@ -334,14 +337,14 @@ impl From<types::Role> for FfiRole {
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiFavorite {
+pub struct Favorite {
     pub id: Option<String>,
     pub foreign_model: Option<String>,
     pub foreign_key: Option<String>,
     pub created: Option<String>,
 }
 
-impl From<types::Favorite> for FfiFavorite {
+impl From<types::Favorite> for Favorite {
     fn from(f: types::Favorite) -> Self {
         Self {
             id: f.id,
@@ -355,7 +358,7 @@ impl From<types::Favorite> for FfiFavorite {
 // ── Feature types ───────────────────────────────────────────────────────────
 
 #[derive(uniffi::Record)]
-pub struct FfiTag {
+pub struct Tag {
     pub id: String,
     pub slug: String,
     pub is_shared: Option<bool>,
@@ -363,7 +366,7 @@ pub struct FfiTag {
     pub modified: Option<String>,
 }
 
-impl From<types::Tag> for FfiTag {
+impl From<types::Tag> for Tag {
     fn from(t: types::Tag) -> Self {
         Self {
             id: t.id,
@@ -376,7 +379,7 @@ impl From<types::Tag> for FfiTag {
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiComment {
+pub struct Comment {
     pub id: String,
     pub parent_id: Option<String>,
     pub foreign_key: Option<String>,
@@ -386,10 +389,10 @@ pub struct FfiComment {
     pub modified: Option<String>,
     pub created_by: Option<String>,
     pub modified_by: Option<String>,
-    pub creator: Option<FfiUser>,
+    pub creator: Option<User>,
 }
 
-impl From<types::Comment> for FfiComment {
+impl From<types::Comment> for Comment {
     fn from(c: types::Comment) -> Self {
         Self {
             id: c.id,
@@ -401,34 +404,35 @@ impl From<types::Comment> for FfiComment {
             modified: to_iso(c.modified),
             created_by: c.created_by,
             modified_by: c.modified_by,
-            creator: c.creator.map(|user| FfiUser::from(*user)),
+            creator: c.creator.map(|user| User::from(*user)),
         }
     }
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiAro {
+#[allow(clippy::struct_field_names)] // the field names of the Passbolt API
+pub struct Aro {
     pub id: String,
     pub aro_type: Option<String>,
     pub username: Option<String>,
-    pub profile: Option<FfiUserProfile>,
+    pub profile: Option<UserProfile>,
     pub name: Option<String>,
 }
 
-impl From<types::Aro> for FfiAro {
+impl From<types::Aro> for Aro {
     fn from(a: types::Aro) -> Self {
         Self {
             id: a.id,
             aro_type: a.aro_type,
             username: a.username,
-            profile: a.profile.map(FfiUserProfile::from),
+            profile: a.profile.map(UserProfile::from),
             name: a.name,
         }
     }
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiPasswordExpirySettings {
+pub struct PasswordExpirySettings {
     pub id: Option<String>,
     pub default_expiry_period_days: Option<u32>,
     pub policy_override: Option<bool>,
@@ -436,7 +440,7 @@ pub struct FfiPasswordExpirySettings {
     pub automatic_update: Option<bool>,
 }
 
-impl From<types::PasswordExpirySettings> for FfiPasswordExpirySettings {
+impl From<types::PasswordExpirySettings> for PasswordExpirySettings {
     fn from(s: types::PasswordExpirySettings) -> Self {
         Self {
             id: s.id,
@@ -450,13 +454,13 @@ impl From<types::PasswordExpirySettings> for FfiPasswordExpirySettings {
 
 #[derive(uniffi::Record)]
 #[allow(clippy::struct_field_names)]
-pub struct FfiUserDeleteDryRun {
+pub struct UserDeleteDryRun {
     pub resources_sole_owner_count: u32,
     pub folders_sole_owner_count: u32,
     pub groups_sole_manager_count: u32,
 }
 
-impl From<types::UserDeleteDryRun> for FfiUserDeleteDryRun {
+impl From<types::UserDeleteDryRun> for UserDeleteDryRun {
     fn from(d: types::UserDeleteDryRun) -> Self {
         Self {
             resources_sole_owner_count: d.resources_sole_owner_count,
@@ -467,12 +471,12 @@ impl From<types::UserDeleteDryRun> for FfiUserDeleteDryRun {
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiGroupDeleteDryRun {
+pub struct GroupDeleteDryRun {
     pub resources_sole_group_count: u32,
     pub folders_sole_group_count: u32,
 }
 
-impl From<types::GroupDeleteDryRun> for FfiGroupDeleteDryRun {
+impl From<types::GroupDeleteDryRun> for GroupDeleteDryRun {
     fn from(d: types::GroupDeleteDryRun) -> Self {
         Self {
             resources_sole_group_count: d.resources_sole_group_count,
@@ -481,8 +485,8 @@ impl From<types::GroupDeleteDryRun> for FfiGroupDeleteDryRun {
     }
 }
 
-impl From<FfiPasswordExpirySettings> for types::PasswordExpirySettings {
-    fn from(settings: FfiPasswordExpirySettings) -> Self {
+impl From<PasswordExpirySettings> for types::PasswordExpirySettings {
+    fn from(settings: PasswordExpirySettings) -> Self {
         Self {
             id: settings.id,
             default_expiry_period_days: settings.default_expiry_period_days,
@@ -495,33 +499,29 @@ impl From<FfiPasswordExpirySettings> for types::PasswordExpirySettings {
 
 /// A shared resource or folder only the deleted user or group owns, with its permissions.
 #[derive(uniffi::Record)]
-pub struct FfiOwnedItem {
+pub struct OwnedItem {
     pub id: String,
-    pub permissions: Vec<FfiPermission>,
+    pub permissions: Vec<Permission>,
 }
 
-impl From<passbolt_sdk::transfer::OwnedItem> for FfiOwnedItem {
+impl From<passbolt_sdk::transfer::OwnedItem> for OwnedItem {
     fn from(item: passbolt_sdk::transfer::OwnedItem) -> Self {
         Self {
             id: item.id,
-            permissions: item
-                .permissions
-                .into_iter()
-                .map(FfiPermission::from)
-                .collect(),
+            permissions: item.permissions.into_iter().map(Permission::from).collect(),
         }
     }
 }
 
 /// A group with other members that only the deleted user manages, with its memberships.
 #[derive(uniffi::Record)]
-pub struct FfiManagedGroup {
+pub struct ManagedGroup {
     pub id: String,
     pub name: String,
-    pub groups_users: Vec<FfiGroupUser>,
+    pub groups_users: Vec<GroupUser>,
 }
 
-impl From<passbolt_sdk::transfer::ManagedGroup> for FfiManagedGroup {
+impl From<passbolt_sdk::transfer::ManagedGroup> for ManagedGroup {
     fn from(group: passbolt_sdk::transfer::ManagedGroup) -> Self {
         Self {
             id: group.id,
@@ -529,7 +529,7 @@ impl From<passbolt_sdk::transfer::ManagedGroup> for FfiManagedGroup {
             groups_users: group
                 .groups_users
                 .into_iter()
-                .map(FfiGroupUser::from)
+                .map(GroupUser::from)
                 .collect(),
         }
     }
@@ -538,31 +538,27 @@ impl From<passbolt_sdk::transfer::ManagedGroup> for FfiManagedGroup {
 /// What blocks deleting a user or a group: each item needs a new owner, each group a new
 /// manager.
 #[derive(uniffi::Record)]
-pub struct FfiDeleteBlockers {
-    pub resources: Vec<FfiOwnedItem>,
-    pub folders: Vec<FfiOwnedItem>,
-    pub groups: Vec<FfiManagedGroup>,
+pub struct DeleteBlockers {
+    pub resources: Vec<OwnedItem>,
+    pub folders: Vec<OwnedItem>,
+    pub groups: Vec<ManagedGroup>,
     /// Groups the deleted user is the only member of: deleted with them.
     pub groups_to_delete: Vec<String>,
 }
 
-impl From<passbolt_sdk::transfer::DeleteBlockers> for FfiDeleteBlockers {
+impl From<passbolt_sdk::transfer::DeleteBlockers> for DeleteBlockers {
     fn from(blockers: passbolt_sdk::transfer::DeleteBlockers) -> Self {
         Self {
             resources: blockers
                 .resources
                 .into_iter()
-                .map(FfiOwnedItem::from)
+                .map(OwnedItem::from)
                 .collect(),
-            folders: blockers
-                .folders
-                .into_iter()
-                .map(FfiOwnedItem::from)
-                .collect(),
+            folders: blockers.folders.into_iter().map(OwnedItem::from).collect(),
             groups: blockers
                 .groups
                 .into_iter()
-                .map(FfiManagedGroup::from)
+                .map(ManagedGroup::from)
                 .collect(),
             groups_to_delete: blockers.groups_to_delete,
         }
@@ -571,14 +567,14 @@ impl From<passbolt_sdk::transfer::DeleteBlockers> for FfiDeleteBlockers {
 
 /// A resource type of the server; `definition` is its JSON Schema, as JSON.
 #[derive(uniffi::Record)]
-pub struct FfiResourceType {
+pub struct ResourceType {
     pub id: String,
     pub slug: String,
     pub name: Option<String>,
     pub definition: Option<String>,
 }
 
-impl From<&types::ResourceType> for FfiResourceType {
+impl From<&types::ResourceType> for ResourceType {
     fn from(resource_type: &types::ResourceType) -> Self {
         Self {
             id: resource_type.id.clone(),
@@ -595,7 +591,7 @@ impl From<&types::ResourceType> for FfiResourceType {
 /// Which metadata versions the organization creates and allows (admin settings).
 #[derive(uniffi::Record)]
 #[allow(clippy::struct_excessive_bools)]
-pub struct FfiMetadataTypesSettings {
+pub struct MetadataTypesSettings {
     pub default_resource_types: Option<String>,
     pub default_folder_type: Option<String>,
     pub default_tag_type: Option<String>,
@@ -610,7 +606,7 @@ pub struct FfiMetadataTypesSettings {
     pub allow_creation_of_v4_comments: Option<bool>,
 }
 
-impl From<types::MetadataTypesSettings> for FfiMetadataTypesSettings {
+impl From<types::MetadataTypesSettings> for MetadataTypesSettings {
     fn from(settings: types::MetadataTypesSettings) -> Self {
         Self {
             default_resource_types: settings.default_resource_types,
@@ -629,8 +625,8 @@ impl From<types::MetadataTypesSettings> for FfiMetadataTypesSettings {
     }
 }
 
-impl From<FfiMetadataTypesSettings> for types::MetadataTypesSettings {
-    fn from(settings: FfiMetadataTypesSettings) -> Self {
+impl From<MetadataTypesSettings> for types::MetadataTypesSettings {
+    fn from(settings: MetadataTypesSettings) -> Self {
         Self {
             default_resource_types: settings.default_resource_types,
             default_folder_type: settings.default_folder_type,
@@ -650,12 +646,12 @@ impl From<FfiMetadataTypesSettings> for types::MetadataTypesSettings {
 
 /// How metadata keys are used in the organization (admin settings).
 #[derive(uniffi::Record)]
-pub struct FfiMetadataKeysSettings {
+pub struct MetadataKeysSettings {
     pub allow_usage_of_personal_keys: Option<bool>,
     pub zero_knowledge_key_share: Option<bool>,
 }
 
-impl From<types::MetadataKeysSettings> for FfiMetadataKeysSettings {
+impl From<types::MetadataKeysSettings> for MetadataKeysSettings {
     fn from(settings: types::MetadataKeysSettings) -> Self {
         Self {
             allow_usage_of_personal_keys: settings.allow_usage_of_personal_keys,
@@ -664,8 +660,8 @@ impl From<types::MetadataKeysSettings> for FfiMetadataKeysSettings {
     }
 }
 
-impl From<FfiMetadataKeysSettings> for types::MetadataKeysSettings {
-    fn from(settings: FfiMetadataKeysSettings) -> Self {
+impl From<MetadataKeysSettings> for types::MetadataKeysSettings {
+    fn from(settings: MetadataKeysSettings) -> Self {
         Self {
             allow_usage_of_personal_keys: settings.allow_usage_of_personal_keys,
             zero_knowledge_key_share: settings.zero_knowledge_key_share,
@@ -676,14 +672,14 @@ impl From<FfiMetadataKeysSettings> for types::MetadataKeysSettings {
 // ── Query types (FFI → SDK) ────────────────────────────────────────────────
 
 #[derive(uniffi::Record)]
-pub struct FfiResourceQuery {
+pub struct ResourceQuery {
     pub search: Option<String>,
     pub favorites_only: bool,
     pub owned_by_me: bool,
 }
 
-impl From<FfiResourceQuery> for passbolt_sdk::ResourceQuery {
-    fn from(q: FfiResourceQuery) -> Self {
+impl From<ResourceQuery> for passbolt_sdk::ResourceQuery {
+    fn from(q: ResourceQuery) -> Self {
         Self {
             search: q.search,
             favorites_only: q.favorites_only,
@@ -694,12 +690,12 @@ impl From<FfiResourceQuery> for passbolt_sdk::ResourceQuery {
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiFolderQuery {
+pub struct FolderQuery {
     pub search: Option<String>,
 }
 
-impl From<FfiFolderQuery> for passbolt_sdk::FolderQuery {
-    fn from(q: FfiFolderQuery) -> Self {
+impl From<FolderQuery> for passbolt_sdk::FolderQuery {
+    fn from(q: FolderQuery) -> Self {
         Self {
             search: q.search,
             ..Default::default()
@@ -708,14 +704,14 @@ impl From<FfiFolderQuery> for passbolt_sdk::FolderQuery {
 }
 
 #[derive(uniffi::Record)]
-pub struct FfiUserQuery {
+pub struct UserQuery {
     pub search: Option<String>,
     pub group_id: Option<String>,
     pub admin_only: bool,
 }
 
-impl From<FfiUserQuery> for passbolt_sdk::UserQuery {
-    fn from(q: FfiUserQuery) -> Self {
+impl From<UserQuery> for passbolt_sdk::UserQuery {
+    fn from(q: UserQuery) -> Self {
         Self {
             search: q.search,
             group_ids: q.group_id.into_iter().collect(),
@@ -729,15 +725,15 @@ impl From<FfiUserQuery> for passbolt_sdk::UserQuery {
 
 #[derive(uniffi::Record)]
 #[allow(clippy::use_self)] // uniffi::Record needs the concrete type name
-pub struct FfiFolderTreeNode {
-    pub folder: FfiFolder,
-    pub children: Vec<FfiFolderTreeNode>,
+pub struct FolderTreeNode {
+    pub folder: Folder,
+    pub children: Vec<FolderTreeNode>,
 }
 
-impl From<types::FolderTreeNode> for FfiFolderTreeNode {
+impl From<types::FolderTreeNode> for FolderTreeNode {
     fn from(node: types::FolderTreeNode) -> Self {
         Self {
-            folder: FfiFolder::from(node.folder),
+            folder: Folder::from(node.folder),
             children: node.children.into_iter().map(Self::from).collect(),
         }
     }
@@ -867,7 +863,7 @@ mod tests {
             "expired": MODIFIED
         }));
 
-        let ffi_resource = FfiResource::from(resource);
+        let ffi_resource = Resource::from(resource);
 
         assert_eq!(ffi_resource.id, "resource-1");
         assert_eq!(ffi_resource.name, "Gmail");
@@ -911,7 +907,7 @@ mod tests {
             "metadata_key_type": "shared_key"
         }));
 
-        let ffi_resource = FfiResource::from(resource);
+        let ffi_resource = Resource::from(resource);
 
         assert_eq!(ffi_resource.name, "");
         assert_eq!(
@@ -932,7 +928,7 @@ mod tests {
     fn test_folder_keeps_every_field() {
         let folder: types::Folder = parse(folder_json("folder-2", Some("folder-1")));
 
-        let ffi_folder = FfiFolder::from(folder);
+        let ffi_folder = Folder::from(folder);
 
         assert_eq!(ffi_folder.id, "folder-2");
         assert_eq!(ffi_folder.name, "folder folder-2");
@@ -949,7 +945,7 @@ mod tests {
     fn test_user_keeps_every_field_but_groups_users() {
         let user: types::User = parse(user_json("user-1"));
 
-        let ffi_user = FfiUser::from(user);
+        let ffi_user = User::from(user);
 
         assert_eq!(ffi_user.id, "user-1");
         assert_eq!(ffi_user.username.as_deref(), Some("ada@passbolt.test"));
@@ -980,7 +976,7 @@ mod tests {
     fn test_group_keeps_every_field_and_group_users_without_user() {
         let group: types::Group = parse(group_json());
 
-        let ffi_group = FfiGroup::from(group);
+        let ffi_group = Group::from(group);
 
         assert_eq!(ffi_group.id, "group-1");
         assert_eq!(ffi_group.name, "Developers");
@@ -1001,7 +997,7 @@ mod tests {
     fn test_permission_converts_nested_user_and_group() {
         let permission: types::Permission = parse(permission_json());
 
-        let ffi_permission = FfiPermission::from(permission);
+        let ffi_permission = Permission::from(permission);
 
         assert_eq!(ffi_permission.id.as_deref(), Some("permission-1"));
         assert_eq!(ffi_permission.aco.as_deref(), Some("Resource"));
@@ -1038,7 +1034,7 @@ mod tests {
             ..types::SecretData::default()
         };
 
-        let ffi_secret_data = FfiSecretData::from(secret_data);
+        let ffi_secret_data = SecretData::from(secret_data);
 
         assert_eq!(ffi_secret_data.password.as_deref(), Some("hunter2"));
         assert_eq!(ffi_secret_data.description.as_deref(), Some("note"));
@@ -1057,7 +1053,7 @@ mod tests {
             "id": "tag-1", "slug": "#prod", "is_shared": true, "created": CREATED, "modified": MODIFIED
         }));
 
-        let ffi_tag = FfiTag::from(tag);
+        let ffi_tag = Tag::from(tag);
 
         assert_eq!(ffi_tag.id, "tag-1");
         assert_eq!(ffi_tag.slug, "#prod");
@@ -1081,7 +1077,7 @@ mod tests {
             "creator": user_json("user-1")
         }));
 
-        let ffi_comment = FfiComment::from(comment);
+        let ffi_comment = Comment::from(comment);
 
         assert_eq!(ffi_comment.id, "comment-1");
         assert_eq!(ffi_comment.parent_id.as_deref(), Some("comment-0"));
@@ -1115,7 +1111,7 @@ mod tests {
     ) {
         let aro: types::Aro = parse(aro_json);
 
-        let ffi_aro = FfiAro::from(aro);
+        let ffi_aro = Aro::from(aro);
 
         assert_eq!(ffi_aro.aro_type.as_deref(), expected_type);
         assert_eq!(ffi_aro.username.as_deref(), expected_username);
@@ -1133,7 +1129,7 @@ mod tests {
             "automatic_update": true
         }));
 
-        let ffi_settings = FfiPasswordExpirySettings::from(settings);
+        let ffi_settings = PasswordExpirySettings::from(settings);
 
         assert_eq!(ffi_settings.id.as_deref(), Some("settings-1"));
         assert_eq!(ffi_settings.default_expiry_period_days, Some(90));
@@ -1154,8 +1150,8 @@ mod tests {
             "folders_sole_group_count": 5
         }));
 
-        let ffi_user_dry_run = FfiUserDeleteDryRun::from(user_dry_run);
-        let ffi_group_dry_run = FfiGroupDeleteDryRun::from(group_dry_run);
+        let ffi_user_dry_run = UserDeleteDryRun::from(user_dry_run);
+        let ffi_group_dry_run = GroupDeleteDryRun::from(group_dry_run);
 
         assert_eq!(ffi_user_dry_run.resources_sole_owner_count, 1);
         assert_eq!(ffi_user_dry_run.folders_sole_owner_count, 2);
@@ -1179,7 +1175,7 @@ mod tests {
             children: vec![middle],
         };
 
-        let ffi_root = FfiFolderTreeNode::from(root);
+        let ffi_root = FolderTreeNode::from(root);
 
         assert_eq!(ffi_root.folder.id, "root");
         let ffi_middle = &ffi_root.children[0];
@@ -1190,7 +1186,7 @@ mod tests {
 
     #[test]
     fn test_resource_query_sets_filters_and_defaults_the_rest() {
-        let query = passbolt_sdk::ResourceQuery::from(FfiResourceQuery {
+        let query = passbolt_sdk::ResourceQuery::from(ResourceQuery {
             search: Some("mail".into()),
             favorites_only: true,
             owned_by_me: true,
@@ -1207,7 +1203,7 @@ mod tests {
 
     #[test]
     fn test_folder_query_sets_search_and_defaults_the_rest() {
-        let query = passbolt_sdk::FolderQuery::from(FfiFolderQuery {
+        let query = passbolt_sdk::FolderQuery::from(FolderQuery {
             search: Some("ops".into()),
         });
 
@@ -1219,7 +1215,7 @@ mod tests {
 
     #[test]
     fn test_user_query_sets_filters_and_defaults_the_rest() {
-        let query = passbolt_sdk::UserQuery::from(FfiUserQuery {
+        let query = passbolt_sdk::UserQuery::from(UserQuery {
             search: Some("ada".into()),
             group_id: Some("group-1".into()),
             admin_only: true,

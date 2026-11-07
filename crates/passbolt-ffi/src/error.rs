@@ -12,11 +12,11 @@
 
 use std::fmt;
 
-use passbolt_sdk::error::{ApiError, PassboltError};
+use passbolt_sdk::error::{ApiError, PassboltError as SdkError};
 
 /// FFI-safe error type exposed to all target languages.
 #[derive(Debug, uniffi::Error)]
-pub enum PassboltFfiError {
+pub enum PassboltError {
     Transport { reason: String },
     Auth { reason: String },
     Crypto { reason: String },
@@ -27,7 +27,7 @@ pub enum PassboltFfiError {
     Other { reason: String },
 }
 
-impl fmt::Display for PassboltFfiError {
+impl fmt::Display for PassboltError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Transport { reason } => write!(f, "Transport error: {reason}"),
@@ -42,27 +42,27 @@ impl fmt::Display for PassboltFfiError {
     }
 }
 
-impl From<PassboltError> for PassboltFfiError {
-    fn from(e: PassboltError) -> Self {
+impl From<SdkError> for PassboltError {
+    fn from(e: SdkError) -> Self {
         match e {
-            PassboltError::Transport(transport_error) => Self::Transport {
+            SdkError::Transport(transport_error) => Self::Transport {
                 reason: transport_error.to_string(),
             },
-            PassboltError::Auth(auth_error) => Self::Auth {
+            SdkError::Auth(auth_error) => Self::Auth {
                 reason: auth_error.to_string(),
             },
-            PassboltError::Crypto(crypto_error) => Self::Crypto {
+            SdkError::Crypto(crypto_error) => Self::Crypto {
                 reason: crypto_error.to_string(),
             },
-            PassboltError::Api(ApiError {
+            SdkError::Api(ApiError {
                 status, message, ..
             }) => Self::Api {
                 status,
                 reason: message,
             },
-            PassboltError::NotFound(message) => Self::NotFound { reason: message },
-            PassboltError::Config(message) => Self::Config { reason: message },
-            PassboltError::InvalidArgument(message) => Self::InvalidArgument { reason: message },
+            SdkError::NotFound(message) => Self::NotFound { reason: message },
+            SdkError::Config(message) => Self::Config { reason: message },
+            SdkError::InvalidArgument(message) => Self::InvalidArgument { reason: message },
             _ => Self::Other {
                 reason: e.to_string(),
             },
@@ -77,16 +77,16 @@ mod tests {
 
     use super::*;
 
-    fn variant_and_reason(error: &PassboltFfiError) -> (&'static str, &str) {
+    fn variant_and_reason(error: &PassboltError) -> (&'static str, &str) {
         match error {
-            PassboltFfiError::Transport { reason } => ("Transport", reason),
-            PassboltFfiError::Auth { reason } => ("Auth", reason),
-            PassboltFfiError::Crypto { reason } => ("Crypto", reason),
-            PassboltFfiError::Api { reason, .. } => ("Api", reason),
-            PassboltFfiError::NotFound { reason } => ("NotFound", reason),
-            PassboltFfiError::Config { reason } => ("Config", reason),
-            PassboltFfiError::InvalidArgument { reason } => ("InvalidArgument", reason),
-            PassboltFfiError::Other { reason } => ("Other", reason),
+            PassboltError::Transport { reason } => ("Transport", reason),
+            PassboltError::Auth { reason } => ("Auth", reason),
+            PassboltError::Crypto { reason } => ("Crypto", reason),
+            PassboltError::Api { reason, .. } => ("Api", reason),
+            PassboltError::NotFound { reason } => ("NotFound", reason),
+            PassboltError::Config { reason } => ("Config", reason),
+            PassboltError::InvalidArgument { reason } => ("InvalidArgument", reason),
+            PassboltError::Other { reason } => ("Other", reason),
         }
     }
 
@@ -106,20 +106,20 @@ mod tests {
         "Crypto",
         "PGP decryption failed: bad packet"
     )]
-    #[case::not_found(PassboltError::NotFound("resource 42".into()), "NotFound", "resource 42")]
-    #[case::config(PassboltError::Config("no server".into()), "Config", "no server")]
+    #[case::not_found(SdkError::NotFound("resource 42".into()), "NotFound", "resource 42")]
+    #[case::config(SdkError::Config("no server".into()), "Config", "no server")]
     #[case::invalid_argument(
-        PassboltError::InvalidArgument("empty id".into()),
+        SdkError::InvalidArgument("empty id".into()),
         "InvalidArgument",
         "empty id"
     )]
-    #[case::other(PassboltError::Other("unexpected".into()), "Other", "unexpected")]
+    #[case::other(SdkError::Other("unexpected".into()), "Other", "unexpected")]
     fn test_from_passbolt_error_maps_variant_and_reason(
-        #[case] error: PassboltError,
+        #[case] error: SdkError,
         #[case] expected_variant: &str,
         #[case] expected_reason: &str,
     ) {
-        let ffi_error = PassboltFfiError::from(error);
+        let ffi_error = PassboltError::from(error);
 
         assert_eq!(
             variant_and_reason(&ffi_error),
@@ -129,23 +129,23 @@ mod tests {
 
     #[test]
     fn test_from_api_error_keeps_status_and_reason() {
-        let error = PassboltError::Api(ApiError {
+        let error = SdkError::Api(ApiError {
             status: 403,
             message: "Forbidden".into(),
             validation_errors: None,
         });
 
-        let ffi_error = PassboltFfiError::from(error);
+        let ffi_error = PassboltError::from(error);
 
         assert!(
-            matches!(&ffi_error, PassboltFfiError::Api { status: 403, reason } if reason == "Forbidden"),
+            matches!(&ffi_error, PassboltError::Api { status: 403, reason } if reason == "Forbidden"),
             "{ffi_error}"
         );
     }
 
     #[test]
     fn test_from_json_error_is_other_with_json_prefix() {
-        let ffi_error = PassboltFfiError::from(PassboltError::Json(json_error()));
+        let ffi_error = PassboltError::from(SdkError::Json(json_error()));
 
         let (variant, reason) = variant_and_reason(&ffi_error);
         assert_eq!(variant, "Other");
@@ -153,13 +153,13 @@ mod tests {
     }
 
     #[rstest]
-    #[case::transport(PassboltFfiError::Transport { reason: "down".into() }, "Transport error: down")]
+    #[case::transport(PassboltError::Transport { reason: "down".into() }, "Transport error: down")]
     #[case::api(
-        PassboltFfiError::Api { status: 500, reason: "boom".into() },
+        PassboltError::Api { status: 500, reason: "boom".into() },
         "API error (500): boom"
     )]
-    #[case::other(PassboltFfiError::Other { reason: "plain".into() }, "plain")]
-    fn test_display_formats_variant(#[case] error: PassboltFfiError, #[case] expected: &str) {
+    #[case::other(PassboltError::Other { reason: "plain".into() }, "plain")]
+    fn test_display_formats_variant(#[case] error: PassboltError, #[case] expected: &str) {
         assert_eq!(error.to_string(), expected);
     }
 }

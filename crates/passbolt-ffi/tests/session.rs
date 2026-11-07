@@ -17,8 +17,8 @@ use std::sync::Arc;
 use futures_executor::block_on;
 
 use passbolt_ffi::{
-    fetch_server_key, FfiLoginOptions, FfiMetadataKeysSettings, FfiPasswordExpirySettings,
-    PassboltClient, PassboltFfiError,
+    fetch_server_key, LoginOptions, MetadataKeysSettings, PassboltClient, PassboltError,
+    PasswordExpirySettings,
 };
 use passbolt_sdk::crypto;
 use serde_json::{json, Value};
@@ -138,10 +138,7 @@ impl Passbolt {
         }
     }
 
-    fn login_with(
-        &self,
-        options: FfiLoginOptions,
-    ) -> Result<Arc<PassboltClient>, PassboltFfiError> {
+    fn login_with(&self, options: LoginOptions) -> Result<Arc<PassboltClient>, PassboltError> {
         PassboltClient::login_with_config(
             self.server.uri(),
             ADA_PRIVATE.into(),
@@ -335,7 +332,7 @@ fn an_invalid_resource_json_is_an_invalid_argument() {
         .unwrap();
 
     assert!(
-        matches!(error, PassboltFfiError::InvalidArgument { .. }),
+        matches!(error, PassboltError::InvalidArgument { .. }),
         "{error}"
     );
     assert_eq!(passbolt.requests("POST", "/resources.json").len(), 0);
@@ -378,7 +375,7 @@ fn an_api_error_keeps_its_status() {
         .unwrap_err();
 
     assert!(
-        matches!(error, PassboltFfiError::Api { status: 404, .. }),
+        matches!(error, PassboltError::Api { status: 404, .. }),
         "{error}"
     );
 }
@@ -403,9 +400,9 @@ fn a_pinned_server_key_is_proven_at_login() {
     passbolt.answer_server_verification();
 
     let client = passbolt
-        .login_with(FfiLoginOptions {
+        .login_with(LoginOptions {
             server_public_key: Some(SERVER_PUBLIC.into()),
-            ..FfiLoginOptions::default()
+            ..LoginOptions::default()
         })
         .unwrap();
 
@@ -418,9 +415,9 @@ fn a_server_without_the_pinned_key_is_refused_before_login() {
     let passbolt = Passbolt::new();
     passbolt.answer_server_verification();
 
-    let Err(error) = passbolt.login_with(FfiLoginOptions {
+    let Err(error) = passbolt.login_with(LoginOptions {
         server_public_key: Some(BETTY_PUBLIC.into()),
-        ..FfiLoginOptions::default()
+        ..LoginOptions::default()
     }) else {
         panic!("logged in to a server without the pinned key")
     };
@@ -511,7 +508,7 @@ fn a_missing_resource_view_keeps_the_not_found_status() {
     assert!(
         matches!(
             error,
-            PassboltFfiError::Api { status: 404, .. } | PassboltFfiError::NotFound { .. }
+            PassboltError::Api { status: 404, .. } | PassboltError::NotFound { .. }
         ),
         "{error}"
     );
@@ -674,7 +671,7 @@ fn a_successor_without_access_is_refused_before_the_deletion() {
         .unwrap_err();
 
     assert!(
-        matches!(error, PassboltFfiError::InvalidArgument { .. }),
+        matches!(error, PassboltError::InvalidArgument { .. }),
         "{error}"
     );
     assert_eq!(passbolt.requests("DELETE", &user_path), Vec::<Value>::new());
@@ -764,7 +761,7 @@ fn the_password_expiry_settings_are_saved() {
 
     let saved = passbolt
         .login()
-        .save_password_expiry_settings(FfiPasswordExpirySettings {
+        .save_password_expiry_settings(PasswordExpirySettings {
             id: None,
             default_expiry_period_days: Some(90),
             policy_override: Some(false),
@@ -803,7 +800,7 @@ fn the_metadata_keys_settings_are_saved() {
 
     passbolt
         .login()
-        .save_metadata_keys_settings(FfiMetadataKeysSettings {
+        .save_metadata_keys_settings(MetadataKeysSettings {
             allow_usage_of_personal_keys: Some(false),
             zero_knowledge_key_share: Some(false),
         })
