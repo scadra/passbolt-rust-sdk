@@ -13,12 +13,12 @@
 package passbolt
 
 // Close logs out and releases the client: it implements io.Closer, for a `defer client.Close()`.
-// Logging out is best effort, Close always returns nil; a second call does nothing.
+// It returns the error of the logout, the client is released anyway; a second call does nothing.
 func (client *PassboltClient) Close() error {
 	if client.ffiObject.destroyed.Load() {
 		return nil
 	}
-	client.Logout()
+	err := client.Logout()
 	client.Destroy()
-	return nil
+	return err
 }
