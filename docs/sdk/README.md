@@ -62,7 +62,10 @@ other fields. The type follows the fields and the server's default version when 
 bindings).
 
 **Defaults.** Optional arguments and record fields have defaults in every binding whose language
-has them (Kotlin, Swift, Python, Ruby, C#); Go and Java give every argument.
+has them (Kotlin, Swift, Python, Ruby, C#). Go takes option structs for the calls with optional
+arguments, whose zero value is the default; Java builds the records with builders
+(`NewResourceBuilder`, `ResourceChangesBuilder`, `LoginOptionsBuilder`) and gives every method
+argument.
 
 **Sharing.** Permission types are Passbolt's: `1` read, `7` update, `15` owner, `-1` to revoke.
 

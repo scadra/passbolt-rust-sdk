@@ -16,6 +16,8 @@ on:
       - scripts/sdk-bindings.sh
       - crates/passbolt-ffi/**
       - crates/passbolt-wasm/**
+      - docs/sdk/go.md
+      - docs/sdk/java.md
       - docs/sdk/javascript.md
   workflow_dispatch:
 
