@@ -29,7 +29,8 @@ with passbolt.Client.login(
         print(view.id, view.name, view.username)
 ```
 
-The `with` block logs out at the end; without it, call `client.logout()`.
+The `with` block logs out at the end; without it, call `client.logout()`. A failed logout raises
+its `PassboltError`, unless the block is already leaving on an exception.
 
 ## Pinning the server, MFA, TLS
 
