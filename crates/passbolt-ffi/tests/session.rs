@@ -17,8 +17,8 @@ use std::sync::Arc;
 use futures_executor::block_on;
 
 use passbolt_ffi::{
-    fetch_server_key, FfiLoginOptions, FfiMetadataKeysSettings, FfiPasswordExpirySettings,
-    PassboltClient, PassboltFfiError,
+    fetch_server_key, LoginOptions, MetadataKeysSettings, NewResource, PassboltClient,
+    PassboltError, PasswordExpirySettings,
 };
 use passbolt_sdk::crypto;
 use serde_json::{json, Value};
@@ -138,10 +138,7 @@ impl Passbolt {
         }
     }
 
-    fn login_with(
-        &self,
-        options: FfiLoginOptions,
-    ) -> Result<Arc<PassboltClient>, PassboltFfiError> {
+    fn login_with(&self, options: LoginOptions) -> Result<Arc<PassboltClient>, PassboltError> {
         PassboltClient::login_with_config(
             self.server.uri(),
             ADA_PRIVATE.into(),
@@ -283,7 +280,7 @@ fn login_answers_the_gpgauth_challenge() {
 }
 
 #[test]
-fn a_resource_view_is_decrypted_json() {
+fn a_resource_view_is_decrypted() {
     let passbolt = Passbolt::new();
     passbolt.on(
         "GET",
@@ -292,22 +289,22 @@ fn a_resource_view_is_decrypted_json() {
     );
     passbolt.on("GET", "/resource-types.json", &resource_types());
 
-    let view: Value = serde_json::from_str(
-        &passbolt
-            .login()
-            .get_resource_view(RESOURCE_ID.into())
-            .unwrap(),
-    )
-    .unwrap();
+    let view = passbolt
+        .login()
+        .get_resource_view(RESOURCE_ID.into())
+        .unwrap();
 
-    assert_eq!(view["name"], "GitHub");
-    assert_eq!(view["password"], "s3cr3t");
-    assert_eq!(view["description"], "prod");
-    assert_eq!(view["resource_type"], "password-and-description");
+    assert_eq!(view.name, "GitHub");
+    assert_eq!(view.password.as_deref(), Some("s3cr3t"));
+    assert_eq!(view.description, "prod");
+    assert_eq!(
+        view.resource_type.as_deref(),
+        Some("password-and-description")
+    );
 }
 
 #[test]
-fn a_resource_is_created_from_json() {
+fn a_resource_is_created() {
     let passbolt = Passbolt::new();
     passbolt.on_status("GET", "/metadata/types/settings.json", 404, &Value::Null);
     passbolt.on("GET", "/resource-types.json", &resource_types());
@@ -315,7 +312,12 @@ fn a_resource_is_created_from_json() {
 
     passbolt
         .login()
-        .create_resource(r#"{"name": "GitHub", "username": "ada", "password": "s3cr3t"}"#.into())
+        .create_resource(NewResource {
+            name: "GitHub".into(),
+            username: Some("ada".into()),
+            password: Some("s3cr3t".into()),
+            ..NewResource::default()
+        })
         .unwrap();
 
     let created = &passbolt.requests("POST", "/resources.json")[0];
@@ -325,17 +327,21 @@ fn a_resource_is_created_from_json() {
 }
 
 #[test]
-fn an_invalid_resource_json_is_an_invalid_argument() {
+fn invalid_resource_fields_are_an_invalid_argument() {
     let passbolt = Passbolt::new();
 
     let error = passbolt
         .login()
-        .create_resource(r#"{"nmae": "typo"}"#.into())
+        .create_resource(NewResource {
+            name: "GitHub".into(),
+            metadata_fields_json: Some("{".into()),
+            ..NewResource::default()
+        })
         .err()
         .unwrap();
 
     assert!(
-        matches!(error, PassboltFfiError::InvalidArgument { .. }),
+        matches!(error, PassboltError::InvalidArgument { .. }),
         "{error}"
     );
     assert_eq!(passbolt.requests("POST", "/resources.json").len(), 0);
@@ -378,7 +384,7 @@ fn an_api_error_keeps_its_status() {
         .unwrap_err();
 
     assert!(
-        matches!(error, PassboltFfiError::Api { status: 404, .. }),
+        matches!(error, PassboltError::Api { status: 404, .. }),
         "{error}"
     );
 }
@@ -403,9 +409,9 @@ fn a_pinned_server_key_is_proven_at_login() {
     passbolt.answer_server_verification();
 
     let client = passbolt
-        .login_with(FfiLoginOptions {
+        .login_with(LoginOptions {
             server_public_key: Some(SERVER_PUBLIC.into()),
-            ..FfiLoginOptions::default()
+            ..LoginOptions::default()
         })
         .unwrap();
 
@@ -418,9 +424,9 @@ fn a_server_without_the_pinned_key_is_refused_before_login() {
     let passbolt = Passbolt::new();
     passbolt.answer_server_verification();
 
-    let Err(error) = passbolt.login_with(FfiLoginOptions {
+    let Err(error) = passbolt.login_with(LoginOptions {
         server_public_key: Some(BETTY_PUBLIC.into()),
-        ..FfiLoginOptions::default()
+        ..LoginOptions::default()
     }) else {
         panic!("logged in to a server without the pinned key")
     };
@@ -506,12 +512,13 @@ fn a_missing_resource_view_keeps_the_not_found_status() {
     let error = passbolt
         .login()
         .get_resource_view(RESOURCE_ID.into())
-        .unwrap_err();
+        .err()
+        .unwrap();
 
     assert!(
         matches!(
             error,
-            PassboltFfiError::Api { status: 404, .. } | PassboltFfiError::NotFound { .. }
+            PassboltError::Api { status: 404, .. } | PassboltError::NotFound { .. }
         ),
         "{error}"
     );
@@ -674,7 +681,7 @@ fn a_successor_without_access_is_refused_before_the_deletion() {
         .unwrap_err();
 
     assert!(
-        matches!(error, PassboltFfiError::InvalidArgument { .. }),
+        matches!(error, PassboltError::InvalidArgument { .. }),
         "{error}"
     );
     assert_eq!(passbolt.requests("DELETE", &user_path), Vec::<Value>::new());
@@ -764,7 +771,7 @@ fn the_password_expiry_settings_are_saved() {
 
     let saved = passbolt
         .login()
-        .save_password_expiry_settings(FfiPasswordExpirySettings {
+        .save_password_expiry_settings(PasswordExpirySettings {
             id: None,
             default_expiry_period_days: Some(90),
             policy_override: Some(false),
@@ -803,7 +810,7 @@ fn the_metadata_keys_settings_are_saved() {
 
     passbolt
         .login()
-        .save_metadata_keys_settings(FfiMetadataKeysSettings {
+        .save_metadata_keys_settings(MetadataKeysSettings {
             allow_usage_of_personal_keys: Some(false),
             zero_knowledge_key_share: Some(false),
         })

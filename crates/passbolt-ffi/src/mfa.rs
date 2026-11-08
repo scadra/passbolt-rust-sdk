@@ -11,14 +11,14 @@
 // @since         0.1.0
 
 use passbolt_sdk::config::SdkConfig;
-use passbolt_sdk::error::PassboltError;
+use passbolt_sdk::error::PassboltError as SdkError;
 use passbolt_sdk::mfa::TotpProvider;
 
 pub const NON_INTERACTIVE_TOTP: &str = "non-interactive-totp";
 
 /// The TOTP provider of the `non-interactive-totp` mode, `None` for any other mode. A retry
 /// waits for the next TOTP window: the same code is never sent twice.
-pub fn totp_provider(config: &SdkConfig) -> Result<Option<TotpProvider>, PassboltError> {
+pub fn totp_provider(config: &SdkConfig) -> Result<Option<TotpProvider>, SdkError> {
     if config.mfa_mode != NON_INTERACTIVE_TOTP {
         return Ok(None);
     }
@@ -40,9 +40,9 @@ mod tests {
             "https://passbolt.test".into(),
             "armored key".into(),
             "passphrase".into(),
-            crate::FfiLoginOptions {
+            crate::LoginOptions {
                 mfa_totp_token: Some(mfa_totp_token.into()),
-                ..crate::FfiLoginOptions::default()
+                ..crate::LoginOptions::default()
             },
         )
     }

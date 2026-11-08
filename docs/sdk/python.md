@@ -26,7 +26,7 @@ with passbolt.Client.login(
     "https://passbolt.example.com", private_key, os.environ["PASSBOLT_PASSPHRASE"]
 ) as client:
     for view in client.list_resource_views("github"):
-        print(view["id"], view["name"], view["username"])
+        print(view.id, view.name, view.username)
 ```
 
 The `with` block logs out at the end; without it, call `client.logout()`.
@@ -57,19 +57,22 @@ Every keyword is optional.
 
 ```python
 view = client.get_resource_view(resource_id)
-print(view["password"])
+print(view.password)
 
-created = client.create_resource(name="GitHub", username="ada", password="…")
-client.update_resource(created.id, password="new")
-client.share_resource(created.id, [user_id], [], passbolt.PermissionType.UPDATE)
+created = client.create_resource(
+    passbolt.NewResource(name="GitHub", username="ada", password="…")
+)
+client.update_resource(created.id, passbolt.ResourceChanges(password="new"))
+client.share_resource(created.id, passbolt.PermissionType.UPDATE, user_ids=[user_id])
 
 folder = client.create_folder("Ops")
 client.move_resource(created.id, folder.id)
 ```
 
-Resource views are `dict`s parsed from the server's JSON; `create_resource` and
-`update_resource` take the fields as keyword arguments (or as one `dict`). The other calls return
-typed objects: `passbolt.Resource`, `passbolt.Folder`, `passbolt.User`…
+The calls return typed objects: `passbolt.ResourceView`, `passbolt.Resource`,
+`passbolt.Folder`, `passbolt.User`… A `ResourceView` holds the fields every resource type shares,
+decrypted; the others, custom fields and icon among them, are the JSON objects `metadata_json` and
+`secret_json`. The fields left out of `NewResource` and `ResourceChanges` keep their default.
 
 ## Errors
 
@@ -89,6 +92,5 @@ except passbolt.PassboltError as error:
 
 The methods are those of the [overview](README.md#what-the-api-covers), in snake_case:
 `list_folders`, `create_folder`, `delete_user_with_transfer`, `set_resource_tags`… The
-listing and optional arguments have defaults (`list_resources(search=None, favorites_only=False,
-owned_by_me=False)`); the others are positional. The generated bindings stay available as
+optional arguments have defaults (`list_resources(favorites_only=True)`). The generated bindings stay available as
 `passbolt._ffi`.

@@ -18,7 +18,7 @@ import com.passbolt.sdk.PassboltClient
 
 // Blocking network calls: run them on Dispatchers.IO. `use` frees the client, `logout` the session.
 PassboltClient.login(serverUrl, privateKeyArmored, passphrase).use { client ->
-    val resources = client.listResources(search = null, favoritesOnly = false, ownedByMe = false)
+    val resources = client.listResources(favoritesOnly = true)
     client.logout()
 }
 ```

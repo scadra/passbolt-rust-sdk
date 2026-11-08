@@ -15,8 +15,8 @@ var _ io.Closer = (*passbolt.PassboltClient)(nil)
 
 func main() {
 	_, err := passbolt.GetKeyFingerprint("not a key")
-	var cryptoErr *passbolt.PassboltFfiErrorCrypto
-	if !errors.As(err, &cryptoErr) || !errors.Is(err, passbolt.ErrPassboltFfiErrorCrypto) {
+	var cryptoErr *passbolt.PassboltErrorCrypto
+	if !errors.As(err, &cryptoErr) || !errors.Is(err, passbolt.ErrPassboltErrorCrypto) {
 		fmt.Fprintln(os.Stderr, "expected a crypto error, got:", err)
 		os.Exit(1)
 	}

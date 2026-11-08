@@ -16,7 +16,6 @@ the package holds the native library of each platform under `runtimes/<rid>/nati
 ## Log in and list
 
 ```csharp
-using System.Text.Json;
 using Passbolt.Sdk;
 
 var privateKey = File.ReadAllText("private.asc");
@@ -25,10 +24,9 @@ var passphrase = Environment.GetEnvironmentVariable("PASSBOLT_PASSPHRASE")!;
 using var client = PassboltClient.Login("https://passbolt.example.com", privateKey, passphrase);
 try
 {
-    using var views = JsonDocument.Parse(client.ListResourceViews("github", withSecrets: false));
-    foreach (var view in views.RootElement.EnumerateArray())
+    foreach (var view in client.ListResourceViews(search: "github"))
     {
-        Console.WriteLine($"{view.GetProperty("id")} {view.GetProperty("name")}");
+        Console.WriteLine($"{view.id} {view.name}");
     }
 }
 finally
@@ -41,7 +39,7 @@ finally
 server.
 
 The calls block. In a desktop app, keep them off the UI thread:
-`await Task.Run(() => client.ListResourceViews(null, false))`.
+`await Task.Run(() => client.ListResourceViews())`.
 
 ## Pinning the server, MFA, TLS
 
@@ -51,18 +49,13 @@ using Passbolt.Sdk;
 var privateKey = File.ReadAllText("private.asc");
 var passphrase = Environment.GetEnvironmentVariable("PASSBOLT_PASSPHRASE")!;
 
-var serverKey = PassboltFfi.FetchServerKey("https://passbolt.example.com", tlsSkipVerify: false);
+var serverKey = PassboltFfi.FetchServerKey("https://passbolt.example.com");
 Console.WriteLine($"Check this fingerprint with your administrator: {serverKey.fingerprint}");
 
-var options = new FfiLoginOptions(
-    tlsSkipVerify: false,
-    proxy: null,
-    mfaTotpToken: null,               // the base32 TOTP secret, for an account with TOTP
+// The arguments left out keep their default.
+var options = new LoginOptions(
     serverPublicKey: serverKey.armoredKey,
-    metadataKeyFingerprint: null,
-    timeoutSeconds: null,             // 60 by default, 0 waits forever
-    clientCertificatePem: null,
-    clientKeyPem: null);
+    timeoutSeconds: 30);              // 60 by default, 0 waits forever
 using var client = PassboltClient.LoginWithConfig(
     "https://passbolt.example.com", privateKey, passphrase, options);
 
@@ -73,28 +66,30 @@ var throughProxy = options with { proxy = "http://proxy.example.com:3128" };
 ## Reading and writing
 
 ```csharp
-using System.Text.Json;
 using Passbolt.Sdk;
 
 static void Example(PassboltClient client, string resourceId, string userId)
 {
-    using var view = JsonDocument.Parse(client.GetResourceView(resourceId));
-    Console.WriteLine(view.RootElement.GetProperty("password"));
+    var view = client.GetResourceView(resourceId);
+    Console.WriteLine(view.password);
 
     var created = client.CreateResource(
-        JsonSerializer.Serialize(new { name = "GitHub", username = "ada", password = "…" }));
-    client.UpdateResource(created.id, JsonSerializer.Serialize(new { password = "new" }));
-    client.ShareResource(created.id, [userId], [], permissionType: 7);
+        new NewResource(name: "GitHub", username: "ada", password: "…"));
+    client.UpdateResource(created.id, new ResourceChanges(password: "new"));
+    // 1 read, 7 update, 15 owner, -1 revokes.
+    client.ShareResource(created.id, permissionType: 7, userIds: [userId]);
 
-    foreach (var folder in client.ListFolders(search: null))
+    foreach (var folder in client.ListFolders())
     {
         Console.WriteLine($"{folder.id} {folder.name}");
     }
 }
 ```
 
-The typed results (`FfiResource`, `FfiFolder`, `FfiUser`…) are C# records; their members keep the
-camelCase of the generator (`created.id`, `folder.name`). Lists come back as arrays.
+The typed results (`ResourceView`, `Resource`, `Folder`, `User`…) are C# records; their members
+keep the camelCase of the generator (`created.id`, `folder.name`). Lists come back as arrays. A
+`ResourceView` holds the fields every resource type shares, decrypted; the others, custom fields
+and icon among them, are the JSON objects `metadataJson` and `secretJson`.
 
 ## Errors
 
@@ -105,21 +100,21 @@ try
 {
     PassboltFfi.GetKeyFingerprint("not a key");
 }
-catch (PassboltFfiException.Crypto error)
+catch (PassboltException.Crypto error)
 {
     Console.WriteLine($"not a key: {error.reason}");
 }
-catch (PassboltFfiException.Api error) when (error.status == 404)
+catch (PassboltException.Api error) when (error.status == 404)
 {
     Console.WriteLine("not on the server");
 }
-catch (PassboltFfiException error)
+catch (PassboltException error)
 {
     Console.WriteLine($"failed: {error.Message}");
 }
 ```
 
-`PassboltFfiException` derives from `System.Exception`, with one nested class per variant of the
+`PassboltException` derives from `System.Exception`, with one nested class per variant of the
 [overview](README.md#concepts) (`Auth`, `Crypto`, `Api`, `NotFound`…).
 
 The methods are those of the [overview](README.md#what-the-api-covers), in PascalCase:

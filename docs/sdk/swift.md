@@ -32,53 +32,48 @@ session.
 import Foundation
 import PassboltSDK
 
-/// The fields of `listResourceViews` this app reads; the JSON has more.
-struct ResourceView: Decodable {
-    let id: String
-    let name: String
-    let username: String
-}
-
 func resourceNames(serverUrl: String, privateKey: String, passphrase: String) async throws -> [String] {
     try await Task.detached {
         let client = try PassboltClient.login(
             serverUrl: serverUrl, privateKeyArmored: privateKey, passphrase: passphrase)
         defer { client.logout() }
-        // JSON, the v5 metadata decrypted: one object per resource.
-        let json = try client.listResourceViews(search: nil, withSecrets: false)
-        return try JSONDecoder().decode([ResourceView].self, from: Data(json.utf8)).map(\.name)
+        // The v5 metadata decrypted: one view per resource.
+        return try client.listResourceViews(search: "github").map(\.name)
     }.value
 }
 ```
 
-The other methods return structs, prefixed with `Ffi`: `FfiResource`, `FfiFolder`, `FfiUser`…
-Their optional fields are optionals, and they are `Equatable`, `Hashable`, `Sendable` and
-`Codable`.
+The methods return structs: `ResourceView`, `Resource`, `Folder`, `User`… Their optional fields
+are optionals, and they are `Equatable`, `Hashable`, `Sendable` and `Codable`. A `ResourceView`
+holds the fields every resource type shares, decrypted; the others, custom fields and icon among
+them, are the JSON objects `metadataJson` and `secretJson`. Arguments and fields left out keep
+their default.
 
 ```swift
-let folders: [FfiFolder] = try client.listFolders(search: nil)
-let secret: FfiSecretData = try client.decryptResourceSecret(resourceId: resourceId)
-let password: String? = secret.password
+let folders: [Folder] = try client.listFolders()
+let view: ResourceView = try client.getResourceView(id: resourceId)
+let password: String? = view.password
+
+let created = try client.createResource(
+    resource: NewResource(name: "GitHub", username: "ada", password: "…"))
+_ = try client.updateResource(id: created.id, changes: ResourceChanges(password: "new"))
+// 1 read, 7 update, 15 owner, -1 revokes.
+try client.shareResource(id: created.id, permissionType: 7, userIds: [userId])
 ```
 
 ## Pinning the server, MFA, TLS
 
-`FfiLoginOptions` has no default values: give each argument.
-
 ```swift
-let serverKey = try fetchServerKey(serverUrl: serverUrl, tlsSkipVerify: false)
+let serverKey = try fetchServerKey(serverUrl: serverUrl)
 // Show serverKey.fingerprint to the user, save serverKey.armoredKey, then:
-let options = FfiLoginOptions(
-    tlsSkipVerify: false, proxy: nil, mfaTotpToken: nil,
-    serverPublicKey: serverKey.armoredKey, metadataKeyFingerprint: nil,
-    timeoutSeconds: nil, clientCertificatePem: nil, clientKeyPem: nil)
+let options = LoginOptions(serverPublicKey: serverKey.armoredKey, timeoutSeconds: 30)
 let client = try PassboltClient.loginWithConfig(
     serverUrl: serverUrl, privateKeyArmored: privateKey, passphrase: passphrase, options: options)
 ```
 
 ## Errors
 
-Every failing call throws a `PassboltFfiError`: `.Crypto`, `.Api` (with its HTTP `status`),
+Every failing call throws a `PassboltError`: `.Crypto`, `.Api` (with its HTTP `status`),
 `.Auth`, `.NotFound`, `.Transport`, `.Config`, `.InvalidArgument`, `.Other`, each with its
 `reason`. The cases keep the capital of their Rust names. `localizedDescription` gives the
 message, such as `Auth error: …`.
@@ -86,9 +81,9 @@ message, such as `Auth error: …`.
 ```swift
 do {
     _ = try client.getResourceView(id: id)
-} catch PassboltFfiError.NotFound {
+} catch PassboltError.NotFound {
     // gone, or not shared with this user
-} catch PassboltFfiError.Api(let status, let reason) {
+} catch PassboltError.Api(let status, let reason) {
     print("HTTP \(status): \(reason)")
 } catch {
     print(error.localizedDescription)

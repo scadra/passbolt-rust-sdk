@@ -29,10 +29,12 @@
 
 mod error;
 mod mfa;
+mod resource;
 mod types;
 
-pub use error::PassboltFfiError;
-pub use types::{FfiMetadataKeysSettings, FfiMetadataTypesSettings, FfiPasswordExpirySettings};
+pub use error::PassboltError;
+pub use resource::{NewResource, ResourceChanges, ResourceView};
+pub use types::{MetadataKeysSettings, MetadataTypesSettings, PasswordExpirySettings};
 
 uniffi::setup_scaffolding!();
 
@@ -44,10 +46,9 @@ use passbolt_sdk::{MfaProvider, PassboltSdk};
 
 use crate::mfa::{totp_provider, NON_INTERACTIVE_TOTP};
 use crate::types::{
-    FfiAro, FfiComment, FfiDeleteBlockers, FfiFavorite, FfiFolder, FfiFolderQuery,
-    FfiFolderTreeNode, FfiGroup, FfiGroupDeleteDryRun, FfiPermission, FfiResource,
-    FfiResourceQuery, FfiResourceType, FfiSecretData, FfiTag, FfiUser, FfiUserDeleteDryRun,
-    FfiUserQuery,
+    Aro, Comment, DeleteBlockers, Favorite, Folder, FolderQuery, FolderTreeNode, Group,
+    GroupDeleteDryRun, Permission, Resource, ResourceQuery, ResourceType, SecretData, Tag, User,
+    UserDeleteDryRun, UserQuery,
 };
 
 type Client = PassboltSdk<NativeHttpClient>;
@@ -70,7 +71,7 @@ fn non_empty(value: Option<String>) -> Option<String> {
 /// A request waits this long by default before failing, instead of blocking the caller forever.
 const DEFAULT_TIMEOUT_SECONDS: u64 = 60;
 
-fn build_http_config(options: &FfiLoginOptions) -> NativeHttpConfig {
+fn build_http_config(options: &LoginOptions) -> NativeHttpConfig {
     NativeHttpConfig {
         tls_skip_verify: options.tls_skip_verify,
         client_cert_pem: non_empty(options.client_certificate_pem.clone()).map(String::into_bytes),
@@ -86,28 +87,36 @@ fn build_http_config(options: &FfiLoginOptions) -> NativeHttpConfig {
 
 /// How to log in, beyond the credentials.
 #[derive(uniffi::Record, Default)]
-pub struct FfiLoginOptions {
+pub struct LoginOptions {
+    #[uniffi(default = false)]
     pub tls_skip_verify: bool,
+    #[uniffi(default = None)]
     pub proxy: Option<String>,
     /// The base32 TOTP secret answering the MFA challenge without prompting.
+    #[uniffi(default = None)]
     pub mfa_totp_token: Option<String>,
     /// The armored server public key pinned with [`fetch_server_key`]: each login then checks
     /// the server holds its private key.
+    #[uniffi(default = None)]
     pub server_public_key: Option<String>,
     /// The shared metadata key fingerprint pinned with
     /// [`PassboltClient::metadata_key_fingerprint`]: shared metadata is then only encrypted
     /// for that key.
+    #[uniffi(default = None)]
     pub metadata_key_fingerprint: Option<String>,
     /// Seconds a request may take; `None` is 60, `0` waits forever.
+    #[uniffi(default = None)]
     pub timeout_seconds: Option<u64>,
     /// PEM certificate and private key, for a server asking for a client certificate (mTLS).
+    #[uniffi(default = None)]
     pub client_certificate_pem: Option<String>,
+    #[uniffi(default = None)]
     pub client_key_pem: Option<String>,
 }
 
 /// The server public key, to pin.
 #[derive(uniffi::Record)]
-pub struct FfiServerKey {
+pub struct ServerKey {
     /// Computed from the key, checked against the one the server announces.
     pub fingerprint: String,
     pub armored_key: String,
@@ -118,9 +127,9 @@ fn build_sdk_config(
     server_url: String,
     private_key_armored: String,
     passphrase: String,
-    options: FfiLoginOptions,
+    options: LoginOptions,
 ) -> SdkConfig {
-    let FfiLoginOptions {
+    let LoginOptions {
         tls_skip_verify,
         proxy,
         mfa_totp_token,
@@ -174,40 +183,12 @@ impl PassboltClient {
         server_url: String,
         private_key_armored: String,
         passphrase: String,
-    ) -> Result<Arc<Self>, PassboltFfiError> {
-        Self::login_with_options(
-            server_url,
-            private_key_armored,
-            passphrase,
-            false,
-            None,
-            None,
-        )
-    }
-
-    /// Authenticate with advanced TLS/proxy options.
-    ///
-    /// `mfa_totp_token` is the base32 TOTP secret used to answer the MFA
-    /// challenge without prompting; `None` or an empty string disables it.
-    #[uniffi::constructor]
-    pub fn login_with_options(
-        server_url: String,
-        private_key_armored: String,
-        passphrase: String,
-        tls_skip_verify: bool,
-        proxy: Option<String>,
-        mfa_totp_token: Option<String>,
-    ) -> Result<Arc<Self>, PassboltFfiError> {
+    ) -> Result<Arc<Self>, PassboltError> {
         Self::login_with_config(
             server_url,
             private_key_armored,
             passphrase,
-            FfiLoginOptions {
-                tls_skip_verify,
-                proxy,
-                mfa_totp_token,
-                ..FfiLoginOptions::default()
-            },
+            LoginOptions::default(),
         )
     }
 
@@ -217,16 +198,16 @@ impl PassboltClient {
         server_url: String,
         private_key_armored: String,
         passphrase: String,
-        options: FfiLoginOptions,
-    ) -> Result<Arc<Self>, PassboltFfiError> {
+        options: LoginOptions,
+    ) -> Result<Arc<Self>, PassboltError> {
         let http_config = build_http_config(&options);
         let config = build_sdk_config(server_url, private_key_armored, passphrase, options);
-        let mfa_provider = totp_provider(&config).map_err(|error| PassboltFfiError::Config {
+        let mfa_provider = totp_provider(&config).map_err(|error| PassboltError::Config {
             reason: error.to_string(),
         })?;
         RUNTIME.block_on(async {
             let http =
-                NativeHttpClient::new(&http_config).map_err(|error| PassboltFfiError::Config {
+                NativeHttpClient::new(&http_config).map_err(|error| PassboltError::Config {
                     reason: error.to_string(),
                 })?;
 
@@ -237,7 +218,7 @@ impl PassboltClient {
                 config.mfa_retrys,
             )
             .await
-            .map_err(PassboltFfiError::from)?;
+            .map_err(PassboltError::from)?;
 
             Ok(Arc::new(Self { inner: client }))
         })
@@ -249,7 +230,7 @@ impl PassboltClient {
     }
 
     /// Check if the session is still valid.
-    pub fn check_auth(&self) -> Result<bool, PassboltFfiError> {
+    pub fn check_auth(&self) -> Result<bool, PassboltError> {
         RUNTIME
             .block_on(self.inner.check_auth_status())
             .map_err(Into::into)
@@ -258,42 +239,43 @@ impl PassboltClient {
     // ── Resources ───────────────────────────────────────────────────────
 
     /// List resources with optional search and filters.
+    #[uniffi::method(default(search = None, favorites_only = false, owned_by_me = false))]
     pub fn list_resources(
         &self,
         search: Option<String>,
         favorites_only: bool,
         owned_by_me: bool,
-    ) -> Result<Vec<FfiResource>, PassboltFfiError> {
-        let query = FfiResourceQuery {
+    ) -> Result<Vec<Resource>, PassboltError> {
+        let query = ResourceQuery {
             search,
             favorites_only,
             owned_by_me,
         };
         let resources = RUNTIME
             .block_on(self.inner.get_resources(query.into()))
-            .map_err(PassboltFfiError::from)?;
-        Ok(resources.into_iter().map(FfiResource::from).collect())
+            .map_err(PassboltError::from)?;
+        Ok(resources.into_iter().map(Resource::from).collect())
     }
 
-    /// A resource with its v5 metadata and its secret decrypted, for every resource type, as
-    /// JSON: `name`, `username`, `uris`, `description`, `password`, `metadata`, `secret`…
-    pub fn get_resource_view(&self, id: String) -> Result<String, PassboltFfiError> {
+    /// A resource with its v5 metadata and its secret decrypted, for every resource type.
+    pub fn get_resource_view(&self, id: String) -> Result<ResourceView, PassboltError> {
         let view = RUNTIME
             .block_on(passbolt_sdk::resource::get::get_resource_view(
                 &self.inner,
                 &id,
             ))
-            .map_err(PassboltFfiError::from)?;
-        to_json(&view)
+            .map_err(PassboltError::from)?;
+        Ok(ResourceView::from(view))
     }
 
-    /// Resources with their v5 metadata decrypted, searched by their decrypted name, as a JSON
-    /// array; their secrets too with `with_secrets`. One that does not decrypt has an `error`.
+    /// Resources with their v5 metadata decrypted, searched by their decrypted name; their
+    /// secrets too with `with_secrets`. One that does not decrypt has an `error`.
+    #[uniffi::method(default(search = None, with_secrets = false))]
     pub fn list_resource_views(
         &self,
         search: Option<String>,
         with_secrets: bool,
-    ) -> Result<String, PassboltFfiError> {
+    ) -> Result<Vec<ResourceView>, PassboltError> {
         let query = passbolt_sdk::ResourceQuery {
             search,
             ..Default::default()
@@ -305,53 +287,48 @@ impl PassboltClient {
                 &[],
                 with_secrets.then_some(0),
             ))
-            .map_err(PassboltFfiError::from)?;
-        to_json(&views)
+            .map_err(PassboltError::from)?;
+        Ok(views.into_iter().map(ResourceView::from).collect())
     }
 
-    /// Create a resource of any type from JSON: `{"name": …, "resource_type"?, "username"?,
-    /// "uris"?, "password"?, "totp"?, "note"?, "pin_code"?, "custom_fields"?,
-    /// "metadata_fields"?, "secret_fields"?, …}`. Returns the created resource.
-    pub fn create_resource(
-        &self,
-        new_resource_json: String,
-    ) -> Result<FfiResource, PassboltFfiError> {
-        let new_resource = from_json(&new_resource_json)?;
+    /// Create a resource of any type. Returns the created resource.
+    pub fn create_resource(&self, resource: NewResource) -> Result<Resource, PassboltError> {
+        let new_resource = resource.try_into()?;
         let resource = RUNTIME
             .block_on(passbolt_sdk::resource::create::create_resource(
                 &self.inner,
                 &new_resource,
             ))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiResource::from(resource))
+            .map_err(PassboltError::from)?;
+        Ok(Resource::from(resource))
     }
 
-    /// Update a resource from the JSON of the fields to change; `"expired": null` clears the
-    /// expiry. Other fields keep their value.
+    /// Update a resource; the fields left out keep their value.
     pub fn update_resource(
         &self,
         id: String,
-        changes_json: String,
-    ) -> Result<FfiResource, PassboltFfiError> {
-        let changes = from_json(&changes_json)?;
+        changes: ResourceChanges,
+    ) -> Result<Resource, PassboltError> {
+        let changes = changes.try_into()?;
         let resource = RUNTIME
             .block_on(passbolt_sdk::resource::update::update_resource(
                 &self.inner,
                 &id,
                 &changes,
             ))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiResource::from(resource))
+            .map_err(PassboltError::from)?;
+        Ok(Resource::from(resource))
     }
 
     /// Share a resource with users and groups (`permission_type` 1, 7 or 15), or revoke with -1.
+    #[uniffi::method(default(user_ids = [], group_ids = []))]
     pub fn share_resource(
         &self,
         id: String,
+        permission_type: i32,
         user_ids: Vec<String>,
         group_ids: Vec<String>,
-        permission_type: i32,
-    ) -> Result<(), PassboltFfiError> {
+    ) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(passbolt_sdk::resource::share::share_resource(
                 &self.inner,
@@ -364,14 +341,15 @@ impl PassboltClient {
     }
 
     /// Share a folder, and with `with_content` the sub-folders and resources the user owns.
+    #[uniffi::method(default(user_ids = [], group_ids = [], with_content = false))]
     pub fn share_folder(
         &self,
         id: String,
+        permission_type: i32,
         user_ids: Vec<String>,
         group_ids: Vec<String>,
-        permission_type: i32,
         with_content: bool,
-    ) -> Result<(), PassboltFfiError> {
+    ) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(passbolt_sdk::folder::share::share_folder(
                 &self.inner,
@@ -385,219 +363,211 @@ impl PassboltClient {
     }
 
     /// Move a resource into a folder, or to the root without one.
+    #[uniffi::method(default(folder_id = None))]
     pub fn move_resource(
         &self,
         id: String,
         folder_id: Option<String>,
-    ) -> Result<(), PassboltFfiError> {
+    ) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(self.inner.move_resource(&id, folder_id.as_deref()))
             .map_err(Into::into)
     }
 
     /// Move a folder into another one, or to the root without one.
-    pub fn move_folder(
-        &self,
-        id: String,
-        folder_id: Option<String>,
-    ) -> Result<(), PassboltFfiError> {
+    #[uniffi::method(default(folder_id = None))]
+    pub fn move_folder(&self, id: String, folder_id: Option<String>) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(self.inner.move_folder(&id, folder_id.as_deref()))
             .map_err(Into::into)
     }
 
     /// Get a single resource by ID.
-    pub fn get_resource(&self, id: String) -> Result<FfiResource, PassboltFfiError> {
+    pub fn get_resource(&self, id: String) -> Result<Resource, PassboltError> {
         let resource = RUNTIME
             .block_on(self.inner.get_resource(&id))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiResource::from(resource))
+            .map_err(PassboltError::from)?;
+        Ok(Resource::from(resource))
     }
 
     /// Get multiple resources by IDs.
-    pub fn get_resources_by_ids(
-        &self,
-        ids: Vec<String>,
-    ) -> Result<Vec<FfiResource>, PassboltFfiError> {
+    pub fn get_resources_by_ids(&self, ids: Vec<String>) -> Result<Vec<Resource>, PassboltError> {
         let resources = RUNTIME
             .block_on(self.inner.get_resources_by_ids(&ids))
-            .map_err(PassboltFfiError::from)?;
-        Ok(resources.into_iter().map(FfiResource::from).collect())
+            .map_err(PassboltError::from)?;
+        Ok(resources.into_iter().map(Resource::from).collect())
     }
 
     /// Decrypt a resource's secret. Pass the resource obtained from `get_resource`.
     pub fn decrypt_resource_secret(
         &self,
         resource_id: String,
-    ) -> Result<FfiSecretData, PassboltFfiError> {
+    ) -> Result<SecretData, PassboltError> {
         RUNTIME.block_on(async {
             let resource = self
                 .inner
                 .get_resource(&resource_id)
                 .await
-                .map_err(PassboltFfiError::from)?;
+                .map_err(PassboltError::from)?;
             let secret = self
                 .inner
                 .decrypt_resource_secret(&resource)
                 .await
-                .map_err(PassboltFfiError::from)?;
-            Ok(FfiSecretData::from(secret))
+                .map_err(PassboltError::from)?;
+            Ok(SecretData::from(secret))
         })
     }
 
     /// Delete a resource.
-    pub fn delete_resource(&self, id: String) -> Result<(), PassboltFfiError> {
+    pub fn delete_resource(&self, id: String) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(self.inner.delete_resource(&id))
             .map_err(Into::into)
     }
 
     /// Bulk delete resources.
-    pub fn delete_resources(&self, ids: Vec<String>) -> Result<(), PassboltFfiError> {
+    pub fn delete_resources(&self, ids: Vec<String>) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(self.inner.delete_resources(&ids))
             .map_err(Into::into)
     }
 
     /// Get permissions for a resource.
-    pub fn get_resource_permissions(
-        &self,
-        id: String,
-    ) -> Result<Vec<FfiPermission>, PassboltFfiError> {
+    pub fn get_resource_permissions(&self, id: String) -> Result<Vec<Permission>, PassboltError> {
         let permissions = RUNTIME
             .block_on(self.inner.get_resource_permissions(&id))
-            .map_err(PassboltFfiError::from)?;
-        Ok(permissions.into_iter().map(FfiPermission::from).collect())
+            .map_err(PassboltError::from)?;
+        Ok(permissions.into_iter().map(Permission::from).collect())
     }
 
     // ── Folders ─────────────────────────────────────────────────────────
 
     /// List all folders.
-    pub fn list_folders(&self, search: Option<String>) -> Result<Vec<FfiFolder>, PassboltFfiError> {
-        let query = FfiFolderQuery { search };
+    #[uniffi::method(default(search = None))]
+    pub fn list_folders(&self, search: Option<String>) -> Result<Vec<Folder>, PassboltError> {
+        let query = FolderQuery { search };
         let folders = RUNTIME
             .block_on(self.inner.get_folders(query.into()))
-            .map_err(PassboltFfiError::from)?;
-        Ok(folders.into_iter().map(FfiFolder::from).collect())
+            .map_err(PassboltError::from)?;
+        Ok(folders.into_iter().map(Folder::from).collect())
     }
 
     /// Get a single folder by ID.
-    pub fn get_folder(&self, id: String) -> Result<FfiFolder, PassboltFfiError> {
+    pub fn get_folder(&self, id: String) -> Result<Folder, PassboltError> {
         let folder = RUNTIME
             .block_on(self.inner.get_folder(&id))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiFolder::from(folder))
+            .map_err(PassboltError::from)?;
+        Ok(Folder::from(folder))
     }
 
     /// Create a folder, at the root or in `folder_parent_id`; in a parent folder it gets the
     /// parent's permissions.
+    #[uniffi::method(default(folder_parent_id = None))]
     pub fn create_folder(
         &self,
         name: String,
         folder_parent_id: Option<String>,
-    ) -> Result<FfiFolder, PassboltFfiError> {
+    ) -> Result<Folder, PassboltError> {
         let folder = RUNTIME
             .block_on(passbolt_sdk::folder::create::create_folder(
                 &self.inner,
                 &name,
                 folder_parent_id.as_deref(),
             ))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiFolder::from(folder))
+            .map_err(PassboltError::from)?;
+        Ok(Folder::from(folder))
     }
 
     /// Rename a folder.
-    pub fn rename_folder(&self, id: String, name: String) -> Result<FfiFolder, PassboltFfiError> {
+    pub fn rename_folder(&self, id: String, name: String) -> Result<Folder, PassboltError> {
         let payload = passbolt_sdk::types::UpdateFolderPayload { name };
         let folder = RUNTIME
             .block_on(self.inner.update_folder(&id, &payload))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiFolder::from(folder))
+            .map_err(PassboltError::from)?;
+        Ok(Folder::from(folder))
     }
 
     /// Delete a folder; its content moves to the root.
-    pub fn delete_folder(&self, id: String) -> Result<(), PassboltFfiError> {
+    pub fn delete_folder(&self, id: String) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(self.inner.delete_folder(&id))
             .map_err(Into::into)
     }
 
     /// Delete a folder with its sub-folders and the resources the user may delete in them.
-    pub fn delete_folder_with_content(&self, id: String) -> Result<(), PassboltFfiError> {
+    pub fn delete_folder_with_content(&self, id: String) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(self.inner.delete_folder_with_content(&id))
             .map_err(Into::into)
     }
 
     /// Get permissions for a folder.
-    pub fn get_folder_permissions(
-        &self,
-        id: String,
-    ) -> Result<Vec<FfiPermission>, PassboltFfiError> {
+    pub fn get_folder_permissions(&self, id: String) -> Result<Vec<Permission>, PassboltError> {
         let permissions = RUNTIME
             .block_on(self.inner.get_folder_permissions(&id))
-            .map_err(PassboltFfiError::from)?;
-        Ok(permissions.into_iter().map(FfiPermission::from).collect())
+            .map_err(PassboltError::from)?;
+        Ok(permissions.into_iter().map(Permission::from).collect())
     }
 
     /// Build a folder tree from the flat folder list.
-    pub fn get_folder_tree(&self) -> Result<Vec<FfiFolderTreeNode>, PassboltFfiError> {
+    pub fn get_folder_tree(&self) -> Result<Vec<FolderTreeNode>, PassboltError> {
         let folders = RUNTIME
             .block_on(self.inner.get_folders(passbolt_sdk::FolderQuery::default()))
-            .map_err(PassboltFfiError::from)?;
+            .map_err(PassboltError::from)?;
         let tree = passbolt_sdk::build_folder_tree(&folders);
-        Ok(tree.into_iter().map(FfiFolderTreeNode::from).collect())
+        Ok(tree.into_iter().map(FolderTreeNode::from).collect())
     }
 
     // ── Users ───────────────────────────────────────────────────────────
 
     /// List all users.
+    #[uniffi::method(default(search = None, group_id = None, admin_only = false))]
     pub fn list_users(
         &self,
         search: Option<String>,
         group_id: Option<String>,
         admin_only: bool,
-    ) -> Result<Vec<FfiUser>, PassboltFfiError> {
-        let query = FfiUserQuery {
+    ) -> Result<Vec<User>, PassboltError> {
+        let query = UserQuery {
             search,
             group_id,
             admin_only,
         };
         let users = RUNTIME
             .block_on(self.inner.get_users(query.into()))
-            .map_err(PassboltFfiError::from)?;
-        Ok(users.into_iter().map(FfiUser::from).collect())
+            .map_err(PassboltError::from)?;
+        Ok(users.into_iter().map(User::from).collect())
     }
 
     /// Get the currently logged-in user.
-    pub fn get_me(&self) -> Result<FfiUser, PassboltFfiError> {
+    pub fn get_me(&self) -> Result<User, PassboltError> {
         let user = RUNTIME
             .block_on(self.inner.get_me())
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiUser::from(user))
+            .map_err(PassboltError::from)?;
+        Ok(User::from(user))
     }
 
     /// Get a user by ID.
-    pub fn get_user(&self, id: String) -> Result<FfiUser, PassboltFfiError> {
+    pub fn get_user(&self, id: String) -> Result<User, PassboltError> {
         let user = RUNTIME
             .block_on(self.inner.get_user(&id))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiUser::from(user))
+            .map_err(PassboltError::from)?;
+        Ok(User::from(user))
     }
 
     /// Delete a user.
-    pub fn delete_user(&self, id: String) -> Result<(), PassboltFfiError> {
+    pub fn delete_user(&self, id: String) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(self.inner.delete_user(&id))
             .map_err(Into::into)
     }
 
     /// Preview the impact of deleting a user.
-    pub fn delete_user_dry_run(&self, id: String) -> Result<FfiUserDeleteDryRun, PassboltFfiError> {
+    pub fn delete_user_dry_run(&self, id: String) -> Result<UserDeleteDryRun, PassboltError> {
         let result = RUNTIME
             .block_on(self.inner.delete_user_dry_run(&id))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiUserDeleteDryRun::from(result))
+            .map_err(PassboltError::from)?;
+        Ok(UserDeleteDryRun::from(result))
     }
 
     /// Create a user with the role named `role` (`user` or `admin`).
@@ -607,7 +577,7 @@ impl PassboltClient {
         first_name: String,
         last_name: String,
         role: String,
-    ) -> Result<FfiUser, PassboltFfiError> {
+    ) -> Result<User, PassboltError> {
         let user = RUNTIME
             .block_on(passbolt_sdk::user::create::create_user(
                 &self.inner,
@@ -616,18 +586,19 @@ impl PassboltClient {
                 &last_name,
                 &role,
             ))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiUser::from(user))
+            .map_err(PassboltError::from)?;
+        Ok(User::from(user))
     }
 
     /// Update a user's names or role; `None` keeps the value.
+    #[uniffi::method(default(first_name = None, last_name = None, role = None))]
     pub fn update_user(
         &self,
         id: String,
         first_name: Option<String>,
         last_name: Option<String>,
         role: Option<String>,
-    ) -> Result<FfiUser, PassboltFfiError> {
+    ) -> Result<User, PassboltError> {
         let user = RUNTIME
             .block_on(passbolt_sdk::user::update::update_user(
                 &self.inner,
@@ -636,16 +607,16 @@ impl PassboltClient {
                 last_name.as_deref(),
                 role.as_deref(),
             ))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiUser::from(user))
+            .map_err(PassboltError::from)?;
+        Ok(User::from(user))
     }
 
     /// What blocks deleting the user: what they alone own or manage.
-    pub fn user_delete_blockers(&self, id: String) -> Result<FfiDeleteBlockers, PassboltFfiError> {
+    pub fn user_delete_blockers(&self, id: String) -> Result<DeleteBlockers, PassboltError> {
         let blockers = RUNTIME
             .block_on(self.inner.user_delete_blockers(&id))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiDeleteBlockers::from(blockers))
+            .map_err(PassboltError::from)?;
+        Ok(DeleteBlockers::from(blockers))
     }
 
     /// Delete a user, giving what they alone own or manage to `successor_id`, a user or a
@@ -654,7 +625,7 @@ impl PassboltClient {
         &self,
         id: String,
         successor_id: String,
-    ) -> Result<(), PassboltFfiError> {
+    ) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(async {
                 let blockers = self.inner.user_delete_blockers(&id).await?;
@@ -670,46 +641,44 @@ impl PassboltClient {
     // ── Groups ──────────────────────────────────────────────────────────
 
     /// List all groups.
-    pub fn list_groups(&self) -> Result<Vec<FfiGroup>, PassboltFfiError> {
+    pub fn list_groups(&self) -> Result<Vec<Group>, PassboltError> {
         let groups = RUNTIME
             .block_on(self.inner.get_groups(passbolt_sdk::GroupQuery::default()))
-            .map_err(PassboltFfiError::from)?;
-        Ok(groups.into_iter().map(FfiGroup::from).collect())
+            .map_err(PassboltError::from)?;
+        Ok(groups.into_iter().map(Group::from).collect())
     }
 
     /// Get a group by ID.
-    pub fn get_group(&self, id: String) -> Result<FfiGroup, PassboltFfiError> {
+    pub fn get_group(&self, id: String) -> Result<Group, PassboltError> {
         let group = RUNTIME
             .block_on(self.inner.get_group(&id))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiGroup::from(group))
+            .map_err(PassboltError::from)?;
+        Ok(Group::from(group))
     }
 
     /// Delete a group.
-    pub fn delete_group(&self, id: String) -> Result<(), PassboltFfiError> {
+    pub fn delete_group(&self, id: String) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(self.inner.delete_group(&id))
             .map_err(Into::into)
     }
 
     /// Preview the impact of deleting a group.
-    pub fn delete_group_dry_run(
-        &self,
-        id: String,
-    ) -> Result<FfiGroupDeleteDryRun, PassboltFfiError> {
+    pub fn delete_group_dry_run(&self, id: String) -> Result<GroupDeleteDryRun, PassboltError> {
         let result = RUNTIME
             .block_on(self.inner.delete_group_dry_run(&id))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiGroupDeleteDryRun::from(result))
+            .map_err(PassboltError::from)?;
+        Ok(GroupDeleteDryRun::from(result))
     }
 
     /// Create a group; a manager is also a member.
+    #[uniffi::method(default(member_ids = [], manager_ids = []))]
     pub fn create_group(
         &self,
         name: String,
         member_ids: Vec<String>,
         manager_ids: Vec<String>,
-    ) -> Result<FfiGroup, PassboltFfiError> {
+    ) -> Result<Group, PassboltError> {
         let group = RUNTIME
             .block_on(passbolt_sdk::group::create::create_group(
                 &self.inner,
@@ -717,13 +686,14 @@ impl PassboltClient {
                 &member_ids,
                 &manager_ids,
             ))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiGroup::from(group))
+            .map_err(PassboltError::from)?;
+        Ok(Group::from(group))
     }
 
     /// Rename a group and change its members: the removed ones first, then the added ones,
     /// who get the secrets of the group's resources. Giving a user the role they have, or
     /// removing a non-member, is an error.
+    #[uniffi::method(default(name = None, add_member_ids = [], add_manager_ids = [], remove_member_ids = []))]
     pub fn update_group(
         &self,
         id: String,
@@ -731,7 +701,7 @@ impl PassboltClient {
         add_member_ids: Vec<String>,
         add_manager_ids: Vec<String>,
         remove_member_ids: Vec<String>,
-    ) -> Result<FfiGroup, PassboltFfiError> {
+    ) -> Result<Group, PassboltError> {
         use passbolt_sdk::group::update::update_group;
 
         let update = |name: Option<&str>, members: &[String], managers: &[String], delete| {
@@ -744,26 +714,26 @@ impl PassboltClient {
                     managers,
                     delete,
                 ))
-                .map_err(PassboltFfiError::from)
+                .map_err(PassboltError::from)
         };
         let adds = !add_member_ids.is_empty() || !add_manager_ids.is_empty();
         if remove_member_ids.is_empty() {
             return update(name.as_deref(), &add_member_ids, &add_manager_ids, false)
-                .map(FfiGroup::from);
+                .map(Group::from);
         }
         let group = update(name.as_deref(), &remove_member_ids, &[], true)?;
         if !adds {
-            return Ok(FfiGroup::from(group));
+            return Ok(Group::from(group));
         }
-        update(None, &add_member_ids, &add_manager_ids, false).map(FfiGroup::from)
+        update(None, &add_member_ids, &add_manager_ids, false).map(Group::from)
     }
 
     /// What blocks deleting the group: what it alone owns.
-    pub fn group_delete_blockers(&self, id: String) -> Result<FfiDeleteBlockers, PassboltFfiError> {
+    pub fn group_delete_blockers(&self, id: String) -> Result<DeleteBlockers, PassboltError> {
         let blockers = RUNTIME
             .block_on(self.inner.group_delete_blockers(&id))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiDeleteBlockers::from(blockers))
+            .map_err(PassboltError::from)?;
+        Ok(DeleteBlockers::from(blockers))
     }
 
     /// Delete a group, giving what it alone owns to `successor_id`, a user or a group that
@@ -772,7 +742,7 @@ impl PassboltClient {
         &self,
         id: String,
         successor_id: String,
-    ) -> Result<(), PassboltFfiError> {
+    ) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(async {
                 let blockers = self.inner.group_delete_blockers(&id).await?;
@@ -788,11 +758,11 @@ impl PassboltClient {
     // ── Tags ────────────────────────────────────────────────────────────
 
     /// List all tags.
-    pub fn get_tags(&self) -> Result<Vec<FfiTag>, PassboltFfiError> {
+    pub fn get_tags(&self) -> Result<Vec<Tag>, PassboltError> {
         let tags = RUNTIME
             .block_on(self.inner.get_tags())
-            .map_err(PassboltFfiError::from)?;
-        Ok(tags.into_iter().map(FfiTag::from).collect())
+            .map_err(PassboltError::from)?;
+        Ok(tags.into_iter().map(Tag::from).collect())
     }
 
     /// Add a tag to a resource, keeping its other tags; returns the resource's tags.
@@ -800,11 +770,11 @@ impl PassboltClient {
         &self,
         resource_id: String,
         slug: String,
-    ) -> Result<Vec<FfiTag>, PassboltFfiError> {
+    ) -> Result<Vec<Tag>, PassboltError> {
         let tags = RUNTIME
             .block_on(self.inner.add_tag_to_resource(&resource_id, &slug))
-            .map_err(PassboltFfiError::from)?;
-        Ok(tags.into_iter().map(FfiTag::from).collect())
+            .map_err(PassboltError::from)?;
+        Ok(tags.into_iter().map(Tag::from).collect())
     }
 
     /// Replace all the tags of a resource; returns its tags.
@@ -812,23 +782,23 @@ impl PassboltClient {
         &self,
         resource_id: String,
         slugs: Vec<String>,
-    ) -> Result<Vec<FfiTag>, PassboltFfiError> {
+    ) -> Result<Vec<Tag>, PassboltError> {
         let tags = RUNTIME
             .block_on(self.inner.update_resource_tags(&resource_id, &slugs))
-            .map_err(PassboltFfiError::from)?;
-        Ok(tags.into_iter().map(FfiTag::from).collect())
+            .map_err(PassboltError::from)?;
+        Ok(tags.into_iter().map(Tag::from).collect())
     }
 
     /// Rename a tag.
-    pub fn rename_tag(&self, id: String, slug: String) -> Result<FfiTag, PassboltFfiError> {
+    pub fn rename_tag(&self, id: String, slug: String) -> Result<Tag, PassboltError> {
         let tag = RUNTIME
             .block_on(self.inner.update_tag(&id, &slug))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiTag::from(tag))
+            .map_err(PassboltError::from)?;
+        Ok(Tag::from(tag))
     }
 
     /// Delete a tag.
-    pub fn delete_tag(&self, id: String) -> Result<(), PassboltFfiError> {
+    pub fn delete_tag(&self, id: String) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(self.inner.delete_tag(&id))
             .map_err(Into::into)
@@ -837,31 +807,32 @@ impl PassboltClient {
     // ── Comments ────────────────────────────────────────────────────────
 
     /// Get comments for a resource.
-    pub fn get_comments(&self, resource_id: String) -> Result<Vec<FfiComment>, PassboltFfiError> {
+    pub fn get_comments(&self, resource_id: String) -> Result<Vec<Comment>, PassboltError> {
         let comments = RUNTIME
             .block_on(self.inner.get_comments(&resource_id))
-            .map_err(PassboltFfiError::from)?;
-        Ok(comments.into_iter().map(FfiComment::from).collect())
+            .map_err(PassboltError::from)?;
+        Ok(comments.into_iter().map(Comment::from).collect())
     }
 
     /// Create a comment on a resource.
+    #[uniffi::method(default(parent_id = None))]
     pub fn create_comment(
         &self,
         resource_id: String,
         content: String,
         parent_id: Option<String>,
-    ) -> Result<FfiComment, PassboltFfiError> {
+    ) -> Result<Comment, PassboltError> {
         let comment = RUNTIME
             .block_on(
                 self.inner
                     .create_comment(&resource_id, &content, parent_id.as_deref()),
             )
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiComment::from(comment))
+            .map_err(PassboltError::from)?;
+        Ok(Comment::from(comment))
     }
 
     /// Delete a comment.
-    pub fn delete_comment(&self, id: String) -> Result<(), PassboltFfiError> {
+    pub fn delete_comment(&self, id: String) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(self.inner.delete_comment(&id))
             .map_err(Into::into)
@@ -870,25 +841,25 @@ impl PassboltClient {
     // ── Sharing ─────────────────────────────────────────────────────────
 
     /// Search for users and groups (AROs) for sharing.
-    pub fn search_aros(&self, search: String) -> Result<Vec<FfiAro>, PassboltFfiError> {
+    pub fn search_aros(&self, search: String) -> Result<Vec<Aro>, PassboltError> {
         let aros = RUNTIME
             .block_on(self.inner.search_aros(&search))
-            .map_err(PassboltFfiError::from)?;
-        Ok(aros.into_iter().map(FfiAro::from).collect())
+            .map_err(PassboltError::from)?;
+        Ok(aros.into_iter().map(Aro::from).collect())
     }
 
     // ── Favorites ───────────────────────────────────────────────────────
 
     /// Add a resource to favorites.
-    pub fn add_favorite(&self, resource_id: String) -> Result<FfiFavorite, PassboltFfiError> {
+    pub fn add_favorite(&self, resource_id: String) -> Result<Favorite, PassboltError> {
         let favorite = RUNTIME
             .block_on(self.inner.add_favorite(&resource_id))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiFavorite::from(favorite))
+            .map_err(PassboltError::from)?;
+        Ok(Favorite::from(favorite))
     }
 
     /// Remove a favorite.
-    pub fn remove_favorite(&self, favorite_id: String) -> Result<(), PassboltFfiError> {
+    pub fn remove_favorite(&self, favorite_id: String) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(self.inner.remove_favorite(&favorite_id))
             .map_err(Into::into)
@@ -897,28 +868,26 @@ impl PassboltClient {
     // ── Password Expiry ─────────────────────────────────────────────────
 
     /// Get password expiry settings.
-    pub fn get_password_expiry_settings(
-        &self,
-    ) -> Result<FfiPasswordExpirySettings, PassboltFfiError> {
+    pub fn get_password_expiry_settings(&self) -> Result<PasswordExpirySettings, PassboltError> {
         let settings = RUNTIME
             .block_on(self.inner.get_password_expiry_settings())
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiPasswordExpirySettings::from(settings))
+            .map_err(PassboltError::from)?;
+        Ok(PasswordExpirySettings::from(settings))
     }
 
     /// Create or update the password expiry settings (admin).
     pub fn save_password_expiry_settings(
         &self,
-        settings: FfiPasswordExpirySettings,
-    ) -> Result<FfiPasswordExpirySettings, PassboltFfiError> {
+        settings: PasswordExpirySettings,
+    ) -> Result<PasswordExpirySettings, PassboltError> {
         let saved = RUNTIME
             .block_on(self.inner.save_password_expiry_settings(&settings.into()))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiPasswordExpirySettings::from(saved))
+            .map_err(PassboltError::from)?;
+        Ok(PasswordExpirySettings::from(saved))
     }
 
     /// Delete the password expiry settings (admin): the defaults apply again.
-    pub fn delete_password_expiry_settings(&self, id: String) -> Result<(), PassboltFfiError> {
+    pub fn delete_password_expiry_settings(&self, id: String) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(self.inner.delete_password_expiry_settings(&id))
             .map_err(Into::into)
@@ -927,58 +896,56 @@ impl PassboltClient {
     // ── Resource types and metadata settings ────────────────────────────
 
     /// The resource types of the server.
-    pub fn list_resource_types(&self) -> Result<Vec<FfiResourceType>, PassboltFfiError> {
+    pub fn list_resource_types(&self) -> Result<Vec<ResourceType>, PassboltError> {
         let resource_types = RUNTIME
             .block_on(self.inner.resource_types())
-            .map_err(PassboltFfiError::from)?;
-        Ok(resource_types.iter().map(FfiResourceType::from).collect())
+            .map_err(PassboltError::from)?;
+        Ok(resource_types.iter().map(ResourceType::from).collect())
     }
 
     /// Which metadata versions the organization creates and allows.
-    pub fn get_metadata_types_settings(
-        &self,
-    ) -> Result<FfiMetadataTypesSettings, PassboltFfiError> {
+    pub fn get_metadata_types_settings(&self) -> Result<MetadataTypesSettings, PassboltError> {
         let settings = RUNTIME
             .block_on(self.inner.get_metadata_types_settings())
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiMetadataTypesSettings::from(settings))
+            .map_err(PassboltError::from)?;
+        Ok(MetadataTypesSettings::from(settings))
     }
 
     /// Save the metadata types settings (admin).
     pub fn save_metadata_types_settings(
         &self,
-        settings: FfiMetadataTypesSettings,
-    ) -> Result<FfiMetadataTypesSettings, PassboltFfiError> {
+        settings: MetadataTypesSettings,
+    ) -> Result<MetadataTypesSettings, PassboltError> {
         let saved = RUNTIME
             .block_on(self.inner.save_metadata_types_settings(&settings.into()))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiMetadataTypesSettings::from(saved))
+            .map_err(PassboltError::from)?;
+        Ok(MetadataTypesSettings::from(saved))
     }
 
     /// How metadata keys are used in the organization.
-    pub fn get_metadata_keys_settings(&self) -> Result<FfiMetadataKeysSettings, PassboltFfiError> {
+    pub fn get_metadata_keys_settings(&self) -> Result<MetadataKeysSettings, PassboltError> {
         let settings = RUNTIME
             .block_on(self.inner.get_metadata_keys_settings())
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiMetadataKeysSettings::from(settings))
+            .map_err(PassboltError::from)?;
+        Ok(MetadataKeysSettings::from(settings))
     }
 
     /// Save the metadata keys settings (admin).
     pub fn save_metadata_keys_settings(
         &self,
-        settings: FfiMetadataKeysSettings,
-    ) -> Result<FfiMetadataKeysSettings, PassboltFfiError> {
+        settings: MetadataKeysSettings,
+    ) -> Result<MetadataKeysSettings, PassboltError> {
         let saved = RUNTIME
             .block_on(self.inner.save_metadata_keys_settings(&settings.into()))
-            .map_err(PassboltFfiError::from)?;
-        Ok(FfiMetadataKeysSettings::from(saved))
+            .map_err(PassboltError::from)?;
+        Ok(MetadataKeysSettings::from(saved))
     }
 
     // ── HIBP ────────────────────────────────────────────────────────────
 
     /// Check if a password has been exposed in data breaches.
     /// Returns the number of times found (0 = not breached).
-    pub fn check_password_pwned(&self, password: String) -> Result<u64, PassboltFfiError> {
+    pub fn check_password_pwned(&self, password: String) -> Result<u64, PassboltError> {
         RUNTIME
             .block_on(self.inner.check_password_pwned(&password))
             .map_err(Into::into)
@@ -997,46 +964,45 @@ impl PassboltClient {
     }
 
     /// Keep the session alive, as the browser extension does every few minutes.
-    pub fn keep_alive(&self) -> Result<(), PassboltFfiError> {
+    pub fn keep_alive(&self) -> Result<(), PassboltError> {
         RUNTIME
             .block_on(self.inner.keep_alive())
             .map_err(Into::into)
     }
 
     /// The fingerprint of the active shared metadata key, to pin in
-    /// [`FfiLoginOptions::metadata_key_fingerprint`]; `None` without one.
-    pub fn metadata_key_fingerprint(&self) -> Result<Option<String>, PassboltFfiError> {
+    /// [`LoginOptions::metadata_key_fingerprint`]; `None` without one.
+    pub fn metadata_key_fingerprint(&self) -> Result<Option<String>, PassboltError> {
         let metadata_keys = RUNTIME
             .block_on(self.inner.metadata_keys())
-            .map_err(PassboltFfiError::from)?;
+            .map_err(PassboltError::from)?;
         Ok(metadata_keys.active_fingerprint())
     }
 }
 
-/// The server public key, to pin in [`FfiLoginOptions::server_public_key`] once the user
+/// The server public key, to pin in [`LoginOptions::server_public_key`] once the user
 /// confirmed its fingerprint.
-#[uniffi::export]
+#[uniffi::export(default(tls_skip_verify = false))]
 pub fn fetch_server_key(
     server_url: String,
     tls_skip_verify: bool,
-) -> Result<FfiServerKey, PassboltFfiError> {
-    let http_config = build_http_config(&FfiLoginOptions {
+) -> Result<ServerKey, PassboltError> {
+    let http_config = build_http_config(&LoginOptions {
         tls_skip_verify,
-        ..FfiLoginOptions::default()
+        ..LoginOptions::default()
     });
     RUNTIME.block_on(async {
-        let http =
-            NativeHttpClient::new(&http_config).map_err(|error| PassboltFfiError::Config {
-                reason: error.to_string(),
-            })?;
+        let http = NativeHttpClient::new(&http_config).map_err(|error| PassboltError::Config {
+            reason: error.to_string(),
+        })?;
         let (fingerprint, armored_key) = passbolt_sdk::auth::fetch_server_key(
             &http,
             server_url.trim_end_matches('/'),
             &passbolt_sdk::OpenPgp::default(),
         )
         .await
-        .map_err(PassboltFfiError::from)?;
-        Ok(FfiServerKey {
+        .map_err(PassboltError::from)?;
+        Ok(ServerKey {
             fingerprint,
             armored_key,
         })
@@ -1046,26 +1012,14 @@ pub fn fetch_server_key(
 // ── Stateless crypto functions ──────────────────────────────────────────────
 
 /// Decrypt a PGP-armored message with a private key.
-fn to_json<T: serde::Serialize>(value: &T) -> Result<String, PassboltFfiError> {
-    serde_json::to_string(value).map_err(|error| PassboltFfiError::Other {
-        reason: format!("Cannot write JSON: {error}"),
-    })
-}
-
-fn from_json<T: serde::de::DeserializeOwned>(json: &str) -> Result<T, PassboltFfiError> {
-    serde_json::from_str(json).map_err(|error| PassboltFfiError::InvalidArgument {
-        reason: format!("Invalid JSON: {error}"),
-    })
-}
-
 #[uniffi::export]
 pub fn decrypt_message(
     armored_message: String,
     private_key_armored: String,
     passphrase: String,
-) -> Result<Vec<u8>, PassboltFfiError> {
+) -> Result<Vec<u8>, PassboltError> {
     let key = passbolt_sdk::crypto::parse_private_key(&private_key_armored).map_err(|error| {
-        PassboltFfiError::Crypto {
+        PassboltError::Crypto {
             reason: error.to_string(),
         }
     })?;
@@ -1075,7 +1029,7 @@ pub fn decrypt_message(
             &key,
             &passphrase,
         ))
-        .map_err(|error| PassboltFfiError::Crypto {
+        .map_err(|error| PassboltError::Crypto {
             reason: error.to_string(),
         })
 }
@@ -1086,27 +1040,27 @@ pub fn decrypt_message(
 pub fn encrypt_message(
     plaintext: Vec<u8>,
     public_keys_armored: Vec<String>,
-) -> Result<String, PassboltFfiError> {
+) -> Result<String, PassboltError> {
     let parsed: Result<Vec<_>, _> = public_keys_armored
         .iter()
         .map(|armored_key| passbolt_sdk::crypto::parse_public_key(armored_key))
         .collect();
-    let keys = parsed.map_err(|error| PassboltFfiError::Crypto {
+    let keys = parsed.map_err(|error| PassboltError::Crypto {
         reason: error.to_string(),
     })?;
     let key_refs: Vec<_> = keys.iter().collect();
     RUNTIME
         .block_on(passbolt_sdk::crypto::encrypt_message(&plaintext, &key_refs))
-        .map_err(|error| PassboltFfiError::Crypto {
+        .map_err(|error| PassboltError::Crypto {
             reason: error.to_string(),
         })
 }
 
 /// Parse a PGP private key and return its fingerprint (hex uppercase).
 #[uniffi::export]
-pub fn get_key_fingerprint(private_key_armored: String) -> Result<String, PassboltFfiError> {
+pub fn get_key_fingerprint(private_key_armored: String) -> Result<String, PassboltError> {
     let key = passbolt_sdk::crypto::parse_private_key(&private_key_armored).map_err(|error| {
-        PassboltFfiError::Crypto {
+        PassboltError::Crypto {
             reason: error.to_string(),
         }
     })?;
@@ -1135,11 +1089,11 @@ mod tests {
             "https://passbolt.test".into(),
             "armored key".into(),
             "secret passphrase".into(),
-            FfiLoginOptions {
+            LoginOptions {
                 tls_skip_verify: true,
                 proxy: proxy.map(String::from),
                 mfa_totp_token: mfa_totp_token.map(String::from),
-                ..FfiLoginOptions::default()
+                ..LoginOptions::default()
             },
         )
     }
@@ -1182,10 +1136,10 @@ mod tests {
             "https://passbolt.test".into(),
             "armored key".into(),
             "secret passphrase".into(),
-            FfiLoginOptions {
+            LoginOptions {
                 server_public_key: Some(SERVER_PUBLIC.into()),
                 metadata_key_fingerprint: Some("ABCD".into()),
-                ..FfiLoginOptions::default()
+                ..LoginOptions::default()
             },
         );
 
@@ -1212,10 +1166,10 @@ mod tests {
         #[case] expected: Option<&str>,
         #[values(true, false)] tls_skip_verify: bool,
     ) {
-        let http_config = build_http_config(&FfiLoginOptions {
+        let http_config = build_http_config(&LoginOptions {
             tls_skip_verify,
             proxy: proxy.map(String::from),
-            ..FfiLoginOptions::default()
+            ..LoginOptions::default()
         });
 
         assert_eq!(http_config.proxy_url.as_deref(), expected);
@@ -1233,9 +1187,9 @@ mod tests {
         #[case] timeout_seconds: Option<u64>,
         #[case] expected: Option<std::time::Duration>,
     ) {
-        let http_config = build_http_config(&FfiLoginOptions {
+        let http_config = build_http_config(&LoginOptions {
             timeout_seconds,
-            ..FfiLoginOptions::default()
+            ..LoginOptions::default()
         });
 
         assert_eq!(http_config.timeout, expected);
@@ -1243,10 +1197,10 @@ mod tests {
 
     #[test]
     fn test_the_client_certificate_goes_to_the_transport() {
-        let http_config = build_http_config(&FfiLoginOptions {
+        let http_config = build_http_config(&LoginOptions {
             client_certificate_pem: Some("certificate".into()),
             client_key_pem: Some("key".into()),
-            ..FfiLoginOptions::default()
+            ..LoginOptions::default()
         });
 
         assert_eq!(
@@ -1286,7 +1240,7 @@ mod tests {
 
         let error = decrypt_message(armored, SERVER_PRIVATE.into(), String::new()).unwrap_err();
 
-        assert!(matches!(error, PassboltFfiError::Crypto { .. }), "{error}");
+        assert!(matches!(error, PassboltError::Crypto { .. }), "{error}");
     }
 
     #[test]
@@ -1295,7 +1249,7 @@ mod tests {
 
         let error = decrypt_message(armored, ADA_PRIVATE.into(), "wrong".into()).unwrap_err();
 
-        assert!(matches!(error, PassboltFfiError::Crypto { .. }), "{error}");
+        assert!(matches!(error, PassboltError::Crypto { .. }), "{error}");
     }
 
     #[test]
@@ -1303,14 +1257,14 @@ mod tests {
         let error =
             decrypt_message("not a message".into(), "not a key".into(), String::new()).unwrap_err();
 
-        assert!(matches!(error, PassboltFfiError::Crypto { .. }), "{error}");
+        assert!(matches!(error, PassboltError::Crypto { .. }), "{error}");
     }
 
     #[test]
     fn test_encrypt_message_with_invalid_public_key_is_crypto_error() {
         let error = encrypt_message(b"data".to_vec(), vec!["not a key".into()]).unwrap_err();
 
-        assert!(matches!(error, PassboltFfiError::Crypto { .. }), "{error}");
+        assert!(matches!(error, PassboltError::Crypto { .. }), "{error}");
     }
 
     #[test]
@@ -1327,6 +1281,6 @@ mod tests {
     fn test_get_key_fingerprint_with_invalid_key_is_crypto_error() {
         let error = get_key_fingerprint("not a key".into()).unwrap_err();
 
-        assert!(matches!(error, PassboltFfiError::Crypto { .. }), "{error}");
+        assert!(matches!(error, PassboltError::Crypto { .. }), "{error}");
     }
 }

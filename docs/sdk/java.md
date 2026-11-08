@@ -22,22 +22,24 @@ the [AAR](android.md).
 
 ```java
 import com.passbolt.sdk.PassboltClient;
-import com.passbolt.sdk.PassboltFfiException;
+import com.passbolt.sdk.PassboltException;
+import com.passbolt.sdk.ResourceView;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 public class ListResources {
-    public static void main(String[] args) throws IOException, PassboltFfiException {
+    public static void main(String[] args) throws IOException, PassboltException {
         String privateKey = Files.readString(Path.of("private.asc"));
         String passphrase = System.getenv("PASSBOLT_PASSPHRASE");
 
         try (PassboltClient client =
                 PassboltClient.login("https://passbolt.example.com", privateKey, passphrase)) {
             try {
-                // A JSON array of views: parse it with your JSON library.
-                System.out.println(client.listResourceViews("github", false));
+                for (ResourceView view : client.listResourceViews("github", false)) {
+                    System.out.println(view.id() + " " + view.name());
+                }
             } finally {
                 client.logout();
             }
@@ -52,18 +54,19 @@ it on the server. The calls block: in a desktop app, keep them off the UI thread
 ## Pinning the server, MFA, TLS
 
 ```java
-import com.passbolt.sdk.FfiLoginOptions;
-import com.passbolt.sdk.FfiServerKey;
+import com.passbolt.sdk.LoginOptions;
+import com.passbolt.sdk.ServerKey;
 import com.passbolt.sdk.PassboltClient;
 import com.passbolt.sdk.PassboltFfi;
-import com.passbolt.sdk.PassboltFfiException;
+import com.passbolt.sdk.PassboltException;
 
 public class PinnedLogin {
-    static PassboltClient login(String privateKey, String passphrase) throws PassboltFfiException {
-        FfiServerKey serverKey = PassboltFfi.fetchServerKey("https://passbolt.example.com", false);
+    static PassboltClient login(String privateKey, String passphrase) throws PassboltException {
+        ServerKey serverKey = PassboltFfi.fetchServerKey("https://passbolt.example.com", false);
         System.out.println("Check this fingerprint with your administrator: " + serverKey.fingerprint());
 
-        FfiLoginOptions options = new FfiLoginOptions(
+        // Java has no default arguments: each one is given, null when unused.
+        LoginOptions options = new LoginOptions(
             false,                    // tlsSkipVerify
             null,                     // proxy
             null,                     // mfaTotpToken: the base32 TOTP secret, for an account with TOTP
@@ -81,32 +84,49 @@ public class PinnedLogin {
 ## Reading and writing
 
 ```java
-import com.passbolt.sdk.FfiFolder;
-import com.passbolt.sdk.FfiResource;
+import com.passbolt.sdk.Folder;
+import com.passbolt.sdk.NewResource;
 import com.passbolt.sdk.PassboltClient;
-import com.passbolt.sdk.PassboltFfiException;
+import com.passbolt.sdk.PassboltException;
+import com.passbolt.sdk.Resource;
+import com.passbolt.sdk.ResourceChanges;
+import com.passbolt.sdk.ResourceView;
 
 import java.util.List;
 
 public class ReadWrite {
     static void example(PassboltClient client, String resourceId, String userId)
-            throws PassboltFfiException {
-        // JSON text: parse it with your JSON library.
-        System.out.println(client.getResourceView(resourceId));
+            throws PassboltException {
+        ResourceView view = client.getResourceView(resourceId);
+        System.out.println(view.password());
 
-        FfiResource created = client.createResource(
-            "{\"name\": \"GitHub\", \"username\": \"ada\", \"password\": \"…\"}");
-        client.updateResource(created.id(), "{\"password\": \"new\"}");
-        client.shareResource(created.id(), List.of(userId), List.of(), 7);
+        Resource created = client.createResource(new NewResource(
+            "GitHub",                 // name
+            null,                     // resourceType: from the fields set
+            "ada",                    // username
+            List.of(),                // uris
+            null, null,               // description, note
+            "…",                      // password
+            null, null, null, null,   // totp, pinCode, folderParentId, expired
+            null, null));             // metadataFieldsJson, secretFieldsJson
+        client.updateResource(created.id(), new ResourceChanges(
+            null, null, null, null, null,
+            "new",                    // password
+            null, null, false, null, false, null, null));
+        // 1 read, 7 update, 15 owner, -1 revokes.
+        client.shareResource(created.id(), 7, List.of(userId), List.of());
 
-        for (FfiFolder folder : client.listFolders(null)) {
+        for (Folder folder : client.listFolders(null)) {
             System.out.println(folder.id() + " " + folder.name());
         }
     }
 }
 ```
 
-The typed results (`FfiResource`, `FfiFolder`, `FfiUser`…) are Java records, read with their
+A `ResourceView` holds the fields every resource type shares, decrypted; the others, custom
+fields and icon among them, are the JSON objects `metadataJson()` and `secretJson()`.
+
+The typed results (`ResourceView`, `Resource`, `Folder`, `User`…) are Java records, read with their
 accessors (`created.id()`); lists are `java.util.List`. An absent value is `null`, as is an
 argument left out (`listFolders(null)`).
 
@@ -114,26 +134,26 @@ argument left out (`listFolders(null)`).
 
 ```java
 import com.passbolt.sdk.PassboltFfi;
-import com.passbolt.sdk.PassboltFfiException;
+import com.passbolt.sdk.PassboltException;
 
 public class Errors {
     public static void main(String[] args) {
         try {
             PassboltFfi.getKeyFingerprint("not a key");
-        } catch (PassboltFfiException.Crypto error) {
+        } catch (PassboltException.Crypto error) {
             System.out.println("not a key: " + error.reason());
-        } catch (PassboltFfiException.Api error) {
+        } catch (PassboltException.Api error) {
             System.out.println("the server answered " + error.status());
-        } catch (PassboltFfiException error) {
+        } catch (PassboltException error) {
             System.out.println("failed: " + error.getMessage());
         }
     }
 }
 ```
 
-`PassboltFfiException` is a checked exception, with one nested subclass per variant of the
+`PassboltException` is a checked exception, with one nested subclass per variant of the
 [overview](README.md#concepts) (`Auth`, `Crypto`, `Api`, `NotFound`…): every call declares
-`throws PassboltFfiException`.
+`throws PassboltException`.
 
 The methods are those of the [overview](README.md#what-the-api-covers), in camelCase:
 `listFolders`, `createFolder`, `deleteUserWithTransfer`, `setResourceTags`… The stateless

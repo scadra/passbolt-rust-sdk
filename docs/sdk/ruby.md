@@ -21,7 +21,7 @@ Passbolt::Client.login(
   "https://passbolt.example.com", File.read("private.asc"), ENV.fetch("PASSBOLT_PASSPHRASE")
 ) do |client|
   client.list_resource_views("github").each do |view|
-    puts "#{view["id"]} #{view["name"]}"
+    puts "#{view.id} #{view.name}"
   end
 end
 ```
@@ -53,18 +53,21 @@ Every keyword is optional.
 
 ```ruby
 view = client.get_resource_view(resource_id)
-puts view["password"]
+puts view.password
 
-created = client.create_resource(name: "GitHub", username: "ada", password: "…")
-client.update_resource(created.id, password: "new")
+created = client.create_resource(Passbolt::NewResource.new(name: "GitHub", username: "ada", password: "…"))
+client.update_resource(created.id, Passbolt::ResourceChanges.new(password: "new"))
 client.share_resource(created.id, user_ids: [user_id], permission_type: Passbolt::PermissionType::UPDATE)
 
 folder = client.create_folder("Ops")
 client.move_resource(created.id, folder.id)
 ```
 
-Resource views are Hashes parsed from the server's JSON; the other calls return objects with
-readers: `Passbolt::Resource`, `Passbolt::Folder`, `Passbolt::User`…
+The calls return objects with readers: `Passbolt::ResourceView`, `Passbolt::Resource`,
+`Passbolt::Folder`, `Passbolt::User`… A `ResourceView` holds the fields every resource type
+shares, decrypted; the others, custom fields and icon among them, are the JSON objects
+`metadata_json` and `secret_json`. The fields left out of `NewResource` and `ResourceChanges`
+keep their default.
 
 ## Errors
 
