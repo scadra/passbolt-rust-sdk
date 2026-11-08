@@ -5,7 +5,6 @@ sharing, with the OpenPGP encryption done in Rust. .NET 8 or later, on Linux (x6
 (x64, arm64) and Windows (x64).
 
 ```csharp
-using System.Text.Json;
 using Passbolt.Sdk;
 
 var privateKey = File.ReadAllText("private.asc");
@@ -14,10 +13,9 @@ var passphrase = Environment.GetEnvironmentVariable("PASSBOLT_PASSPHRASE")!;
 using var client = PassboltClient.Login("https://passbolt.example.com", privateKey, passphrase);
 try
 {
-    using var views = JsonDocument.Parse(client.ListResourceViews("github", withSecrets: false));
-    foreach (var view in views.RootElement.EnumerateArray())
+    foreach (var view in client.ListResourceViews(search: "github"))
     {
-        Console.WriteLine($"{view.GetProperty("id")} {view.GetProperty("name")}");
+        Console.WriteLine($"{view.id} {view.name}");
     }
 }
 finally
@@ -26,7 +24,7 @@ finally
 }
 ```
 
-The calls block and throw `PassboltFfiException` (`Auth`, `Crypto`, `Api`, `NotFound`…).
+The calls block and throw `PassboltException` (`Auth`, `Crypto`, `Api`, `NotFound`…).
 Documentation: https://github.com/scadra/passbolt-rust-sdk/blob/master/docs/sdk/dotnet.md
 
 License: AGPL-3.0-or-later.
