@@ -309,6 +309,6 @@ fn migrated_metadata_reads_in_openpgp_js_with_the_expected_signatures() {
         "verification_keys": [admin_key, metadata_key],
     }));
     assert!(assert_signed_by(&read, 2).contains(&shared_name));
-    block_on(user.logout());
-    block_on(admin.logout());
+    block_on(user.logout()).unwrap();
+    block_on(admin.logout()).unwrap();
 }

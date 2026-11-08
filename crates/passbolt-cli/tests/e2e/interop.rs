@@ -90,7 +90,7 @@ fn personal_metadata_and_secret_are_signed_by_the_user() {
 
     assert!(assert_signed_by(&metadata, 1).contains(&name));
     assert!(assert_signed_by(&secret, 1).contains("s3cr3t"));
-    block_on(sdk.logout());
+    block_on(sdk.logout()).unwrap();
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn shared_metadata_is_signed_by_the_user_and_the_metadata_key() {
     let metadata = read_shared_metadata(&sdk, &resource.id, &[&user_key, &metadata_key]);
 
     assert!(assert_signed_by(&metadata, 2).contains(&name));
-    block_on(sdk.logout());
+    block_on(sdk.logout()).unwrap();
 }
 
 #[test]
@@ -125,7 +125,7 @@ fn updated_shared_metadata_is_signed_by_both_keys_again() {
     let metadata = read_shared_metadata(&sdk, &resource.id, &[&user_key, &metadata_key]);
 
     assert!(assert_signed_by(&metadata, 2).contains(&new_name));
-    block_on(sdk.logout());
+    block_on(sdk.logout()).unwrap();
 }
 
 #[test]
@@ -141,5 +141,5 @@ fn the_session_keys_bundle_is_signed_by_the_user() {
         let read = read_as_user(&bundle.data, &[&user_key]);
         assert!(assert_signed_by(&read, 1).contains("PASSBOLT_SESSION_KEYS"));
     }
-    block_on(sdk.logout());
+    block_on(sdk.logout()).unwrap();
 }

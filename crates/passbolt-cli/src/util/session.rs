@@ -84,5 +84,7 @@ pub async fn finish(client: &Client) {
     if saved > 0 {
         eprintln!("Saved {saved} session keys to server");
     }
-    client.logout().await;
+    if let Err(error) = client.logout().await {
+        eprintln!("Warning: failed to log out: {error}");
+    }
 }
