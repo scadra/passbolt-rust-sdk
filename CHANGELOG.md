@@ -16,6 +16,12 @@ This project adheres to [Semantic Versioning](http://semver.org/).
   permissionType })`…), parameters are camelCase, errors are `PassboltError`s with a `code`
   (`isPassboltError`), `checkPasswordPwned` returns a `number`, and each session has its own
   `csrfTokenProvider`
+- FFI bindings (breaking): the types lose their `Ffi` prefix (`Resource`, `LoginOptions`,
+  `PassboltError`, `PassboltException` in Kotlin, Java and .NET); resource views are
+  `ResourceView` records and resources are written from `NewResource` and `ResourceChanges`
+  records, no longer JSON text; optional arguments and record fields have defaults;
+  `share_resource` and `share_folder` take the permission type before the users and groups;
+  `login_with_options` is gone, `login_with_config` takes its options
 - Go module: package `passbolt` (it was `passbolt_ffi`), formatted with gofmt, and
   `PassboltClient.Close` for a `defer client.Close()`
 - NuGet package: its types are public (they were all `internal`), the native libraries sit under
