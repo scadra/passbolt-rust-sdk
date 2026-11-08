@@ -500,6 +500,20 @@ fn keeping_the_session_alive_reads_the_user() {
 }
 
 #[test]
+fn a_refused_logout_is_an_api_error() {
+    let passbolt = Passbolt::new();
+    let client = passbolt.login();
+    passbolt.on_error("POST", "/auth/logout.json", 500, &Value::Null);
+
+    let error = client.logout().unwrap_err();
+
+    assert!(
+        matches!(error, PassboltError::Api { status: 500, .. }),
+        "{error}"
+    );
+}
+
+#[test]
 fn a_missing_resource_view_keeps_the_not_found_status() {
     let passbolt = Passbolt::new();
     passbolt.on_status(

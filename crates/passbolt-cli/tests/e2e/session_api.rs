@@ -19,7 +19,7 @@ fn the_session_check_follows_the_login() {
     let sdk = sdk_login(Account::User);
 
     assert!(block_on(sdk.check_auth_status()).unwrap());
-    block_on(sdk.logout());
+    block_on(sdk.logout()).unwrap();
 
     assert!(!block_on(sdk.check_auth_status()).unwrap());
 }
@@ -31,7 +31,7 @@ fn keeping_the_session_alive_keeps_it_usable() {
     block_on(sdk.keep_alive()).unwrap();
 
     assert!(block_on(sdk.check_auth_status()).unwrap());
-    block_on(sdk.logout());
+    block_on(sdk.logout()).unwrap();
 }
 
 #[test]
@@ -48,5 +48,5 @@ fn raw_resources_are_searched_by_their_decrypted_name() {
 
     let ids: Vec<&str> = found.iter().map(|found| found.id.as_str()).collect();
     assert_eq!(ids, [resource.id.as_str()]);
-    block_on(sdk.logout());
+    block_on(sdk.logout()).unwrap();
 }

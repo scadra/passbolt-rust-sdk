@@ -36,7 +36,8 @@ main thread.
 ## Concepts
 
 **Session.** `login` takes the server URL, the armored OpenPGP private key of the account and its
-passphrase, runs GPGAuth and returns a client holding the session. `logout` ends it.
+passphrase, runs GPGAuth and returns a client holding the session. `logout` ends it, and fails
+like any other call when the server cannot be reached or refuses it.
 
 **Pinning.** `fetchServerKey` / `fetch_server_key` returns the server key and its fingerprint,
 computed from the key. Show the fingerprint to the user once, save the key, then give it to each
@@ -61,7 +62,10 @@ other fields. The type follows the fields and the server's default version when 
 bindings).
 
 **Defaults.** Optional arguments and record fields have defaults in every binding whose language
-has them (Kotlin, Swift, Python, Ruby, C#); Go and Java give every argument.
+has them (Kotlin, Swift, Python, Ruby, C#). Go takes option structs for the calls with optional
+arguments, whose zero value is the default; Java builds the records with builders
+(`NewResourceBuilder`, `ResourceChangesBuilder`, `LoginOptionsBuilder`) and gives every method
+argument.
 
 **Sharing.** Permission types are Passbolt's: `1` read, `7` update, `15` owner, `-1` to revoke.
 

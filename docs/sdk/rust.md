@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}  {}  {}", view.id, view.name, view.username);
     }
 
-    client.logout().await;
+    client.logout().await?;
     Ok(())
 }
 ```

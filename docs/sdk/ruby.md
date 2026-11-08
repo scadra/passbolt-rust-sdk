@@ -27,7 +27,8 @@ end
 ```
 
 With a block, `login` logs out at the end; without one it returns the client: call
-`client.logout` when done.
+`client.logout` when done. A failed logout raises its `Passbolt::Error`, unless the block is
+already leaving on an exception.
 
 ## Pinning the server, MFA, TLS
 

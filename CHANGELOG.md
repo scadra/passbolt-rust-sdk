@@ -22,6 +22,14 @@ This project adheres to [Semantic Versioning](http://semver.org/).
   records, no longer JSON text; optional arguments and record fields have defaults;
   `share_resource` and `share_folder` take the permission type before the users and groups;
   `login_with_options` is gone, `login_with_config` takes its options
+- SDK and bindings (breaking): `logout` returns the error of the server instead of ignoring it;
+  the CLI warns and goes on
+- Go module (breaking): option structs for the calls with optional arguments (`ListResources(nil)`,
+  `ShareResource(id, passbolt.Share{…})`), Go initialisms (`ID`, `URL`, `URIs`), the generated
+  plumbing unexported, `Call` and `Run` to give up waiting on a `context.Context`, and `Close`
+  returns the error of the logout
+- Java jar: `NewResourceBuilder`, `ResourceChangesBuilder`, `LoginOptionsBuilder` and
+  `TotpDataBuilder`, with the defaults of the records
 - Go module: package `passbolt` (it was `passbolt_ffi`), formatted with gofmt, and
   `PassboltClient.Close` for a `defer client.Close()`
 - NuGet package: its types are public (they were all `internal`), the native libraries sit under

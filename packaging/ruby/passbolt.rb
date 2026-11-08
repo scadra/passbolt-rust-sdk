@@ -7,6 +7,7 @@
 #   Passbolt::Client.login(url, File.read("private.asc"), passphrase) do |client|
 #     client.list_resource_views("github").each { |view| puts view.name }
 #   end
+require "English"
 require "ffi"
 
 module Passbolt
@@ -104,7 +105,13 @@ module Passbolt
       begin
         yield client
       ensure
-        client.logout
+        in_flight = $ERROR_INFO
+        begin
+          client.logout
+        rescue Passbolt::Error
+          # A failed logout raises, unless it would hide the exception that left the block.
+          raise unless in_flight
+        end
       end
     end
 

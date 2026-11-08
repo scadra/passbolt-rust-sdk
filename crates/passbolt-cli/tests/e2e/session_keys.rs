@@ -45,7 +45,7 @@ fn stored_bundles() -> Vec<serde_json::Value> {
     let sdk = sdk_login(Account::User);
     let (key, passphrase) = private_key(Account::User);
     let bundles = block_on(sdk.session_keys_bundles()).unwrap();
-    block_on(sdk.logout());
+    block_on(sdk.logout()).unwrap();
     bundles
         .iter()
         .map(|bundle| {
@@ -84,7 +84,7 @@ fn listing_saves_the_session_key_with_the_resource_modified_date() {
         .unwrap()
         .modified
         .unwrap();
-    block_on(sdk.logout());
+    block_on(sdk.logout()).unwrap();
     let saved_modified =
         chrono::DateTime::parse_from_rfc3339(entry["modified"].as_str().unwrap()).unwrap();
     assert_eq!(saved_modified, modified);
@@ -99,7 +99,7 @@ fn a_long_lived_session_saves_its_new_session_keys_again() {
 
     list(&sdk);
 
-    block_on(sdk.logout());
+    block_on(sdk.logout()).unwrap();
     assert!(stored_entry(&first.id).is_some());
     assert!(
         stored_entry(&second.id).is_some(),
@@ -120,8 +120,8 @@ fn two_sessions_saving_meanwhile_keep_both_session_keys() {
     // Its bundle changed since it read it: the server answers 409, it reads it again.
     list(&second_session);
 
-    block_on(first_session.logout());
-    block_on(second_session.logout());
+    block_on(first_session.logout()).unwrap();
+    block_on(second_session.logout()).unwrap();
     assert!(
         stored_entry(&first.id).is_some(),
         "the other session's key was lost"

@@ -80,7 +80,9 @@ async fn pin_metadata_key(args: &VerifyArgs, config: &mut Config) -> Result<()> 
         return Ok(());
     };
     let metadata_keys = client.metadata_keys().await;
-    client.logout().await;
+    if let Err(error) = client.logout().await {
+        eprintln!("Warning: failed to log out: {error}");
+    }
     let Some(fingerprint) = metadata_keys
         .ok()
         .and_then(|keys| keys.active_fingerprint())

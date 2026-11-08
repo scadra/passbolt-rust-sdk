@@ -187,5 +187,10 @@ class Client(PassboltClient):
     def __enter__(self) -> Client:
         return self
 
-    def __exit__(self, *exc_info: object) -> None:
-        self.logout()
+    def __exit__(self, exc_type: object, *exc_info: object) -> None:
+        # A failed logout raises, unless it would hide the exception that left the block.
+        try:
+            self.logout()
+        except PassboltError:
+            if exc_type is None:
+                raise

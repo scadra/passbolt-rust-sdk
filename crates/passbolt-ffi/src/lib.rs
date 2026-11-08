@@ -225,8 +225,10 @@ impl PassboltClient {
     }
 
     /// Terminate the server-side session.
-    pub fn logout(&self) {
-        RUNTIME.block_on(self.inner.logout());
+    pub fn logout(&self) -> Result<(), PassboltError> {
+        RUNTIME
+            .block_on(self.inner.logout())
+            .map_err(PassboltError::from)
     }
 
     /// Check if the session is still valid.

@@ -110,10 +110,30 @@ async fn logout_sends_the_csrf_token() {
     let fake = FakePassbolt::new();
     let client = login_ada(&fake).await;
 
-    client.logout().await;
+    client.logout().await.unwrap();
 
     let logout_requests = fake.requests_to("POST", "/auth/logout.json");
     assert_eq!(logout_requests[0].header("X-CSRF-Token"), Some(CSRF_TOKEN));
+}
+
+#[tokio::test]
+async fn logout_returns_the_refusal_of_the_server() {
+    let fake = FakePassbolt::new();
+    let client = login_ada(&fake).await;
+    fake.on_error_saying(
+        "POST",
+        "/auth/logout.json",
+        403,
+        "CSRF token from either the request body or request headers did not match or is missing.",
+    );
+
+    let error = client.logout().await.unwrap_err();
+
+    assert!(
+        matches!(&error, PassboltError::Api(api_error) if api_error.status == 403),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("CSRF token"), "{error}");
 }
 
 #[tokio::test]
