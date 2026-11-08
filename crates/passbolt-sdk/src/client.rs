@@ -305,13 +305,20 @@ impl<H: HttpClient> PassboltSdk<H> {
     }
 
     /// Terminate the server-side session.
-    pub async fn logout(&self) {
+    ///
+    /// An error means the server may still hold the session: it ends when it expires.
+    pub async fn logout(&self) -> Result<(), PassboltError> {
         let url = format!("{}/auth/logout.json", self.base_url);
-        let csrf_token = self.csrf_token();
-        let _ = self
-            .http
-            .post(&url, &[("X-CSRF-Token", csrf_token.as_str())], &[])
-            .await;
+        let response = self.send_once(Method::Post, &url, None).await?;
+        if response.status >= 400 {
+            return Err(ApiError {
+                status: response.status,
+                message: format!("logout failed: {}", server_message(&response)),
+                validation_errors: None,
+            }
+            .into());
+        }
+        Ok(())
     }
 
     /// Check if the current session is still authenticated.
