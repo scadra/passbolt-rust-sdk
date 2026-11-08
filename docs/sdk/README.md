@@ -47,15 +47,21 @@ metadata key (`metadataKeyFingerprint` / `metadata_key_fingerprint`).
 **Resources and views.** A v5 resource keeps its name, username and URIs encrypted. The
 *resource views* (`getResourceView`, `listResourceViews`, `get_resource_view`,
 `list_resource_views`) decrypt them, and the secret on request, for every resource type: prefer
-them to the raw resources. The FFI bindings return views as JSON text, to parse with the JSON
-library of the language.
+them to the raw resources. The FFI bindings return a `ResourceView` record: the fields every
+resource type shares (`name`, `username`, `uris`, `description`, `password`, `totp`…) are typed,
+the others, custom fields and icon among them, are the JSON objects `metadata_json` and
+`secret_json`.
 
 **Writes.** `createResource` / `create_resource` takes the fields of the resource, as an object in
-JavaScript and as JSON text in the FFI bindings: `{"name": …, "username"?, "uris"?, "description"?,
-"password"?, "totp"?, "note"?, "pin_code"?, "custom_fields"?, "folder_parent_id"?, "expired"?,
-"resource_type"?, "metadata_fields"?, "secret_fields"?}`. The
-type follows the fields and the server's default version when not given. `updateResource` /
-`update_resource` takes only the fields to change.
+JavaScript and as a `NewResource` record in the FFI bindings: `name`, and optionally `username`,
+`uris`, `description`, `password`, `totp`, `note`, `pin_code`, `folder_parent_id`, `expired`,
+`resource_type`, and the JSON objects `metadata_fields_json` and `secret_fields_json` for the
+other fields. The type follows the fields and the server's default version when not given.
+`updateResource` / `update_resource` takes only the fields to change (`ResourceChanges` in the FFI
+bindings).
+
+**Defaults.** Optional arguments and record fields have defaults in every binding whose language
+has them (Kotlin, Swift, Python, Ruby, C#); Go and Java give every argument.
 
 **Sharing.** Permission types are Passbolt's: `1` read, `7` update, `15` owner, `-1` to revoke.
 
@@ -63,8 +69,8 @@ type follows the fields and the server's default version when not given. `update
 `code` says what failed (`NOT_FOUND`, `API` with the HTTP `status`…). Python and Ruby raise the
 subclasses of `passbolt.PassboltError` and `Passbolt::Error`: `AuthError`, `CryptoError`,
 `ApiError` (with the HTTP `status`), `NotFoundError`, `TransportError`, `ConfigError`,
-`InvalidArgumentError`. The other FFI bindings raise the `PassboltFfiError` of the language
-(`PassboltFfiException` in Kotlin, Java and .NET), whose variants say what failed: `Auth`,
+`InvalidArgumentError`. The other FFI bindings raise the `PassboltError` of the language
+(`PassboltException` in Kotlin, Java and .NET), whose variants say what failed: `Auth`,
 `Crypto`, `Api` (with the HTTP `status`), `NotFound`, `Transport`, `Config`, `InvalidArgument`,
 `Other`. Each carries the `reason` of the failure.
 
