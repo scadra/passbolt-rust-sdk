@@ -342,6 +342,12 @@ jobs:
         run: |
           javac -cp "dist/*" -d build/smoke packaging/smoke/Smoke.java
           java -cp "dist/*:build/smoke" Smoke
+      - name: Compile the examples of docs/sdk/java.md
+        run: |
+          bash packaging/java/doc-examples.sh docs/sdk/java.md build/doc-examples
+          for example in build/doc-examples/*/; do
+            javac --release 21 -Xlint:all -Werror -cp "dist/*" -d "build/doc-classes/$(basename "$example")" "$example"*.java
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: sdk-java
