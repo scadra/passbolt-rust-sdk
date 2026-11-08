@@ -55,42 +55,44 @@ it on the server. The calls block: in a desktop app, keep them off the UI thread
 
 ```java
 import com.passbolt.sdk.LoginOptions;
-import com.passbolt.sdk.ServerKey;
+import com.passbolt.sdk.LoginOptionsBuilder;
 import com.passbolt.sdk.PassboltClient;
-import com.passbolt.sdk.PassboltFfi;
 import com.passbolt.sdk.PassboltException;
+import com.passbolt.sdk.PassboltFfi;
+import com.passbolt.sdk.ServerKey;
 
 public class PinnedLogin {
-    static PassboltClient login(String privateKey, String passphrase) throws PassboltException {
+    static PassboltClient login(String privateKey, String passphrase, String totpSecret)
+            throws PassboltException {
         ServerKey serverKey = PassboltFfi.fetchServerKey("https://passbolt.example.com", false);
         System.out.println("Check this fingerprint with your administrator: " + serverKey.fingerprint());
 
-        // Java has no default arguments: each one is given, null when unused.
-        LoginOptions options = new LoginOptions(
-            false,                    // tlsSkipVerify
-            null,                     // proxy
-            null,                     // mfaTotpToken: the base32 TOTP secret, for an account with TOTP
-            serverKey.armoredKey(),   // serverPublicKey
-            null,                     // metadataKeyFingerprint
-            null,                     // timeoutSeconds: 60 by default, 0 waits forever
-            null,                     // clientCertificatePem
-            null);                    // clientKeyPem
+        LoginOptions options = new LoginOptionsBuilder()
+            .serverPublicKey(serverKey.armoredKey())
+            .mfaTotpToken(totpSecret) // the base32 TOTP secret, for an account with TOTP
+            .timeoutSeconds(30)       // 60 by default, 0 waits forever
+            .build();
         return PassboltClient.loginWithConfig(
             "https://passbolt.example.com", privateKey, passphrase, options);
     }
 }
 ```
 
+`LoginOptionsBuilder` also sets `proxy`, `tlsSkipVerify` (for a test server only),
+`metadataKeyFingerprint` and `clientCertificate(certificatePem, keyPem)` for mTLS; an option left
+unset keeps its default.
+
 ## Reading and writing
 
 ```java
 import com.passbolt.sdk.Folder;
-import com.passbolt.sdk.NewResource;
+import com.passbolt.sdk.NewResourceBuilder;
 import com.passbolt.sdk.PassboltClient;
 import com.passbolt.sdk.PassboltException;
 import com.passbolt.sdk.Resource;
-import com.passbolt.sdk.ResourceChanges;
+import com.passbolt.sdk.ResourceChangesBuilder;
 import com.passbolt.sdk.ResourceView;
+import com.passbolt.sdk.TotpDataBuilder;
 
 import java.util.List;
 
@@ -100,19 +102,17 @@ public class ReadWrite {
         ResourceView view = client.getResourceView(resourceId);
         System.out.println(view.password());
 
-        Resource created = client.createResource(new NewResource(
-            "GitHub",                 // name
-            null,                     // resourceType: from the fields set
-            "ada",                    // username
-            List.of(),                // uris
-            null, null,               // description, note
-            "…",                      // password
-            null, null, null, null,   // totp, pinCode, folderParentId, expired
-            null, null));             // metadataFieldsJson, secretFieldsJson
-        client.updateResource(created.id(), new ResourceChanges(
-            null, null, null, null, null,
-            "new",                    // password
-            null, null, false, null, false, null, null));
+        Resource created = client.createResource(new NewResourceBuilder("GitHub")
+            .username("ada")
+            .uris("https://github.com")
+            .password("…")
+            .totp(new TotpDataBuilder("JBSWY3DPEHPK3PXP").build())
+            .build());
+        // A field left unset keeps its current value.
+        client.updateResource(created.id(), new ResourceChangesBuilder()
+            .password("new")
+            .removeTotp()
+            .build());
         // 1 read, 7 update, 15 owner, -1 revokes.
         client.shareResource(created.id(), 7, List.of(userId), List.of());
 
@@ -127,8 +127,17 @@ A `ResourceView` holds the fields every resource type shares, decrypted; the oth
 fields and icon among them, are the JSON objects `metadataJson()` and `secretJson()`.
 
 The typed results (`ResourceView`, `Resource`, `Folder`, `User`…) are Java records, read with their
-accessors (`created.id()`); lists are `java.util.List`. An absent value is `null`, as is an
-argument left out (`listFolders(null)`).
+accessors (`created.id()`); lists are `java.util.List`, and an absent value is `null`.
+
+The records you write have builders in the same package, with the required fields as constructor
+arguments and every other field at its default: `uris` empty, flags false, the rest `null`.
+`NewResourceBuilder(name)`, `ResourceChangesBuilder()`, `LoginOptionsBuilder()` and
+`TotpDataBuilder(secretKey)` each end with `build()`; the records' constructors remain, with every
+field in order.
+
+Java has no default arguments: a method takes all its arguments, `null` for an optional value,
+`false` for an unset flag and `List.of()` for no ID (`listFolders(null)`,
+`listResources(null, false, false)`, `shareResource(id, 7, List.of(userId), List.of())`).
 
 ## Errors
 
