@@ -428,8 +428,8 @@ impl PassboltSession {
 
     /// Terminate the server-side session.
     #[wasm_bindgen]
-    pub async fn logout(&self) {
-        self.client.logout().await;
+    pub async fn logout(&self) -> Result<(), JsValue> {
+        self.client.logout().await.map_err(to_js_error)
     }
 
     /// Keep the session alive, as the browser extension does every few minutes.
