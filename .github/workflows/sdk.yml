@@ -444,8 +444,12 @@ jobs:
           mkdir -p build/smoke && cd build/smoke
           module="github.com/$GO_REPOSITORY"
           printf 'module smoke\n\ngo 1.21\n\nrequire %s v0.0.0\n\nreplace %s => ../go/passbolt-sdk-go\n' "$module" "$module" > go.mod
-          printf 'package main\n\nimport _ "%s"\n\nfunc main() {}\n' "$module" > main.go
-          CGO_ENABLED=1 go build -o smoke . && ./smoke
+          sed "s|github.com/scadra/passbolt-sdk-go|$module|" ../../packaging/smoke/smoke.go > main.go
+          # The examples of the page compile against the module too.
+          (cd ../.. && go run packaging/go/docexamples/main.go docs/sdk/go.md build/smoke/docs)
+          grep -rl github.com/scadra/passbolt-sdk-go docs | xargs sed -i "s|github.com/scadra/passbolt-sdk-go|$module|"
+          test -z "$(gofmt -l ../../packaging/go ../../packaging/smoke/smoke.go)"
+          go vet ./... && CGO_ENABLED=1 go build -o smoke . && ./smoke
       - uses: actions/upload-artifact@v4
         with:
           name: sdk-go
