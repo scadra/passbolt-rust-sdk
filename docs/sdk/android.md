@@ -39,15 +39,13 @@ the server session, `logout()` does.
 import com.passbolt.sdk.PassboltClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 
 suspend fun resourceNames(serverUrl: String, privateKey: String, passphrase: String): List<String> =
     withContext(Dispatchers.IO) {
         PassboltClient.login(serverUrl, privateKey, passphrase).use { client ->
             try {
-                // JSON, the v5 metadata decrypted: one object per resource.
-                val views = JSONArray(client.listResourceViews(search = null, withSecrets = false))
-                List(views.length()) { index -> views.getJSONObject(index).getString("name") }
+                // The v5 metadata decrypted: one view per resource.
+                client.listResourceViews(search = "github").map { view -> view.name }
             } finally {
                 client.logout()
             }
@@ -55,57 +53,56 @@ suspend fun resourceNames(serverUrl: String, privateKey: String, passphrase: Str
     }
 ```
 
-The other methods return Kotlin data classes, prefixed with `Ffi`: `FfiResource`, `FfiFolder`,
-`FfiUser`… Their optional fields are nullable, their lists `List`, and the numbers that cannot
-be negative unsigned (`UInt`, `ULong`).
+The methods return Kotlin data classes: `ResourceView`, `Resource`, `Folder`, `User`… Their
+optional fields are nullable, their lists `List`, and the numbers that cannot be negative
+unsigned (`UInt`, `ULong`). A `ResourceView` holds the fields every resource type shares,
+decrypted; the others, custom fields and icon among them, are the JSON objects `metadataJson`
+and `secretJson`. Arguments and fields left out keep their default.
 
 ```kotlin
-val folders: List<FfiFolder> = client.listFolders(search = null)
-val secret: FfiSecretData = client.decryptResourceSecret(resourceId)
-val password: String? = secret.password
+val folders: List<Folder> = client.listFolders()
+val view: ResourceView = client.getResourceView(resourceId)
+val password: String? = view.password
+
+val created = client.createResource(NewResource(name = "GitHub", username = "ada", password = "…"))
+client.updateResource(created.id, ResourceChanges(password = "new"))
+// 1 read, 7 update, 15 owner, -1 revokes.
+client.shareResource(created.id, permissionType = 7, userIds = listOf(userId))
 ```
 
 ## Pinning the server, MFA, TLS
 
-`FfiLoginOptions` has no default values: name each argument.
-
 ```kotlin
-import com.passbolt.sdk.FfiLoginOptions
+import com.passbolt.sdk.LoginOptions
 import com.passbolt.sdk.fetchServerKey
 
-val serverKey = fetchServerKey(serverUrl, tlsSkipVerify = false)   // show serverKey.fingerprint
-val options = FfiLoginOptions(
-    tlsSkipVerify = false,
-    proxy = null,
-    mfaTotpToken = null,                                           // the base32 TOTP secret, if any
+val serverKey = fetchServerKey(serverUrl)   // show serverKey.fingerprint to the user
+val options = LoginOptions(
     serverPublicKey = serverKey.armoredKey,
-    metadataKeyFingerprint = null,
-    timeoutSeconds = null,
-    clientCertificatePem = null,
-    clientKeyPem = null,
+    mfaTotpToken = totpSecret,               // the base32 TOTP secret, for an account with TOTP
 )
 val client = PassboltClient.loginWithConfig(serverUrl, privateKey, passphrase, options)
 ```
 
 ## Errors
 
-Every failing call throws a `PassboltFfiException`, a sealed class: `PassboltFfiException.Crypto`,
+Every failing call throws a `PassboltException`, a sealed class: `PassboltException.Crypto`,
 `.Api` (with its HTTP `status`), `.Auth`, `.NotFound`, `.Transport`, `.Config`,
 `.InvalidArgument`, `.Other`. Each case has the explanation in `reason`; `message` reads
 `reason=…`.
 
 ```kotlin
-import com.passbolt.sdk.PassboltFfiException
+import com.passbolt.sdk.PassboltException
 
 try {
     client.getResourceView(id)
-} catch (error: PassboltFfiException.NotFound) {
+} catch (error: PassboltException.NotFound) {
     // gone, or not shared with this user
-} catch (error: PassboltFfiException.Api) {
+} catch (error: PassboltException.Api) {
     Log.w("passbolt", "HTTP ${error.status}: ${error.reason}")
 }
 ```
 
-A `when` over a caught `PassboltFfiException` lists every case, without `else`.
+A `when` over a caught `PassboltException` lists every case, without `else`.
 
 The methods are those of the [overview](README.md#what-the-api-covers), in camelCase.
