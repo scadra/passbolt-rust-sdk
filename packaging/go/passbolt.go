@@ -2,12 +2,12 @@
 // its resources, folders, users and groups, with the OpenPGP encryption done by the Rust SDK.
 //
 // The calls block until the server answers (60 seconds at most by default, see
-// FfiLoginOptions.TimeoutSeconds) and are safe to make from several goroutines. A failure is a
-// *PassboltFfiError wrapping one variant, to match with errors.As or errors.Is:
+// LoginOptions.TimeoutSeconds) and are safe to make from several goroutines. A failure is a
+// *PassboltError wrapping one variant, to match with errors.As or errors.Is:
 //
-//	var apiErr *passbolt.PassboltFfiErrorApi
+//	var apiErr *passbolt.PassboltErrorApi
 //	if errors.As(err, &apiErr) && apiErr.Status == 403 { … }
-//	if errors.Is(err, passbolt.ErrPassboltFfiErrorNotFound) { … }
+//	if errors.Is(err, passbolt.ErrPassboltErrorNotFound) { … }
 //
 // The module links a static library with cgo: CGO_ENABLED=1, on Linux or macOS.
 package passbolt
