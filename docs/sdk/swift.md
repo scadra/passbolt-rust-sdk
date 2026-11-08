@@ -26,7 +26,7 @@ to add as a local package.
 
 The calls are synchronous and `throws`, not `async`: each one waits for the server. Run them off
 the main actor, in a detached task for instance. ARC frees the client; `logout()` ends the server
-session.
+session, and throws like the other calls (`try?` in a `defer`).
 
 ```swift
 import Foundation
@@ -36,7 +36,7 @@ func resourceNames(serverUrl: String, privateKey: String, passphrase: String) as
     try await Task.detached {
         let client = try PassboltClient.login(
             serverUrl: serverUrl, privateKeyArmored: privateKey, passphrase: passphrase)
-        defer { client.logout() }
+        defer { try? client.logout() }
         // The v5 metadata decrypted: one view per resource.
         return try client.listResourceViews(search: "github").map(\.name)
     }.value

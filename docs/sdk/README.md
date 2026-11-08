@@ -36,7 +36,8 @@ main thread.
 ## Concepts
 
 **Session.** `login` takes the server URL, the armored OpenPGP private key of the account and its
-passphrase, runs GPGAuth and returns a client holding the session. `logout` ends it.
+passphrase, runs GPGAuth and returns a client holding the session. `logout` ends it, and fails
+like any other call when the server cannot be reached or refuses it.
 
 **Pinning.** `fetchServerKey` / `fetch_server_key` returns the server key and its fingerprint,
 computed from the key. Show the fingerprint to the user once, save the key, then give it to each
