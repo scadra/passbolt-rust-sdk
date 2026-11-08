@@ -2,7 +2,7 @@
 // (uniffi.toml omits their `String(reflecting:)` one).
 import Foundation
 
-extension PassboltFfiError: LocalizedError {
+extension PassboltError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case let .Transport(reason): return "Transport error: \(reason)"

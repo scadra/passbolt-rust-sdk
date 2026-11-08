@@ -5,9 +5,9 @@ import PassboltSDK
 do {
     _ = try getKeyFingerprint(privateKeyArmored: "not a key")
     fatalError("expected a crypto error")
-} catch let error as PassboltFfiError {
+} catch let error as PassboltError {
     guard case .Crypto = error else { fatalError("expected a crypto error: \(error)") }
     print("ok: \(error.localizedDescription)")
 } catch {
-    fatalError("expected a PassboltFfiError: \(error)")
+    fatalError("expected a PassboltError: \(error)")
 }
