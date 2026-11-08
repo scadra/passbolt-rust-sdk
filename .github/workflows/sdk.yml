@@ -329,8 +329,14 @@ jobs:
           name="passbolt-sdk-${{ needs.version.outputs.sdk }}"
           mkdir -p build/classes dist
           javac --release 21 -nowarn -cp jna.jar -d build/classes $(find bindings/java -name '*.java')
-          jar --create --file "dist/$name.jar" -C build/classes . -C build/resources .
-          jar --create --file "dist/$name-sources.jar" -C bindings/java .
+          # The hand-written builders of packaging/java, in the same package.
+          javac --release 21 -Xlint:all -Werror -cp jna.jar:build/classes -d build/classes \
+            $(find packaging/java/src -name '*.java')
+          # A stable module name for the module path, without a module-info (JNA has none either).
+          echo "Automatic-Module-Name: com.passbolt.sdk" > build/MANIFEST.MF
+          jar --create --file "dist/$name.jar" --manifest build/MANIFEST.MF \
+            -C build/classes . -C build/resources .
+          jar --create --file "dist/$name-sources.jar" -C bindings/java . -C packaging/java/src .
           cp jna.jar "dist/jna-$JNA.jar"
       - name: Smoke test
         run: |
