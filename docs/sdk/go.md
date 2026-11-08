@@ -28,20 +28,12 @@ go mod edit -require github.com/scadra/passbolt-sdk-go@v0.0.0 \
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 
 	passbolt "github.com/scadra/passbolt-sdk-go"
 )
-
-// The fields of a resource view used here; the overview lists the others.
-type resourceView struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Username string `json:"username"`
-}
 
 func main() {
 	privateKey, err := os.ReadFile("private.asc")
@@ -56,16 +48,12 @@ func main() {
 	defer client.Close() // logs out and releases the client
 
 	search := "github"
-	viewsJSON, err := client.ListResourceViews(&search, false)
+	views, err := client.ListResourceViews(&search, false)
 	if err != nil {
 		log.Fatal(err)
 	}
-	var views []resourceView
-	if err := json.Unmarshal([]byte(viewsJSON), &views); err != nil {
-		log.Fatal(err)
-	}
 	for _, view := range views {
-		fmt.Println(view.ID, view.Name, view.Username)
+		fmt.Println(view.Id, view.Name, view.Username)
 	}
 }
 ```
@@ -74,7 +62,7 @@ func main() {
 
 ## Pinning the server, MFA, TLS
 
-The fields of `FfiLoginOptions` left out keep their default: optional fields are pointers, `nil`
+The fields of `LoginOptions` left out keep their default: optional fields are pointers, `nil`
 for none.
 
 ```go
@@ -88,7 +76,7 @@ totpSecret := os.Getenv("PASSBOLT_TOTP_SECRET") // the base32 TOTP secret, for a
 timeout := uint64(30)                           // 60 by default, 0 waits forever
 client, err := passbolt.PassboltClientLoginWithConfig(
 	"https://passbolt.example.com", privateKey, passphrase,
-	passbolt.FfiLoginOptions{
+	passbolt.LoginOptions{
 		ServerPublicKey: &serverKey.ArmoredKey,
 		MfaTotpToken:    &totpSecret,
 		TimeoutSeconds:  &timeout,
@@ -101,51 +89,50 @@ defer client.Close()
 
 ## Reading and writing
 
-Views come as JSON text, and resources are written from JSON text, with the fields of the
-[overview](README.md#concepts):
+A `ResourceView` holds the fields every resource type shares, decrypted (`Name`, `Username`,
+`Uris`, `Password`, `Totp`…); the others, custom fields and icon among them, are the JSON
+objects `MetadataJson` and `SecretJson`. `NewResource` and `ResourceChanges` write the same
+fields, the fields left out keep their default:
 
 ```go
-viewJSON, err := client.GetResourceView(resourceID)
+view, err := client.GetResourceView(resourceID)
 if err != nil {
 	return err
 }
-var view struct {
-	Password string `json:"password"`
-}
-if err := json.Unmarshal([]byte(viewJSON), &view); err != nil {
-	return err
-}
+fmt.Println(*view.Password)
 
-fields, err := json.Marshal(map[string]any{"name": "GitHub", "username": "ada", "password": "…"})
+username, password := "ada", "…"
+created, err := client.CreateResource(passbolt.NewResource{
+	Name:     "GitHub",
+	Username: &username,
+	Password: &password,
+})
 if err != nil {
 	return err
 }
-created, err := client.CreateResource(string(fields))
-if err != nil {
-	return err
-}
-if _, err := client.UpdateResource(created.Id, `{"password": "new"}`); err != nil {
+newPassword := "new"
+if _, err := client.UpdateResource(created.Id, passbolt.ResourceChanges{Password: &newPassword}); err != nil {
 	return err
 }
 // 1 read, 7 update, 15 owner, -1 revokes.
-if err := client.ShareResource(created.Id, []string{userID}, nil, 7); err != nil {
+if err := client.ShareResource(created.Id, 7, []string{userID}, nil); err != nil {
 	return err
 }
 ```
 
 ## Errors
 
-Each call returns its failure as a `*passbolt.PassboltFfiError` wrapping one variant per cause,
-`PassboltFfiErrorAuth`, `PassboltFfiErrorApi` (with the HTTP `Status`), `PassboltFfiErrorNotFound`…
+Each call returns its failure as a `*passbolt.PassboltError` wrapping one variant per cause,
+`PassboltErrorAuth`, `PassboltErrorApi` (with the HTTP `Status`), `PassboltErrorNotFound`…
 each with its `Reason`. Match the variant with `errors.As`, or its kind with `errors.Is` and the
-`ErrPassboltFfiError…` values:
+`ErrPassboltError…` values:
 
 ```go
 _, err := client.GetResource(resourceID)
-var apiErr *passbolt.PassboltFfiErrorApi
+var apiErr *passbolt.PassboltErrorApi
 switch {
 case err == nil:
-case errors.Is(err, passbolt.ErrPassboltFfiErrorNotFound):
+case errors.Is(err, passbolt.ErrPassboltErrorNotFound):
 	fmt.Println("no such resource")
 case errors.As(err, &apiErr):
 	fmt.Println("the server answered", apiErr.Status, apiErr.Reason)
@@ -160,10 +147,10 @@ The methods are those of the [overview](README.md#what-the-api-covers), in Pasca
 from the Rust names:
 
 - A constructor of the Rust client is a function named after it: `PassboltClientLogin`,
-  `PassboltClientLoginWithConfig`; the records keep their Rust prefix: `FfiResource`,
-  `FfiLoginOptions`.
+  `PassboltClientLoginWithConfig`.
 - Acronyms are written as words: `Id`, `Url`, `GetResourcesByIds`, `BaseUrl()`.
-- Optional arguments and fields are pointers, `nil` for none.
+- Optional arguments and fields are pointers, `nil` for none. Go has no default arguments: each
+  call gives them all.
 - The calls take no `context.Context`: a request stops at the login timeout. The client is safe
   to use from several goroutines.
 - The bindings export their plumbing too (`FfiConverter…`, `FfiDestroyer…`, `RustBuffer…`):
