@@ -17,3 +17,11 @@ abort "not under Passbolt: #{missing}" unless missing.empty?
 abort "Passbolt::Client" unless Passbolt::Client < PassboltFfi::PassboltClient
 abort "PassboltFfi::AsyncPassboltClient is broken in Ruby" if defined?(PassboltFfi::AsyncPassboltClient)
 puts "ok: Passbolt names"
+
+# The generator of the extension, without a session.
+abort "password" unless Passbolt.generate_password(length: 24).length == 24
+passphrase = Passbolt.generate_passphrase(words: 5, word_separator: "-", word_case: Passbolt::WordCase::UPPERCASE)
+abort "passphrase: #{passphrase}" unless passphrase == passphrase.upcase
+abort "strength" unless Passbolt.secret_strength(Passbolt.generate_secret) == Passbolt::Strength::STRONG
+abort "pin" unless Passbolt.generate_pin_code(6).length == 6
+puts "ok: generator"
