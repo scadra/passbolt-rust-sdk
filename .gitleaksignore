@@ -1,0 +1,14 @@
+# False positives in the history, reviewed: gitleaks skips these findings (fingerprint
+# commit:file:rule:line). New findings still fail the scan.
+# The placeholder mTLS key of the configuration example of the old README.
+75faceea53f9bf8594b835a4ae2cef5ca4534df0:README.md:private-key:148
+# Resource type slugs, not keys.
+111c4e671ef6d03928318474cbd25edbddaeb349:crates/passbolt-sdk/tests/it/upgrade.rs:generic-api-key:66
+111c4e671ef6d03928318474cbd25edbddaeb349:crates/passbolt-sdk/src/resource/upgrade.rs:generic-api-key:27
+# The armor header constant of the vendored OpenPGP.js.
+8ecfc060eee0bedaa6c86c2b80dd5bdb3b2c3b8f:crates/passbolt-sdk/vendor/openpgpjs/openpgp.min.js:private-key:2
+# Fake armored keys of the configuration tests ("fakekey", a bare header).
+aa2471abb0f323346e41f86b7ee34a01e71fc09e:crates/passbolt-cli/src/config.rs:private-key:190
+aa2471abb0f323346e41f86b7ee34a01e71fc09e:crates/passbolt-cli/src/config.rs:private-key:210
+aa2471abb0f323346e41f86b7ee34a01e71fc09e:src/config.rs:private-key:214
+aa2471abb0f323346e41f86b7ee34a01e71fc09e:src/config.rs:private-key:234
