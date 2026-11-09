@@ -24,24 +24,25 @@ to add as a local package.
 
 ## Log in and list
 
-The calls are synchronous and `throws`, not `async`: each one waits for the server. Run them off
-the main actor, in a detached task for instance. ARC frees the client; `logout()` ends the server
-session, and throws like the other calls (`try?` in a `defer`).
+The methods of `AsyncPassboltClient` are `async throws`: await them from any task, the main
+actor included, the SDK's own threads wait for the server. ARC frees the client; `logout()` ends
+the server session, and throws like the other calls.
 
 ```swift
-import Foundation
 import PassboltSDK
 
 func resourceNames(serverUrl: String, privateKey: String, passphrase: String) async throws -> [String] {
-    try await Task.detached {
-        let client = try PassboltClient.login(
-            serverUrl: serverUrl, privateKeyArmored: privateKey, passphrase: passphrase)
-        defer { try? client.logout() }
-        // The v5 metadata decrypted: one view per resource.
-        return try client.listResourceViews(search: "github").map(\.name)
-    }.value
+    let client = try await AsyncPassboltClient.login(
+        serverUrl: serverUrl, privateKeyArmored: privateKey, passphrase: passphrase)
+    // The v5 metadata decrypted: one view per resource.
+    let names = try await client.listResourceViews(search: "github").map(\.name)
+    try await client.logout()
+    return names
 }
 ```
+
+`PassboltClient` has the same methods, synchronous: each one blocks until the server answers,
+so keep them off the main actor.
 
 The methods return structs: `ResourceView`, `Resource`, `Folder`, `User`… Their optional fields
 are optionals, and they are `Equatable`, `Hashable`, `Sendable` and `Codable`. A `ResourceView`
