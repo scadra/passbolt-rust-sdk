@@ -165,7 +165,7 @@ fn build_sdk_config(
 
 // ── PassboltClient ──────────────────────────────────────────────────────────
 
-/// Log in with `GPGAuth` on the runtime.
+/// Log in with `GPGAuth` on the runtime: the session the two clients share.
 async fn log_in(
     server_url: String,
     private_key_armored: String,
@@ -190,22 +190,41 @@ async fn log_in(
     Ok(Arc::new(client))
 }
 
-/// Wait for `call` on the runtime.
+/// Wait for `call` on the runtime, for the blocking client.
 fn block_on<T>(call: impl Future<Output = Result<T, PassboltError>>) -> Result<T, PassboltError> {
     RUNTIME.block_on(call)
+}
+
+/// Run `call` on the runtime and await it from the caller's executor, for the async client:
+/// the runtime serves the sockets, whatever polls the result.
+async fn spawn<T: Send + 'static>(
+    call: impl Future<Output = Result<T, PassboltError>> + Send + 'static,
+) -> Result<T, PassboltError> {
+    RUNTIME.spawn(call).await.unwrap_or_else(|error| {
+        Err(PassboltError::Other {
+            reason: error.to_string(),
+        })
+    })
 }
 
 /// Authenticated Passbolt client for CRUD operations.
 ///
 /// All methods are synchronous at the FFI boundary; they block internally
-/// on the tokio runtime. Call from background threads on mobile platforms.
+/// on the tokio runtime. Call from background threads on mobile platforms, or use
+/// [`AsyncPassboltClient`].
 #[derive(uniffi::Object)]
 pub struct PassboltClient {
     inner: Arc<Client>,
 }
 
-/// The client methods, from one list: each body is async, with `client` the session;
-/// `PassboltClient` blocks on it.
+/// The same client with async methods: `await` them, they do not block the caller's thread.
+#[derive(uniffi::Object)]
+pub struct AsyncPassboltClient {
+    inner: Arc<Client>,
+}
+
+/// The methods of both clients, from one list: each body is async, with `client` the
+/// session; `PassboltClient` blocks on it, `AsyncPassboltClient` awaits it.
 macro_rules! client_methods {
     ($(
         $(#[$attribute:meta])*
@@ -218,6 +237,17 @@ macro_rules! client_methods {
                 pub fn $name(&self $(, $argument: $argument_type)*) -> $output {
                     let $client = Arc::clone(&self.inner);
                     block_on(async move $body)
+                }
+            )*
+        }
+
+        #[uniffi::export]
+        impl AsyncPassboltClient {
+            $(
+                $(#[$attribute])*
+                pub async fn $name(&self $(, $argument: $argument_type)*) -> $output {
+                    let $client = Arc::clone(&self.inner);
+                    spawn(async move $body).await
                 }
             )*
         }
@@ -250,6 +280,49 @@ impl PassboltClient {
         options: LoginOptions,
     ) -> Result<Arc<Self>, PassboltError> {
         let inner = block_on(log_in(server_url, private_key_armored, passphrase, options))?;
+        Ok(Arc::new(Self { inner }))
+    }
+
+    /// Get the current user's ID.
+    #[must_use]
+    pub fn user_id(&self) -> String {
+        self.inner.user_id.clone()
+    }
+
+    /// Get the server base URL.
+    #[must_use]
+    pub fn base_url(&self) -> String {
+        self.inner.base_url.clone()
+    }
+}
+
+#[uniffi::export]
+impl AsyncPassboltClient {
+    /// Authenticate against a Passbolt server and return a client session.
+    #[uniffi::constructor]
+    pub async fn login(
+        server_url: String,
+        private_key_armored: String,
+        passphrase: String,
+    ) -> Result<Arc<Self>, PassboltError> {
+        Self::login_with_config(
+            server_url,
+            private_key_armored,
+            passphrase,
+            LoginOptions::default(),
+        )
+        .await
+    }
+
+    /// Authenticate with `options`, the pinned server and metadata keys among them.
+    #[uniffi::constructor]
+    pub async fn login_with_config(
+        server_url: String,
+        private_key_armored: String,
+        passphrase: String,
+        options: LoginOptions,
+    ) -> Result<Arc<Self>, PassboltError> {
+        let inner = spawn(log_in(server_url, private_key_armored, passphrase, options)).await?;
         Ok(Arc::new(Self { inner }))
     }
 
