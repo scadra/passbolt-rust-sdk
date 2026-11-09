@@ -60,6 +60,8 @@ jobs:
           version=$(cargo metadata --format-version 1 --locked \
             | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version')
           cargo install wasm-bindgen-cli --version "$version" --locked
+      # The interop test imports OpenPGP.js from there, as the browser extension runs it.
+      - run: npm ci --prefix tests/interop --no-audit --no-fund
       - run: cargo test -p passbolt-wasm --target wasm32-unknown-unknown
 
   msrv:
