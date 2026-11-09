@@ -70,6 +70,11 @@ arguments, whose zero value is the default; Java builds the records with builder
 (`NewResourceBuilder`, `ResourceChangesBuilder`, `LoginOptionsBuilder`) and gives every method
 argument.
 
+**Generating passwords.** As the browser extension: passwords drawn from its character sets,
+passphrases of words of its EFF list, PIN codes, from the password policies of the organization
+(`getPasswordPolicies` / `get_password_policies`) or settings of your own, and the entropy and
+strength it shows for a secret. The generator needs no session.
+
 **Sharing.** Permission types are Passbolt's: `1` read, `7` update, `15` owner, `-1` to revoke.
 
 **Errors.** Rust returns `PassboltError`; JavaScript throws an `Error` named `PassboltError`, whose
@@ -93,5 +98,6 @@ The same operations in every language:
 - Users and groups: list, get, create, update, delete, delete blockers and deletion with an
   ownership transfer.
 - Tags, comments, favorites, password expiry settings, metadata settings, resource types.
+- Password generator: passwords, passphrases, PIN codes, password policies, secret strength.
 - Have I Been Pwned check, and stateless OpenPGP helpers (`encryptMessage`, `decryptMessage`,
   `getKeyFingerprint`).
