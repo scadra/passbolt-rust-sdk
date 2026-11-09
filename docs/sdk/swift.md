@@ -72,6 +72,26 @@ let client = try PassboltClient.loginWithConfig(
     serverUrl: serverUrl, privateKeyArmored: privateKey, passphrase: passphrase, options: options)
 ```
 
+## Generating passwords
+
+As the browser extension: passwords from character sets, passphrases of words of the EFF list,
+PIN codes, from the password policies of the organization or settings of your own. The fields
+left out keep the defaults of Passbolt.
+
+```swift
+let policies = try client.getPasswordPolicies() // the organization's: generator and settings
+let secret = try generateSecret(policies: policies)
+
+let password = try generatePassword(settings: PasswordGeneratorSettings(length: 24))
+let passphrase = try generatePassphrase(
+    settings: PassphraseGeneratorSettings(words: 6, wordCase: .camelcase))
+let pinCode = generatePinCode(length: 6)
+
+let strength = secretStrength(secret: password) // .veryStrong, as the extension shows it
+```
+
+Without a session, `defaultPasswordPolicies()` gives the defaults of Passbolt.
+
 ## Errors
 
 Every failing call throws a `PassboltError`: `.Crypto`, `.Api` (with its HTTP `status`),

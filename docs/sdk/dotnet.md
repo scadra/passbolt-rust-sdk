@@ -114,6 +114,26 @@ keep the camelCase of the generator (`created.id`, `folder.name`). Lists come ba
 `ResourceView` holds the fields every resource type shares, decrypted; the others, custom fields
 and icon among them, are the JSON objects `metadataJson` and `secretJson`.
 
+## Generating passwords
+
+As the browser extension: passwords from character sets, passphrases of words of the EFF list,
+PIN codes, from the password policies of the organization or settings of your own. The
+arguments left out keep the defaults of Passbolt.
+
+```csharp
+var policies = client.GetPasswordPolicies(); // the organization's: generator and settings
+var secret = PassboltFfi.GenerateSecret(policies);
+
+var password = PassboltFfi.GeneratePassword(new PasswordGeneratorSettings(length: 24));
+var passphrase = PassboltFfi.GeneratePassphrase(
+    new PassphraseGeneratorSettings(words: 6, wordCase: WordCase.Camelcase));
+var pinCode = PassboltFfi.GeneratePinCode(6);
+
+var strength = PassboltFfi.SecretStrength(password); // VeryStrong, as the extension shows it
+```
+
+Without a session, `PassboltFfi.DefaultPasswordPolicies()` gives the defaults of Passbolt.
+
 ## Errors
 
 ```csharp
