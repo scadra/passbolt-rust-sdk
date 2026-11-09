@@ -49,6 +49,8 @@ uuid = { version = "1", features = ["v4"] }
 url = "2"
 # Resource type schemas (`pattern`)
 regex-lite = "0.1"
+# The characters of a secret as users see them (emoji), for its entropy
+unicode-segmentation = "1"
 
 # Async runtime (gated behind native feature)
 tokio = { version = "1", features = ["full"], optional = true }

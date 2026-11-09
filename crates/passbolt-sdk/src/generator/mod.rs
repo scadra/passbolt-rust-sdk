@@ -10,14 +10,19 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-//! Passwords, passphrases and PIN codes generated as the browser extension generates them.
+//! Passwords, passphrases and PIN codes generated as the browser extension generates them,
+//! and their strength measured as it does.
 
+mod complexity;
 mod passphrase;
+mod password;
 
+pub use complexity::{secret_entropy, Strength};
 pub use passphrase::{
     detect_passphrase, generate_passphrase, DetectedPassphrase, PassphraseGeneratorSettings,
     WordCase,
 };
+pub use password::{generate_password, PasswordGeneratorSettings};
 
 use rand::Rng;
 
