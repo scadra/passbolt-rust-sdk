@@ -7,7 +7,11 @@ import com.passbolt.sdk.NewResourceBuilder;
 import com.passbolt.sdk.PassboltClient;
 import com.passbolt.sdk.PassboltFfi;
 import com.passbolt.sdk.PassboltException;
+import com.passbolt.sdk.PassphraseGeneratorSettingsBuilder;
+import com.passbolt.sdk.PasswordGeneratorSettingsBuilder;
 import com.passbolt.sdk.ResourceChangesBuilder;
+import com.passbolt.sdk.Strength;
+import com.passbolt.sdk.WordCase;
 
 import java.util.List;
 import java.util.concurrent.CompletionException;
@@ -36,6 +40,20 @@ public class Smoke {
         } catch (PassboltException error) {
             System.out.println("ok: login refused, " + error.getClass().getSimpleName());
         }
+
+        // The generator of the extension, its settings built from the defaults.
+        String password = PassboltFfi.generatePassword(
+            new PasswordGeneratorSettingsBuilder().length(24).build());
+        check(password.length() == 24
+            && PassboltFfi.secretStrength(password) == Strength.VERY_STRONG, password);
+        String passphrase = PassboltFfi.generatePassphrase(
+            new PassphraseGeneratorSettingsBuilder().words(5).wordCase(WordCase.UPPERCASE).build());
+        check(passphrase.equals(passphrase.toUpperCase()), passphrase);
+        var policies = PassboltFfi.defaultPasswordPolicies();
+        var fromPolicies = new PasswordGeneratorSettingsBuilder(policies.passwordGeneratorSettings())
+            .emoji(true).build();
+        check(fromPolicies.maskEmoji() && fromPolicies.length() == 18, fromPolicies);
+        System.out.println("ok: generator");
 
         // The future completes on the SDK's runtime, exceptionally with the variant.
         try {
