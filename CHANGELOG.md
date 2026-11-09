@@ -7,6 +7,10 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - LICENSE (AGPL-3.0), SECURITY.md, CONTRIBUTING.md and GitHub issue / pull request templates
 - Passbolt license header on every Rust source file, checked by `scripts/license-headers.sh`
 - SDK integration tests against an in-memory Passbolt API (`crates/passbolt-sdk/tests/it`)
+- FFI bindings: `AsyncPassboltClient`, the methods of `PassboltClient` awaited in each
+  language's own way: coroutines in Python (`passbolt.AsyncClient`, `async with`), `suspend` in
+  Kotlin, `async` in Swift, `Task` in C#, `CompletableFuture` in Java; Go and Ruby keep the
+  blocking client. The Android AAR now depends on kotlinx-coroutines
 
 ### Changed
 - Crate license changed from MIT to AGPL-3.0-or-later
