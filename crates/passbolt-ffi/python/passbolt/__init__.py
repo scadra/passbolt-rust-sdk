@@ -6,8 +6,13 @@
         for view in client.list_resource_views("github"):
             print(view.name, view.username)
 
-The calls block. The generated UniFFI module is ``passbolt._ffi``; this package adds keyword
-login options, a context manager and Python names for its errors.
+The calls block; ``passbolt.AsyncClient`` has the same methods to ``await``::
+
+    async with await passbolt.AsyncClient.login(url, private_key, passphrase) as client:
+        views = await client.list_resource_views("github")
+
+The generated UniFFI module is ``passbolt._ffi``; this package adds keyword login options,
+context managers and Python names for its errors.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from enum import IntEnum
 from typing import Optional, cast
 
 from ._ffi.passbolt_ffi import (
+    AsyncPassboltClient,
     Aro,
     Comment,
     DeleteBlockers,
@@ -61,6 +67,7 @@ from ._ffi.passbolt_ffi import (
 __all__ = [
     "ApiError",
     "Aro",
+    "AsyncClient",
     "AuthError",
     "Client",
     "Comment",
@@ -191,6 +198,63 @@ class Client(PassboltClient):
         # A failed logout raises, unless it would hide the exception that left the block.
         try:
             self.logout()
+        except PassboltError:
+            if exc_type is None:
+                raise
+
+
+class AsyncClient(AsyncPassboltClient):
+    """A logged-in session whose calls are awaited, for asyncio. Use it as an async context
+    manager to log out at the end::
+
+        async with await passbolt.AsyncClient.login(url, private_key, passphrase) as client:
+            ...
+
+    The methods are those of ``Client``, as coroutines; the network calls run on the SDK's own
+    threads, the event loop goes on meanwhile.
+    """
+
+    @classmethod
+    async def login(  # type: ignore[override]
+        cls,
+        server_url: str,
+        private_key_armored: str,
+        passphrase: str,
+        *,
+        server_public_key: Optional[str] = None,
+        metadata_key_fingerprint: Optional[str] = None,
+        mfa_totp_token: Optional[str] = None,
+        timeout_seconds: Optional[int] = None,
+        tls_skip_verify: bool = False,
+        proxy: Optional[str] = None,
+        client_certificate_pem: Optional[str] = None,
+        client_key_pem: Optional[str] = None,
+    ) -> AsyncClient:
+        """Log in with GPGAuth; the options are those of ``Client.login``."""
+        options = LoginOptions(
+            tls_skip_verify=tls_skip_verify,
+            proxy=proxy,
+            mfa_totp_token=mfa_totp_token,
+            server_public_key=server_public_key,
+            metadata_key_fingerprint=metadata_key_fingerprint,
+            timeout_seconds=timeout_seconds,
+            client_certificate_pem=client_certificate_pem,
+            client_key_pem=client_key_pem,
+        )
+        client = await AsyncPassboltClient.login_with_config(
+            server_url, private_key_armored, passphrase, options
+        )
+        # The generated constructor makes an AsyncPassboltClient, whatever the class.
+        client.__class__ = cls
+        return cast(AsyncClient, client)
+
+    async def __aenter__(self) -> AsyncClient:
+        return self
+
+    async def __aexit__(self, exc_type: object, *exc_info: object) -> None:
+        # The same rule as Client.__exit__.
+        try:
+            await self.logout()
         except PassboltError:
             if exc_type is None:
                 raise
