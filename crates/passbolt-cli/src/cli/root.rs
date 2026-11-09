@@ -210,6 +210,10 @@ pub enum Commands {
         shared_only: bool,
     },
 
+    /// Generate a password, passphrase or PIN code as the browser extension does, from the
+    /// password policies of the organization
+    Generate(crate::cli::generate::GenerateArgs),
+
     /// Generate shell completions
     Completion {
         /// Shell type: bash | zsh | fish | powershell
@@ -250,6 +254,9 @@ pub enum CreateEntity {
         /// Password (prompted when the type needs one and it is not given)
         #[arg(short = 'p', long)]
         password: Option<String>,
+        /// Generate the password from the password policies of the organization
+        #[arg(long, conflicts_with = "password")]
+        generate: bool,
         /// Description
         #[arg(short = 'd', long)]
         description: Option<String>,
@@ -476,6 +483,9 @@ pub enum UpdateEntity {
         uri: Vec<String>,
         #[arg(short = 'p', long)]
         password: Option<String>,
+        /// Generate a new password from the password policies of the organization
+        #[arg(long, conflicts_with = "password")]
+        generate: bool,
         #[arg(short = 'd', long)]
         description: Option<String>,
         /// Secret note (v5 types)
