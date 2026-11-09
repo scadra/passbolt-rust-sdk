@@ -51,6 +51,29 @@ public class ListResources {
 `PassboltClient` is `AutoCloseable`: try-with-resources frees the native session, `logout` ends
 it on the server. The calls block: in a desktop app, keep them off the UI thread.
 
+## CompletableFuture
+
+`AsyncPassboltClient` has the same methods returning a `CompletableFuture`, which the SDK's own
+threads complete; a failure completes it exceptionally with the `PassboltException`.
+
+```java
+import com.passbolt.sdk.AsyncPassboltClient;
+import com.passbolt.sdk.ResourceView;
+
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+
+public class AsyncNames {
+    static CompletableFuture<List<String>> names(String privateKey, String passphrase) {
+        return AsyncPassboltClient.login("https://passbolt.example.com", privateKey, passphrase)
+            .thenCompose(client -> client.listResourceViews("github", false)
+                .thenCompose(views -> client.logout().thenApply(done -> views))
+                .whenComplete((views, error) -> client.close()))
+            .thenApply(views -> views.stream().map(ResourceView::name).toList());
+    }
+}
+```
+
 ## Pinning the server, MFA, TLS
 
 ```java
