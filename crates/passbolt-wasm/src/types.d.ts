@@ -447,6 +447,67 @@ export interface PasswordExpirySettings {
   automatic_update?: boolean | null;
 }
 
+/** How passwords are generated: 18 characters of every set but emoji by default. */
+export interface PasswordGeneratorSettings {
+  length: number;
+  /** Bounds of `length`, 8 and 128 by default. */
+  min_length: number;
+  max_length: number;
+  /** `A-Z` */
+  mask_upper: boolean;
+  /** `a-z` */
+  mask_lower: boolean;
+  /** `0-9` */
+  mask_digit: boolean;
+  /** `{ [ ( | ) ] }` */
+  mask_parenthesis: boolean;
+  /** The emoticons of Unicode 6. */
+  mask_emoji: boolean;
+  /** `# $ % & @ ^ ~` */
+  mask_char1: boolean;
+  /** `. , : ;` */
+  mask_char2: boolean;
+  /** `'`, `"` and the backtick. */
+  mask_char3: boolean;
+  /** `/ \ _ -` */
+  mask_char4: boolean;
+  /** `< * + ! ? =` */
+  mask_char5: boolean;
+  /** Leaves out `O l | I 0 1`. */
+  exclude_look_alike_chars: boolean;
+}
+
+export type WordCase = "lowercase" | "uppercase" | "camelcase";
+
+/** How passphrases are generated: 9 lowercase words joined by spaces by default. */
+export interface PassphraseGeneratorSettings {
+  words: number;
+  word_separator: string;
+  word_case: WordCase;
+  /** Bounds of `words`, 4 and 40 by default. */
+  min_words: number;
+  max_words: number;
+}
+
+/** The password policies of the organization, the `PasswordPoliciesDto` of the extension. */
+export interface PasswordPolicies {
+  default_generator: "password" | "passphrase";
+  /** Check new passwords against Have I Been Pwned. */
+  external_dictionary_check: boolean;
+  password_generator_settings: PasswordGeneratorSettings;
+  passphrase_generator_settings: PassphraseGeneratorSettings;
+  /** Where the server read them: `default`, `file`, `env`, `db`… */
+  source?: string;
+  id?: string;
+  created?: string;
+  created_by?: string;
+  modified?: string;
+  modified_by?: string;
+}
+
+/** The strength the extension shows: its ids. */
+export type Strength = "not_available" | "very-weak" | "weak" | "fair" | "strong" | "very-strong";
+
 export interface ResourceType {
   id: string;
   slug: string;
