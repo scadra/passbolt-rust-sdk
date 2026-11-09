@@ -16,6 +16,7 @@
 mod complexity;
 mod passphrase;
 mod password;
+mod pin;
 
 pub use complexity::{secret_entropy, Strength};
 pub use passphrase::{
@@ -23,6 +24,7 @@ pub use passphrase::{
     WordCase,
 };
 pub use password::{generate_password, PasswordGeneratorSettings};
+pub use pin::{generate_pin_code, PIN_CODE_MAX_LENGTH, PIN_CODE_MIN_LENGTH};
 
 use rand::Rng;
 
