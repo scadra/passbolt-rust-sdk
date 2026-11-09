@@ -99,6 +99,29 @@ The calls return typed objects: `passbolt.ResourceView`, `passbolt.Resource`,
 decrypted; the others, custom fields and icon among them, are the JSON objects `metadata_json` and
 `secret_json`. The fields left out of `NewResource` and `ResourceChanges` keep their default.
 
+## Generating passwords
+
+As the browser extension: passwords from character sets, passphrases of words of the EFF list,
+PIN codes, from the password policies of the organization or settings of your own. A setting
+left out keeps the default of Passbolt.
+
+```python
+policies = client.get_password_policies()  # the organization's: generator and settings
+secret = passbolt.generate_secret(policies)
+
+password = passbolt.generate_password(passbolt.PasswordGeneratorSettings(length=24))
+passphrase = passbolt.generate_passphrase(
+    passbolt.PassphraseGeneratorSettings(words=6, word_case=passbolt.WordCase.CAMELCASE)
+)
+pin_code = passbolt.generate_pin_code(6)
+
+print(passbolt.secret_strength(password))  # Strength.VERY_STRONG, as the extension shows it
+print(passbolt.secret_entropy(password))   # in bits
+```
+
+Without arguments, `generate_password`, `generate_passphrase` and `generate_secret` use the
+defaults of Passbolt: 18 characters of every set but emoji.
+
 ## Errors
 
 ```python

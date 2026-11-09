@@ -162,6 +162,44 @@ Java has no default arguments: a method takes all its arguments, `null` for an o
 `false` for an unset flag and `List.of()` for no ID (`listFolders(null)`,
 `listResources(null, false, false)`, `shareResource(id, 7, List.of(userId), List.of())`).
 
+## Generating passwords
+
+As the browser extension: passwords from character sets, passphrases of words of the EFF list,
+PIN codes, from the password policies of the organization or settings of your own. The
+builders start from the defaults of Passbolt, or from the settings they are given.
+
+```java
+import com.passbolt.sdk.PassboltClient;
+import com.passbolt.sdk.PassboltException;
+import com.passbolt.sdk.PassboltFfi;
+import com.passbolt.sdk.PassphraseGeneratorSettingsBuilder;
+import com.passbolt.sdk.PasswordGeneratorSettingsBuilder;
+import com.passbolt.sdk.PasswordPolicies;
+import com.passbolt.sdk.Strength;
+import com.passbolt.sdk.WordCase;
+
+public class Secrets {
+    static String generate(PassboltClient client) throws PassboltException {
+        // The organization's: generator and settings.
+        PasswordPolicies policies = client.getPasswordPolicies();
+        String secret = PassboltFfi.generateSecret(policies);
+
+        String password = PassboltFfi.generatePassword(
+            new PasswordGeneratorSettingsBuilder().length(24).build());
+        String longer = PassboltFfi.generatePassword(
+            new PasswordGeneratorSettingsBuilder(policies.passwordGeneratorSettings())
+                .length(32).build());
+        String passphrase = PassboltFfi.generatePassphrase(
+            new PassphraseGeneratorSettingsBuilder().words(6).wordCase(WordCase.CAMELCASE).build());
+        String pinCode = PassboltFfi.generatePinCode(6);
+
+        // As the extension shows it.
+        boolean strong = PassboltFfi.secretStrength(password) == Strength.VERY_STRONG;
+        return strong ? secret + longer + passphrase + pinCode : password;
+    }
+}
+```
+
 ## Errors
 
 ```java
