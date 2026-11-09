@@ -28,11 +28,17 @@
 //! ```
 
 mod error;
+mod generator;
 mod mfa;
 mod resource;
 mod types;
 
 pub use error::PassboltError;
+pub use generator::{
+    default_password_policies, generate_passphrase, generate_password, generate_pin_code,
+    generate_secret, secret_entropy, secret_strength, GeneratorType, PassphraseGeneratorSettings,
+    PasswordGeneratorSettings, PasswordPolicies, Strength, WordCase,
+};
 pub use resource::{NewResource, ResourceChanges, ResourceView};
 pub use types::{MetadataKeysSettings, MetadataTypesSettings, PasswordExpirySettings};
 
@@ -1032,6 +1038,29 @@ client_methods! {
             .delete_password_expiry_settings(&id)
             .await
             .map_err(Into::into)
+    }
+
+    // ── Password policies ───────────────────────────────────────────────
+
+    /// The password policies of the organization, for [`generate_secret`].
+    fn get_password_policies(client) -> Result<PasswordPolicies, PassboltError> {
+        let policies = client
+            .get_password_policies()
+            .await
+            .map_err(PassboltError::from)?;
+        Ok(PasswordPolicies::from(policies))
+    }
+
+    /// Save the password policies of the organization (administrator, Passbolt Pro).
+    fn save_password_policies(
+        client,
+        policies: PasswordPolicies,
+    ) -> Result<PasswordPolicies, PassboltError> {
+        let saved = client
+            .save_password_policies(&policies.into())
+            .await
+            .map_err(PassboltError::from)?;
+        Ok(PasswordPolicies::from(saved))
     }
 
     // ── Resource types and metadata settings ────────────────────────────
