@@ -24,7 +24,8 @@ finally
 }
 ```
 
-The calls block and throw `PassboltException` (`Auth`, `Crypto`, `Api`, `NotFound`…).
+The calls block and throw `PassboltException` (`Auth`, `Crypto`, `Api`, `NotFound`…);
+`AsyncPassboltClient` has the same methods returning a `Task`.
 Documentation: https://github.com/scadra/passbolt-rust-sdk/blob/master/docs/sdk/dotnet.md
 
 License: AGPL-3.0-or-later.

@@ -38,8 +38,31 @@ finally
 `PassboltClient` is `IDisposable`: `using` frees the native session, `Logout` ends it on the
 server.
 
-The calls block. In a desktop app, keep them off the UI thread:
-`await Task.Run(() => client.ListResourceViews())`.
+The calls block. `AsyncPassboltClient` has the same methods returning a `Task`, to `await`
+from a UI thread or an ASP.NET request without holding a thread while the server answers:
+
+```csharp
+using Passbolt.Sdk;
+
+var privateKey = File.ReadAllText("private.asc");
+var passphrase = Environment.GetEnvironmentVariable("PASSBOLT_PASSPHRASE")!;
+
+using var client = await AsyncPassboltClient.Login(
+    "https://passbolt.example.com", privateKey, passphrase);
+try
+{
+    foreach (var view in await client.ListResourceViews(search: "github"))
+    {
+        Console.WriteLine($"{view.id} {view.name}");
+    }
+}
+finally
+{
+    await client.Logout();
+}
+```
+
+The methods keep their names, without the usual `Async` suffix: UniFFI names them.
 
 ## Pinning the server, MFA, TLS
 
