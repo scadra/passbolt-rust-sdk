@@ -85,6 +85,27 @@ val options = LoginOptions(
 val client = PassboltClient.loginWithConfig(serverUrl, privateKey, passphrase, options)
 ```
 
+## Generating passwords
+
+As the browser extension: passwords from character sets, passphrases of words of the EFF list,
+PIN codes, from the password policies of the organization or settings of your own. The fields
+left out keep the defaults of Passbolt.
+
+```kotlin
+val policies = client.getPasswordPolicies() // the organization's: generator and settings
+val secret = generateSecret(policies)
+
+val password = generatePassword(PasswordGeneratorSettings(length = 24u))
+val passphrase = generatePassphrase(
+    PassphraseGeneratorSettings(words = 6u, wordCase = WordCase.CAMELCASE))
+val pinCode = generatePinCode(6u)
+
+val strength: Strength = secretStrength(password) // VERY_STRONG, as the extension shows it
+```
+
+They are functions of the package `com.passbolt.sdk`, and need no session; without one,
+`defaultPasswordPolicies()` gives the defaults of Passbolt.
+
 ## Errors
 
 Every failing call throws a `PassboltException`, a sealed class: `PassboltException.Crypto`,

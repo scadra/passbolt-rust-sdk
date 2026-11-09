@@ -37,5 +37,16 @@ async def refused_login() -> passbolt.PassboltError:
     raise SystemExit("expected a crypto error")
 
 
+# The generator of the extension, without a session.
+password = passbolt.generate_password(passbolt.PasswordGeneratorSettings(length=24))
+assert len(password) == 24, password
+passphrase = passbolt.generate_passphrase(
+    passbolt.PassphraseGeneratorSettings(words=5, word_separator="-")
+)
+assert passbolt.secret_strength(passbolt.generate_secret()) == passbolt.Strength.STRONG
+assert len(passbolt.generate_pin_code()) == 4
+assert passphrase == passphrase.lower(), passphrase
+print("ok: generator")
+
 # The awaited call runs on the SDK's runtime and raises with its fields, as the blocking one.
 print(f"ok: async {asyncio.run(refused_login())!r}")

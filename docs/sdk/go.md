@@ -198,6 +198,37 @@ The call abandoned still runs to its end: after a context error, a write may hav
 read the state back rather than assume it did not. A context that has already ended makes no
 call. To bound the call itself, set `LoginOptions.TimeoutSeconds`.
 
+## Generating passwords
+
+As the browser extension: passwords from character sets, passphrases of words of the EFF list,
+PIN codes, from the password policies of the organization or settings of your own. The zero
+value of the settings has no character set: start from `DefaultPasswordPolicies` or the
+policies of the server.
+
+```go
+policies, err := client.GetPasswordPolicies() // the organization's: generator and settings
+if err != nil {
+	return err
+}
+secret, err := passbolt.GenerateSecret(policies)
+if err != nil {
+	return err
+}
+
+settings := passbolt.DefaultPasswordPolicies().PasswordGeneratorSettings
+settings.Length = 24
+password, err := passbolt.GeneratePassword(settings)
+if err != nil {
+	return err
+}
+pinCode := passbolt.GeneratePinCode(6)
+
+// As the extension shows it.
+if passbolt.SecretStrength(password) == passbolt.StrengthVeryStrong {
+	fmt.Println(len(secret), len(pinCode))
+}
+```
+
 ## Errors
 
 Each call returns its failure as a `*passbolt.PassboltError` wrapping one variant per cause,

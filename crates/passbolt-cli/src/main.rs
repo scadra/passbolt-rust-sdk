@@ -85,7 +85,9 @@ fn help_when_incomplete(command: clap::Command) -> clap::Command {
     for name in names {
         command = command.mut_subcommand(name, help_when_incomplete);
     }
-    command.arg_required_else_help(has_subcommands)
+    // `passbolt generate` alone uses the default generator of the organization.
+    let generate = command.get_name() == "generate";
+    command.arg_required_else_help(has_subcommands && !generate)
 }
 
 async fn run(cli: Cli) -> Result<()> {
@@ -102,6 +104,10 @@ async fn run(cli: Cli) -> Result<()> {
             return write_ignoring_closed_pipe(&script);
         }
         Commands::Gendoc(args) => return cli::gendoc::run_gendoc(args),
+        Commands::Generate(args) if args.offline => {
+            let policies = passbolt_sdk::generator::PasswordPolicies::default();
+            return cli::generate::print(&cli::generate::generate(args, &policies)?, cli.json);
+        }
         _ => {}
     }
 
@@ -302,6 +308,16 @@ async fn print_permissions(
     )
 }
 
+/// A secret from the password policies of the organization, as the extension fills a new
+/// password.
+async fn generated_password(client: &Client) -> Result<String> {
+    let policies = client
+        .get_password_policies()
+        .await
+        .context("reading the password policies")?;
+    Ok(passbolt_sdk::generator::generate_secret(&policies)?)
+}
+
 #[allow(clippy::too_many_lines)]
 async fn dispatch(
     command: &Commands,
@@ -328,6 +344,7 @@ async fn dispatch(
                 field,
                 secret_field,
                 folder_parent_id,
+                generate,
                 expiry,
                 totp_key,
                 totp_algo,
@@ -364,6 +381,7 @@ async fn dispatch(
                 );
                 let resolved_password = match given(password.as_ref()) {
                     Some(provided_password) => Some(provided_password),
+                    None if *generate => Some(generated_password(client).await?),
                     // Asked only in a terminal: a script gets go-passbolt-cli's error.
                     None if needs_password && std::io::stdin().is_terminal() => {
                         Some(read_password("Password: ")?.expose_secret().to_string())
@@ -653,6 +671,7 @@ async fn dispatch(
                 username,
                 uri,
                 password,
+                generate,
                 description,
                 note,
                 pin_code,
@@ -678,7 +697,10 @@ async fn dispatch(
                     uris: (!uris.is_empty()).then_some(uris),
                     description: given(description.as_ref()),
                     note: given(note.as_ref()),
-                    password: given(password.as_ref()),
+                    password: match given(password.as_ref()) {
+                        None if *generate => Some(generated_password(client).await?),
+                        password => password,
+                    },
                     pin_code: given(pin_code.as_ref()),
                     totp: totp_changed.then(|| passbolt_sdk::types::TotpData {
                         secret_key: totp_key.clone(),
@@ -885,6 +907,15 @@ async fn dispatch(
         // ── Exec ────────────────────────────────────────────────────────────
         Commands::Exec(args) => {
             cli::exec::run(args, client, debug).await?;
+        }
+
+        // ── Generate ────────────────────────────────────────────────────────
+        Commands::Generate(args) => {
+            let policies = client
+                .get_password_policies()
+                .await
+                .context("reading the password policies")?;
+            cli::generate::print(&cli::generate::generate(args, &policies)?, json_output)?;
         }
 
         // ── Export ──────────────────────────────────────────────────────────

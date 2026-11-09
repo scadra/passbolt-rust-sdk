@@ -24,6 +24,7 @@ use crate::auth::{self, AuthTokens};
 use crate::config::SdkConfig;
 use crate::crypto::{self, PrivateKey};
 use crate::error::{ApiError, AuthError, CryptoError, PassboltError};
+use crate::generator::PasswordPolicies;
 use crate::http::{HttpClient, HttpResponse};
 use crate::metadata::{self, MetadataKeys, ResourceSessionKey, SessionKeys, SessionKeysBundle};
 use crate::mfa::MfaProvider;
@@ -1736,6 +1737,31 @@ impl<H: HttpClient> PassboltSdk<H> {
         let id = uuid_segment(id)?;
         self.delete_request(&format!("/password-expiry/settings/{id}.json"))
             .await
+    }
+
+    // ── Password Policies ────────────────────────────────────────────────────
+
+    /// The password policies of the organization: the generator to use and its settings.
+    ///
+    /// A server before 4.2 has no `/password-policies` (404): its legacy
+    /// `/password-generator/settings.json` gives the generator, the extension's defaults the
+    /// rest.
+    pub async fn get_password_policies(&self) -> Result<PasswordPolicies, PassboltError> {
+        match self.get("/password-policies/settings.json").await {
+            Err(PassboltError::Api(ApiError { status: 404, .. })) => {
+                self.get("/password-generator/settings.json").await
+            }
+            result => result,
+        }
+    }
+
+    /// Save the password policies of the organization (administrator, Passbolt Pro).
+    pub async fn save_password_policies(
+        &self,
+        policies: &PasswordPolicies,
+    ) -> Result<PasswordPolicies, PassboltError> {
+        let body = serde_json::to_value(policies)?;
+        self.post("/password-policies/settings.json", &body).await
     }
 
     // ── HIBP Password Breach Check ───────────────────────────────────────────

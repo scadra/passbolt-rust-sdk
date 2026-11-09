@@ -96,6 +96,34 @@ await session.updateGroup(group.id, { name: "Infra", removeMemberIds: [betty.id]
 
 Permission types are `1` read, `7` update, `15` owner, `-1` to revoke.
 
+## Generating passwords
+
+As the browser extension: passwords from character sets, passphrases of words of the EFF list,
+PIN codes, from the password policies of the organization or settings of your own. The settings
+have the shape of the API, the `PasswordPoliciesDto` of the extension; the fields left out keep
+the defaults of Passbolt. The functions need no session.
+
+```ts
+import {
+  generatePassphrase,
+  generatePassword,
+  generatePinCode,
+  generateSecret,
+  secretEntropy,
+  secretStrength,
+} from "@switch-case/passbolt-sdk";
+
+const policies = await session.getPasswordPolicies(); // the organization's
+const secret = generateSecret(policies);
+
+const password = generatePassword({ length: 24, mask_emoji: true });
+const passphrase = generatePassphrase({ words: 6, word_separator: "-", word_case: "camelcase" });
+const pinCode = generatePinCode(6);
+
+secretStrength(password); // "very-strong", the ids of the extension
+secretEntropy(password); // in bits
+```
+
 ## Errors
 
 Every failure rejects the promise (or throws, for the synchronous helpers) with an `Error` named
@@ -160,12 +188,14 @@ import { PassboltSession } from "@switch-case/passbolt-sdk";
 | Users | `listUsers({ search?, groupId?, adminOnly? })`, `getMe`, `getUser`, `createUser({ username, firstName, lastName, role? })`, `updateUser(id, { firstName?, lastName?, role? })`, `deleteUser`, `deleteUserDryRun`, `userDeleteBlockers`, `deleteUserWithTransfer(id, successorId)` |
 | Groups | `listGroups`, `getGroup`, `createGroup({ name, memberIds?, managerIds? })`, `updateGroup(id, { name?, addMemberIds?, addManagerIds?, removeMemberIds? })`, `deleteGroup`, `deleteGroupDryRun`, `groupDeleteBlockers`, `deleteGroupWithTransfer(id, successorId)` |
 | Tags, comments, favorites | `getTags`, `addTagToResource`, `setResourceTags`, `renameTag`, `deleteTag`, `getComments`, `createComment(resourceId, content, parentId?)`, `deleteComment`, `addFavorite`, `removeFavorite` |
-| Settings | `getPasswordExpirySettings`, `savePasswordExpirySettings`, `deletePasswordExpirySettings`, `listResourceTypes`, `getMetadataTypesSettings`, `saveMetadataTypesSettings`, `getMetadataKeysSettings`, `saveMetadataKeysSettings` |
+| Settings | `getPasswordPolicies`, `savePasswordPolicies`, `getPasswordExpirySettings`, `savePasswordExpirySettings`, `deletePasswordExpirySettings`, `listResourceTypes`, `getMetadataTypesSettings`, `saveMetadataTypesSettings`, `getMetadataKeysSettings`, `saveMetadataKeysSettings` |
 | Other | `searchAros`, `checkPasswordPwned` (a `number`) |
 
 Stateless helpers, outside a session: `encryptMessage(plaintext, publicKeysArmored)`,
 `decryptMessage(armoredMessage, privateKeyArmored, passphrase)`,
-`getKeyFingerprint(privateKeyArmored)`, `isPassboltError(error)`.
+`getKeyFingerprint(privateKeyArmored)`, `isPassboltError(error)`, and the generator:
+`generatePassword`, `generatePassphrase`, `generateSecret`, `generatePinCode`, `secretEntropy`,
+`secretStrength`.
 
 ```ts
 import { decryptMessage, encryptMessage } from "@switch-case/passbolt-sdk";
@@ -193,7 +223,8 @@ console.log(views.length, created.folder_parent_id);
 
 Main types: `Resource`, `ResourceView`, `SecretData`, `NewResource`, `ResourceChanges`, `Folder`,
 `FolderTreeNode`, `User`, `Group`, `Permission`, `DeleteBlockers`, `Tag`, `Comment`, `Favorite`,
-`Aro`, `ResourceType`, `PasswordExpirySettings`, `MetadataTypesSettings`, `MetadataKeysSettings`,
+`Aro`, `ResourceType`, `PasswordPolicies`, `PasswordGeneratorSettings`,
+`PassphraseGeneratorSettings`, `Strength`, `PasswordExpirySettings`, `MetadataTypesSettings`, `MetadataKeysSettings`,
 `LoginOptions`, `ServerKey`, `PassboltError`, `PassboltErrorCode`; the options `ResourceFilter`,
 `ResourceViewFilter`, `FolderFilter`, `UserFilter`, `Share`, `FolderShare`, `NewUser`,
 `UserChanges`, `NewGroup`, `GroupChanges`.

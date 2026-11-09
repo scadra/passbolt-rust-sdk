@@ -22,6 +22,7 @@ mod http;
 
 use passbolt_sdk::config::SdkConfig;
 use passbolt_sdk::error::PassboltError;
+use passbolt_sdk::generator::{PasswordPolicies, Strength, PIN_CODE_MIN_LENGTH};
 use passbolt_sdk::types::{SecretData, TotpData};
 use passbolt_sdk::PassboltSdk;
 use serde::{Deserialize, Serialize};
@@ -1214,6 +1215,41 @@ impl PassboltSession {
             .map_err(to_js_error)
     }
 
+    // ── Password policies ────────────────────────────────────────────────
+
+    /// The password policies of the organization, the `PasswordPoliciesDto` of the extension:
+    /// to give to `generateSecret`.
+    #[wasm_bindgen(
+        js_name = "getPasswordPolicies",
+        unchecked_return_type = "PasswordPolicies"
+    )]
+    pub async fn get_password_policies(&self) -> Result<JsValue, JsValue> {
+        let policies = self
+            .client
+            .get_password_policies()
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&policies)
+    }
+
+    /// Save the password policies of the organization (administrator, Passbolt Pro).
+    #[wasm_bindgen(
+        js_name = "savePasswordPolicies",
+        unchecked_return_type = "PasswordPolicies"
+    )]
+    pub async fn save_password_policies(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "PasswordPolicies")] policies: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let policies: PasswordPolicies = object_from_js(policies, "password policies")?;
+        let saved = self
+            .client
+            .save_password_policies(&policies)
+            .await
+            .map_err(to_js_error)?;
+        to_js_value(&saved)
+    }
+
     // ── Resource types and metadata settings ─────────────────────────────
 
     /// The resource types of the server, with the JSON Schemas of their `definition`.
@@ -1348,6 +1384,71 @@ pub fn get_key_fingerprint(
 ) -> Result<String, JsValue> {
     let key = passbolt_sdk::crypto::parse_private_key(private_key_armored).map_err(to_js_error)?;
     Ok(key.fingerprint.clone())
+}
+
+// ── Secret generator ─────────────────────────────────────────────────────────
+
+/// Settings in the shape of the API, the fields left out keeping their default; none at all:
+/// the defaults.
+fn settings_from_js<T: serde::de::DeserializeOwned + Default>(
+    value: JsValue,
+    what: &str,
+) -> Result<T, JsValue> {
+    if value.is_undefined() || value.is_null() {
+        return Ok(T::default());
+    }
+    object_from_js(value, what)
+}
+
+/// A password drawn as the extension draws it: 18 characters of every set but emoji by
+/// default.
+#[wasm_bindgen(js_name = "generatePassword")]
+pub fn generate_password(
+    #[wasm_bindgen(unchecked_param_type = "Partial<PasswordGeneratorSettings>")] settings: JsValue,
+) -> Result<String, JsValue> {
+    let settings = settings_from_js(settings, "password generator settings")?;
+    passbolt_sdk::generator::generate_password(&settings).map_err(to_js_error)
+}
+
+/// A passphrase of words of the EFF list: 9 lowercase words joined by spaces by default.
+#[wasm_bindgen(js_name = "generatePassphrase")]
+pub fn generate_passphrase(
+    #[wasm_bindgen(unchecked_param_type = "Partial<PassphraseGeneratorSettings>")]
+    settings: JsValue,
+) -> Result<String, JsValue> {
+    let settings = settings_from_js(settings, "passphrase generator settings")?;
+    passbolt_sdk::generator::generate_passphrase(&settings).map_err(to_js_error)
+}
+
+/// A secret from the default generator of `policies`, those of `getPasswordPolicies`.
+#[wasm_bindgen(js_name = "generateSecret")]
+pub fn generate_secret(
+    #[wasm_bindgen(unchecked_param_type = "PasswordPolicies")] policies: JsValue,
+) -> Result<String, JsValue> {
+    let policies: PasswordPolicies = settings_from_js(policies, "password policies")?;
+    passbolt_sdk::generator::generate_secret(&policies).map_err(to_js_error)
+}
+
+/// A PIN code of `length` digits (4 by default), brought within 4 to 12.
+#[wasm_bindgen(js_name = "generatePinCode")]
+#[must_use]
+pub fn generate_pin_code(length: Option<u32>) -> String {
+    passbolt_sdk::generator::generate_pin_code(length.unwrap_or(PIN_CODE_MIN_LENGTH))
+}
+
+/// The entropy of `secret` in bits, measured as the extension does.
+#[wasm_bindgen(js_name = "secretEntropy")]
+#[must_use]
+pub fn secret_entropy(secret: &str) -> f64 {
+    passbolt_sdk::generator::secret_entropy(secret)
+}
+
+/// The strength the extension shows for `secret`: its ids, `very-weak`… `very-strong`.
+#[wasm_bindgen(js_name = "secretStrength", unchecked_return_type = "Strength")]
+pub fn secret_strength(secret: &str) -> Result<JsValue, JsValue> {
+    to_js_value(&Strength::of(passbolt_sdk::generator::secret_entropy(
+        secret,
+    )))
 }
 
 #[cfg(test)]

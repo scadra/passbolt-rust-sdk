@@ -57,6 +57,21 @@ func main() {
 		fail("expected context.Canceled without a call, got: %v (called: %v)", err, called)
 	}
 
+	// The generator of the extension, from the default policies: the zero value has no
+	// character set.
+	settings := passbolt.DefaultPasswordPolicies().PasswordGeneratorSettings
+	settings.Length = 24
+	password, err := passbolt.GeneratePassword(settings)
+	if err != nil || len([]rune(password)) != 24 {
+		fail("expected a password of 24 characters, got %q: %v", password, err)
+	}
+	if _, err := passbolt.GeneratePassword(passbolt.PasswordGeneratorSettings{}); !errors.Is(err, passbolt.ErrPassboltErrorInvalidArgument) {
+		fail("expected an invalid argument without character set, got: %v", err)
+	}
+	if strength := passbolt.SecretStrength(password); strength != passbolt.StrengthVeryStrong {
+		fail("expected a very strong password, got %v", strength)
+	}
+
 	// The records have Go names.
 	view := passbolt.ResourceView{ID: "id", URIs: []string{"https://example.com"}}
 	_ = passbolt.LoginOptions{TLSSkipVerify: false}

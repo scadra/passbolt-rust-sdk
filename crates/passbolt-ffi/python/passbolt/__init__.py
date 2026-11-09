@@ -29,6 +29,7 @@ from ._ffi.passbolt_ffi import (
     Folder,
     FolderQuery,
     FolderTreeNode,
+    GeneratorType,
     GpgKey,
     Group,
     GroupDeleteDryRun,
@@ -41,7 +42,10 @@ from ._ffi.passbolt_ffi import (
     OwnedItem,
     PassboltClient,
     PassboltError,
+    PassphraseGeneratorSettings,
     PasswordExpirySettings,
+    PasswordGeneratorSettings,
+    PasswordPolicies,
     Permission,
     Resource,
     ResourceChanges,
@@ -52,17 +56,26 @@ from ._ffi.passbolt_ffi import (
     Secret,
     SecretData,
     ServerKey,
+    Strength,
     Tag,
     TotpData,
     User,
     UserDeleteDryRun,
     UserProfile,
     UserQuery,
+    WordCase,
     decrypt_message,
+    default_password_policies,
     encrypt_message,
     fetch_server_key,
+    generate_pin_code,
     get_key_fingerprint,
+    secret_entropy,
+    secret_strength,
 )
+from ._ffi.passbolt_ffi import generate_passphrase as _generate_passphrase
+from ._ffi.passbolt_ffi import generate_password as _generate_password
+from ._ffi.passbolt_ffi import generate_secret as _generate_secret
 
 __all__ = [
     "ApiError",
@@ -78,6 +91,7 @@ __all__ = [
     "Folder",
     "FolderQuery",
     "FolderTreeNode",
+    "GeneratorType",
     "GpgKey",
     "Group",
     "GroupDeleteDryRun",
@@ -91,7 +105,10 @@ __all__ = [
     "NotFoundError",
     "OwnedItem",
     "PassboltError",
+    "PassphraseGeneratorSettings",
     "PasswordExpirySettings",
+    "PasswordGeneratorSettings",
+    "PasswordPolicies",
     "Permission",
     "PermissionType",
     "Resource",
@@ -103,6 +120,7 @@ __all__ = [
     "Secret",
     "SecretData",
     "ServerKey",
+    "Strength",
     "Tag",
     "TotpData",
     "TransportError",
@@ -110,10 +128,18 @@ __all__ = [
     "UserDeleteDryRun",
     "UserProfile",
     "UserQuery",
+    "WordCase",
     "decrypt_message",
+    "default_password_policies",
     "encrypt_message",
     "fetch_server_key",
+    "generate_passphrase",
+    "generate_password",
+    "generate_pin_code",
+    "generate_secret",
     "get_key_fingerprint",
+    "secret_entropy",
+    "secret_strength",
 ]
 
 #: Base class of every error the SDK raises; its subclasses say what failed.
@@ -135,6 +161,25 @@ def _error_message(error: PassboltError) -> str:
 
 # The generated message is "reason='…'": show the reason itself.
 PassboltError.__str__ = _error_message  # type: ignore[assignment]
+
+
+def generate_password(settings: Optional[PasswordGeneratorSettings] = None) -> str:
+    """A password drawn as the browser extension draws it, from ``settings``: by default 18
+    characters of every set but emoji. ``PasswordGeneratorSettings(length=24)`` keeps the other
+    defaults."""
+    return _generate_password(settings or PasswordGeneratorSettings())
+
+
+def generate_passphrase(settings: Optional[PassphraseGeneratorSettings] = None) -> str:
+    """A passphrase of words of the EFF list, from ``settings``: by default 9 lowercase words
+    joined by spaces."""
+    return _generate_passphrase(settings or PassphraseGeneratorSettings())
+
+
+def generate_secret(policies: Optional[PasswordPolicies] = None) -> str:
+    """A secret from the default generator of ``policies``, those of
+    ``client.get_password_policies()``; without them, the defaults of Passbolt."""
+    return _generate_secret(policies or default_password_policies())
 
 
 class PermissionType(IntEnum):

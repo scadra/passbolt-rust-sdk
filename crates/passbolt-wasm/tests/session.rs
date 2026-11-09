@@ -18,7 +18,10 @@
 #![allow(clippy::future_not_send)]
 
 use futures_executor::block_on;
-use passbolt_wasm::{encrypt_message, get_key_fingerprint, is_passbolt_error, PassboltSession};
+use passbolt_wasm::{
+    encrypt_message, generate_password, generate_secret, get_key_fingerprint, is_passbolt_error,
+    secret_strength, PassboltSession,
+};
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -47,6 +50,8 @@ const METADATA_KEYS_SETTINGS: &str =
     include_str!("../../passbolt-sdk/tests/fixtures/data/metadata_keys_settings.json");
 const RESOURCE_TYPES: &str =
     include_str!("../../passbolt-sdk/tests/fixtures/data/resource_types.json");
+const PASSWORD_POLICIES: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/data/password_policies.json");
 const USER_DELETE_DRY_RUN_ERRORS: &str =
     include_str!("../../passbolt-sdk/tests/fixtures/data/user_delete_dry_run_errors.json");
 
@@ -728,4 +733,58 @@ async fn a_session_on_openpgp_js_reads_what_rpgp_wrote() {
     let decrypted = to_json(&ok(session.decrypt_resource_secret(resource).await));
 
     assert_eq!(decrypted["password"], "s3cret");
+}
+
+#[wasm_bindgen_test]
+async fn the_password_policies_generate_the_secret_of_the_organization() {
+    let passbolt = Passbolt::new();
+    passbolt.on(
+        "GET",
+        "/password-policies/settings.json",
+        &fixture(PASSWORD_POLICIES),
+    );
+    let policies = ok(passbolt.login().await.get_password_policies().await);
+
+    let secret = ok(generate_secret(policies.clone()));
+
+    assert_eq!(to_json(&policies)["default_generator"], "passphrase");
+    // 6 camelcase words joined by `-`.
+    assert!(
+        secret.chars().next().is_some_and(char::is_uppercase),
+        "{secret}"
+    );
+    assert!(secret.matches('-').count() >= 5, "{secret}");
+}
+
+#[wasm_bindgen_test]
+fn a_password_is_generated_from_the_settings_given_only() {
+    let settings = from_json(&json!({"length": 32, "mask_char1": false}));
+
+    let password = ok(generate_password(settings));
+
+    assert_eq!(password.chars().count(), 32);
+    assert!(
+        !password.contains(['#', '$', '%', '&', '@', '^', '~']),
+        "{password}"
+    );
+}
+
+#[wasm_bindgen_test]
+fn settings_that_cannot_generate_throw_an_invalid_argument() {
+    let settings = from_json(&json!({"length": 4}));
+
+    let error = generate_password(settings).unwrap_err();
+
+    assert_eq!(code(&error), "INVALID_ARGUMENT");
+}
+
+#[wasm_bindgen_test]
+fn the_strength_has_the_ids_of_the_extension() {
+    let strength = ok(secret_strength("Passbolt"));
+
+    assert_eq!(strength.as_string().as_deref(), Some("very-weak"));
+    assert_eq!(
+        ok(secret_strength("")).as_string().as_deref(),
+        Some("not_available")
+    );
 }

@@ -545,3 +545,59 @@ fn test_configure_saves_what_is_given_on_the_command_line() {
     let saved = std::fs::read_to_string(&config).unwrap();
     assert!(saved.contains("typed-on-purpose"), "{saved}");
 }
+
+#[test]
+fn test_generate_offline_prints_a_password_of_the_default_policies() {
+    let output = passbolt()
+        .args(["generate", "--offline"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let password = String::from_utf8(output).unwrap();
+    assert_eq!(
+        password.trim_end_matches('\n').chars().count(),
+        18,
+        "{password}"
+    );
+}
+
+#[test]
+fn test_generate_passphrase_takes_its_options() {
+    passbolt()
+        .args([
+            "generate",
+            "passphrase",
+            "--offline",
+            "-w",
+            "4",
+            "-s",
+            "+",
+            "--case",
+            "uppercase",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match(r"^[A-Z-]+(\+[A-Z-]+){3}\n$").unwrap());
+}
+
+#[test]
+fn test_generate_json_gives_the_strength_of_the_extension() {
+    passbolt()
+        .args(["--json", "generate", "pin", "--offline", "--length", "6"])
+        .assert()
+        .success()
+        .stdout(contains(r#""strength": "very-weak""#))
+        .stdout(predicate::str::is_match(r#""secret": "\d{6}""#).unwrap());
+}
+
+#[test]
+fn test_generate_refuses_settings_that_cannot_generate() {
+    passbolt()
+        .args(["generate", "password", "--offline", "--length", "4"])
+        .assert()
+        .failure()
+        .stderr(contains("between 8 and 128"));
+}

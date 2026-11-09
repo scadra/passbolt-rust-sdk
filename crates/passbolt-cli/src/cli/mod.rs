@@ -14,6 +14,7 @@ pub mod configure;
 pub mod exec;
 pub mod export;
 pub mod gendoc;
+pub mod generate;
 pub mod import;
 pub mod root;
 pub mod verify;

@@ -26,6 +26,7 @@ mod metadata;
 mod metadata_keys;
 mod mfa;
 mod pagination;
+mod password_policies;
 mod payloads;
 mod properties;
 mod requests;

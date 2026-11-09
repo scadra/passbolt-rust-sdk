@@ -260,3 +260,8 @@ pub fn aros() -> Value {
 pub fn password_expiry_settings() -> Value {
     fixture!("password_expiry_settings.json")
 }
+
+/// The policies an administrator saved on Passbolt Pro: passphrases by default.
+pub fn password_policies() -> Value {
+    fixture!("password_policies.json")
+}

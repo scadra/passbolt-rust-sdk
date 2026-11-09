@@ -51,11 +51,16 @@ module Passbolt
   RECORDS = %i[
     Aro Comment DeleteBlockers Favorite Folder FolderQuery FolderTreeNode GpgKey Group
     GroupDeleteDryRun GroupUser LoginOptions ManagedGroup MetadataKeysSettings
-    MetadataTypesSettings NewResource OwnedItem PasswordExpirySettings Permission Resource
+    MetadataTypesSettings NewResource OwnedItem PassphraseGeneratorSettings
+    PasswordExpirySettings PasswordGeneratorSettings PasswordPolicies Permission Resource
     ResourceChanges ResourceQuery ResourceType ResourceView Role Secret SecretData ServerKey Tag
     TotpData User UserDeleteDryRun UserProfile UserQuery
   ].freeze
   RECORDS.each { |name| const_set(name, PassboltFfi.const_get(name)) }
+
+  # The enums: Passbolt::WordCase::CAMELCASE, Passbolt::Strength::VERY_STRONG…
+  ENUMS = %i[GeneratorType Strength WordCase].freeze
+  ENUMS.each { |name| const_set(name, PassboltFfi.const_get(name)) }
 
   # Passbolt's permission types, for share_resource and share_folder.
   module PermissionType
@@ -79,6 +84,43 @@ module Passbolt
   # The ciphertext, armored, for every key of public_keys_armored.
   def self.encrypt_message(plaintext, public_keys_armored)
     PassboltFfi.encrypt_message(plaintext, public_keys_armored)
+  end
+
+  # A password drawn as the browser extension draws it: by default 18 characters of every set
+  # but emoji. The keywords are the fields of PasswordGeneratorSettings: length: 24…
+  def self.generate_password(**settings)
+    PassboltFfi.generate_password(PasswordGeneratorSettings.new(**settings))
+  end
+
+  # A passphrase of words of the EFF list: by default 9 lowercase words joined by spaces. The
+  # keywords are the fields of PassphraseGeneratorSettings: words:, word_separator:, word_case:.
+  def self.generate_passphrase(**settings)
+    PassboltFfi.generate_passphrase(PassphraseGeneratorSettings.new(**settings))
+  end
+
+  # A secret from the default generator of policies, those of client.get_password_policies.
+  def self.generate_secret(policies = PassboltFfi.default_password_policies)
+    PassboltFfi.generate_secret(policies)
+  end
+
+  # A PIN code of length digits, brought within 4 to 12.
+  def self.generate_pin_code(length = 4)
+    PassboltFfi.generate_pin_code(length)
+  end
+
+  # The policies of a server without settings: passwords of 18 characters by default.
+  def self.default_password_policies
+    PassboltFfi.default_password_policies
+  end
+
+  # The entropy of secret in bits, measured as the extension does.
+  def self.secret_entropy(secret)
+    PassboltFfi.secret_entropy(secret)
+  end
+
+  # The strength the extension shows for secret: a Passbolt::Strength.
+  def self.secret_strength(secret)
+    PassboltFfi.secret_strength(secret)
   end
 
   # The plaintext, as a binary String.

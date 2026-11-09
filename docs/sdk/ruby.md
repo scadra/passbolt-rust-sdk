@@ -71,6 +71,24 @@ shares, decrypted; the others, custom fields and icon among them, are the JSON o
 `metadata_json` and `secret_json`. The fields left out of `NewResource` and `ResourceChanges`
 keep their default.
 
+## Generating passwords
+
+As the browser extension: passwords from character sets, passphrases of words of the EFF list,
+PIN codes, from the password policies of the organization or settings of your own. The keywords
+are the fields of the settings; those left out keep the defaults of Passbolt.
+
+```ruby
+policies = client.get_password_policies # the organization's: generator and settings
+secret = Passbolt.generate_secret(policies)
+
+password = Passbolt.generate_password(length: 24, mask_emoji: true)
+passphrase = Passbolt.generate_passphrase(words: 6, word_case: Passbolt::WordCase::CAMELCASE)
+pin_code = Passbolt.generate_pin_code(6)
+
+Passbolt.secret_strength(password) == Passbolt::Strength::VERY_STRONG # as the extension shows it
+Passbolt.secret_entropy(password) # in bits
+```
+
 ## Errors
 
 ```ruby

@@ -7,6 +7,11 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - LICENSE (AGPL-3.0), SECURITY.md, CONTRIBUTING.md and GitHub issue / pull request templates
 - Passbolt license header on every Rust source file, checked by `scripts/license-headers.sh`
 - SDK integration tests against an in-memory Passbolt API (`crates/passbolt-sdk/tests/it`)
+- Password generator of the browser extension in the SDK and every binding: passwords from its
+  character sets, passphrases of its EFF word list, PIN codes, the password policies of the
+  organization (`get_password_policies`, `save_password_policies`), and the entropy and strength
+  it shows; in the CLI, `passbolt generate [password|passphrase|pin]` and `--generate` on
+  `create resource` and `update resource`
 - FFI bindings: `AsyncPassboltClient`, the methods of `PassboltClient` awaited in each
   language's own way: coroutines in Python (`passbolt.AsyncClient`, `async with`), `suspend` in
   Kotlin, `async` in Swift, `Task` in C#, `CompletableFuture` in Java; Go and Ruby keep the

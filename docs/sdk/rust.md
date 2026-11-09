@@ -80,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `metadata` | v5 metadata keys and settings, `migrate-metadata` |
 | `exchange` | CSV import and export in the formats of other password managers, KDBX import |
 | `crypto` | OpenPGP: parse keys, encrypt, decrypt, fingerprints |
+| `generator` | passwords, passphrases and PIN codes as the extension generates them, `PasswordPolicies` (`client.get_password_policies()`), `secret_entropy`, `Strength` |
 | `auth` | GPGAuth, `fetch_server_key` |
 | `PassboltSdk` methods | the API calls themselves: `get_resource`, `delete_resource`, `get_folders`, `get_users`, `add_favorite`, `get_tags`… |
 

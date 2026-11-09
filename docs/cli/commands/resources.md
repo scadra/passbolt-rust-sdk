@@ -72,6 +72,7 @@ passbolt create resource --name <NAME> [OPTIONS]
 | `-u, --username <USERNAME>` | Username |
 | `--uri <URI>` | URL (repeatable for v5 types) |
 | `-p, --password <PASSWORD>` | Password (prompted securely when the type needs one) |
+| `--generate` | Generate the password from the password policies of the organization ([generate](generate.md)) |
 | `-d, --description <DESC>` | Description |
 | `--note <NOTE>` | Secret note (`v5-note`) |
 | `--pin-code <PIN>` | PIN code (`v5-pin-code`, 4 to 12 digits) |
@@ -96,7 +97,7 @@ passbolt create resource \
 passbolt update resource --id <UUID> [OPTIONS]
 ```
 
-Options: `--name`, `--username`, `--uri`, `--password`, `--description`, `--note`, `--pin-code`,
+Options: `--name`, `--username`, `--uri`, `--password` (or `--generate`), `--description`, `--note`, `--pin-code`,
 `--field`, `--secret-field`, `--expiry`, `--totp-*`, `--remove-totp`. An empty value leaves the
 field unchanged. Shared metadata is encrypted again for the shared key, personal metadata for the
 user while only they have access.

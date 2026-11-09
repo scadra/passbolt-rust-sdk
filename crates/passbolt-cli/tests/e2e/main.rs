@@ -22,6 +22,7 @@ mod errors;
 mod exchange;
 mod folder_permissions;
 mod folders;
+mod generator;
 mod go_parity;
 mod interop;
 mod keepass_export;
