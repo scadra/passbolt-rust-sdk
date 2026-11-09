@@ -22,16 +22,19 @@ only the way they are called differs.
 |---|---|---|
 | Rust | [Rust](rust.md) | `async` |
 | JavaScript / TypeScript | [JavaScript](javascript.md) | `async` (promises) |
-| Python | [Python](python.md) | blocking |
-| Java | [Java](java.md) | blocking |
-| Android (Kotlin) | [Android](android.md) | blocking |
-| .NET (C#) | [.NET](dotnet.md) | blocking |
+| Python | [Python](python.md) | blocking, or `async` (`AsyncClient`) |
+| Java | [Java](java.md) | blocking, or `CompletableFuture` (`AsyncPassboltClient`) |
+| Android (Kotlin) | [Android](android.md) | blocking, or `suspend` (`AsyncPassboltClient`) |
+| .NET (C#) | [.NET](dotnet.md) | blocking, or `Task` (`AsyncPassboltClient`) |
 | Go | [Go](go.md) | blocking |
 | Ruby | [Ruby](ruby.md) | blocking |
-| Swift (iOS) | [Swift](swift.md) | blocking |
+| Swift (iOS) | [Swift](swift.md) | blocking, or `async` (`AsyncPassboltClient`) |
 
-The blocking bindings run the network calls on their own runtime: on mobile, call them off the
-main thread.
+The FFI bindings have two clients with the same methods: `PassboltClient`, whose calls block
+(on mobile, call them off the main thread), and `AsyncPassboltClient`, whose calls are awaited
+in the language's own way while the SDK's runtime does the network work. Go keeps the blocking
+client, its goroutines being the way to wait; Ruby too, since UniFFI does not generate async
+code for it yet.
 
 ## Concepts
 
