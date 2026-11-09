@@ -15,4 +15,5 @@ end
 missing = Passbolt::RECORDS.reject { |name| Passbolt.const_get(name, false) == PassboltFfi.const_get(name) }
 abort "not under Passbolt: #{missing}" unless missing.empty?
 abort "Passbolt::Client" unless Passbolt::Client < PassboltFfi::PassboltClient
+abort "PassboltFfi::AsyncPassboltClient is broken in Ruby" if defined?(PassboltFfi::AsyncPassboltClient)
 puts "ok: Passbolt names"
