@@ -17,8 +17,9 @@ use std::sync::Arc;
 use futures_executor::block_on;
 
 use passbolt_ffi::{
-    fetch_server_key, AsyncPassboltClient, LoginOptions, MetadataKeysSettings, NewResource,
-    PassboltClient, PassboltError, PasswordExpirySettings,
+    fetch_server_key, generate_secret, secret_strength, AsyncPassboltClient, GeneratorType,
+    LoginOptions, MetadataKeysSettings, NewResource, PassboltClient, PassboltError,
+    PasswordExpirySettings,
 };
 use passbolt_sdk::crypto;
 use serde_json::{json, Value};
@@ -54,6 +55,8 @@ const PASSWORD_EXPIRY_SETTINGS: &str =
     include_str!("../../passbolt-sdk/tests/fixtures/data/password_expiry_settings.json");
 const METADATA_KEYS_SETTINGS: &str =
     include_str!("../../passbolt-sdk/tests/fixtures/data/metadata_keys_settings.json");
+const PASSWORD_POLICIES: &str =
+    include_str!("../../passbolt-sdk/tests/fixtures/data/password_policies.json");
 const RESOURCE_TYPES: &str =
     include_str!("../../passbolt-sdk/tests/fixtures/data/resource_types.json");
 const USER_DELETE_DRY_RUN_ERRORS: &str =
@@ -905,4 +908,47 @@ fn an_async_login_with_a_wrong_passphrase_is_an_auth_error() {
     .unwrap();
 
     assert!(matches!(error, PassboltError::Auth { .. }), "{error}");
+}
+
+#[test]
+fn a_secret_follows_the_password_policies_of_the_organization() {
+    let passbolt = Passbolt::new();
+    passbolt.on(
+        "GET",
+        "/password-policies/settings.json",
+        &fixture(PASSWORD_POLICIES),
+    );
+    let policies = passbolt.login().get_password_policies().unwrap();
+
+    let secret = generate_secret(policies).unwrap();
+
+    // 6 camelcase words joined by `-`, the policies of the fixture.
+    assert!(
+        secret.chars().next().is_some_and(char::is_uppercase),
+        "{secret}"
+    );
+    assert!(secret.matches('-').count() >= 5, "{secret}");
+    assert_ne!(
+        secret_strength(secret),
+        passbolt_ffi::Strength::NotAvailable
+    );
+}
+
+#[test]
+fn the_default_generator_of_the_password_policies_crosses_the_ffi() {
+    let passbolt = Passbolt::new();
+    passbolt.on(
+        "GET",
+        "/password-policies/settings.json",
+        &fixture(PASSWORD_POLICIES),
+    );
+
+    let policies = passbolt.login().get_password_policies().unwrap();
+
+    assert!(matches!(
+        policies.default_generator,
+        GeneratorType::Passphrase
+    ));
+    assert_eq!(policies.passphrase_generator_settings.words, 6);
+    assert!(!policies.external_dictionary_check);
 }
