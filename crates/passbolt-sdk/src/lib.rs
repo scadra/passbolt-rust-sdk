@@ -46,6 +46,7 @@ pub mod error;
 pub mod exchange;
 pub mod filter;
 pub mod folder;
+pub mod generator;
 pub mod group;
 pub mod http;
 pub mod metadata;
