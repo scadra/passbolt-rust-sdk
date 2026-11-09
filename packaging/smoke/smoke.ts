@@ -1,6 +1,15 @@
 // Compiled with `tsc --strict --noEmit` against the installed package: the declarations hold
 // the types of the objects the session takes and returns. Never run.
-import { PassboltSession, isPassboltError } from "@switch-case/passbolt-sdk";
+import {
+  PassboltSession,
+  generatePassphrase,
+  generatePassword,
+  generatePinCode,
+  generateSecret,
+  isPassboltError,
+  secretEntropy,
+  secretStrength,
+} from "@switch-case/passbolt-sdk";
 import type {
   DeleteBlockers,
   Folder,
@@ -9,6 +18,7 @@ import type {
   LoginOptions,
   NewResource,
   PassboltErrorCode,
+  PasswordPolicies,
   Resource,
   ResourceChanges,
   ResourceView,
@@ -43,6 +53,15 @@ export async function typedSession(serverUrl: string, privateKey: string, passph
   const blockers: DeleteBlockers = await session.userDeleteBlockers(me.id);
   const breaches: number = await session.checkPasswordPwned("hunter2");
 
+  const policies: PasswordPolicies = await session.getPasswordPolicies();
+  const secret: string = generateSecret(policies);
+  generatePassword({ length: 24, mask_emoji: true });
+  generatePassword();
+  generatePassphrase({ words: 6, word_case: "camelcase" });
+  const pin: string = generatePinCode(6);
+  const bits: number = secretEntropy(secret);
+  const strong: boolean = secretStrength(secret) === "very-strong";
+
   let code: PassboltErrorCode | undefined;
   try {
     await session.getResource("missing");
@@ -50,5 +69,5 @@ export async function typedSession(serverUrl: string, privateKey: string, passph
     if (isPassboltError(error)) code = error.code;
   }
   session.free();
-  return { names, password, tree, breaches, code, blockers: blockers.groups_to_delete };
+  return { names, password, tree, breaches, code, blockers: blockers.groups_to_delete, pin, bits, strong };
 }
