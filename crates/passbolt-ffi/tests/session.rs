@@ -17,8 +17,8 @@ use std::sync::Arc;
 use futures_executor::block_on;
 
 use passbolt_ffi::{
-    fetch_server_key, LoginOptions, MetadataKeysSettings, NewResource, PassboltClient,
-    PassboltError, PasswordExpirySettings,
+    fetch_server_key, AsyncPassboltClient, LoginOptions, MetadataKeysSettings, NewResource,
+    PassboltClient, PassboltError, PasswordExpirySettings,
 };
 use passbolt_sdk::crypto;
 use serde_json::{json, Value};
@@ -149,6 +149,16 @@ impl Passbolt {
 
     fn login(&self) -> Arc<PassboltClient> {
         PassboltClient::login(self.server.uri(), ADA_PRIVATE.into(), ADA_PASSPHRASE.into()).unwrap()
+    }
+
+    /// Awaited from an executor without tokio, as a binding's event loop does.
+    fn login_async(&self) -> Arc<AsyncPassboltClient> {
+        block_on(AsyncPassboltClient::login(
+            self.server.uri(),
+            ADA_PRIVATE.into(),
+            ADA_PASSPHRASE.into(),
+        ))
+        .unwrap()
     }
 
     /// An error answer, as the server sends it: an `error` header and the failure in `body`.
@@ -834,4 +844,65 @@ fn the_metadata_keys_settings_are_saved() {
         passbolt.requests("POST", "/metadata/keys/settings.json"),
         [json!({"allow_usage_of_personal_keys": false, "zero_knowledge_key_share": false})]
     );
+}
+
+#[test]
+fn the_async_client_logs_in_from_an_executor_without_tokio() {
+    let passbolt = Passbolt::new();
+
+    let client = passbolt.login_async();
+
+    assert_eq!(client.user_id(), ADA_ID);
+    assert_eq!(passbolt.requests("POST", "/auth/login.json").len(), 2);
+}
+
+#[test]
+fn the_async_client_decrypts_a_resource_view() {
+    let passbolt = Passbolt::new();
+    passbolt.on(
+        "GET",
+        &format!("/resources/{RESOURCE_ID}.json"),
+        &resource(r#"{"password":"s3cr3t","description":"prod"}"#),
+    );
+    passbolt.on("GET", "/resource-types.json", &resource_types());
+    let client = passbolt.login_async();
+
+    let view = block_on(client.get_resource_view(RESOURCE_ID.into())).unwrap();
+
+    assert_eq!(view.name, "GitHub");
+    assert_eq!(view.password.as_deref(), Some("s3cr3t"));
+}
+
+#[test]
+fn an_async_api_error_keeps_its_status() {
+    let passbolt = Passbolt::new();
+    passbolt.on_status(
+        "DELETE",
+        &format!("/resources/{RESOURCE_ID}.json"),
+        404,
+        &Value::Null,
+    );
+    let client = passbolt.login_async();
+
+    let error = block_on(client.delete_resource(RESOURCE_ID.into())).unwrap_err();
+
+    assert!(
+        matches!(error, PassboltError::Api { status: 404, .. }),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_async_login_with_a_wrong_passphrase_is_an_auth_error() {
+    let passbolt = Passbolt::new();
+
+    let error = block_on(AsyncPassboltClient::login(
+        passbolt.server.uri(),
+        ADA_PRIVATE.into(),
+        "wrong".into(),
+    ))
+    .err()
+    .unwrap();
+
+    assert!(matches!(error, PassboltError::Auth { .. }), "{error}");
 }

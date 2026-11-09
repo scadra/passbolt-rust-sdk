@@ -4,20 +4,23 @@ The Kotlin bindings of the Passbolt Rust SDK and its native library for `arm64-v
 `armeabi-v7a`, `x86_64` and `x86`, in one AAR (`passbolt-sdk-android-<version>.aar`), for
 Android 7.0 (API 24) and later. The libraries use 16 KB pages, as Android 15 requires.
 
-The bindings call the library through JNA, which an AAR file does not bring along:
+The bindings call the library through JNA, and their `suspend` functions need
+kotlinx-coroutines, which an AAR file does not bring along:
 
 ```kotlin
 dependencies {
     implementation(files("libs/passbolt-sdk-android-0.1.1.aar"))
     implementation("net.java.dev.jna:jna:5.14.0@aar")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
 }
 ```
 
 ```kotlin
-import com.passbolt.sdk.PassboltClient
+import com.passbolt.sdk.AsyncPassboltClient
 
-// Blocking network calls: run them on Dispatchers.IO. `use` frees the client, `logout` the session.
-PassboltClient.login(serverUrl, privateKeyArmored, passphrase).use { client ->
+// From a coroutine. `use` frees the client, `logout` ends the session; PassboltClient has the
+// same methods, blocking: run them on Dispatchers.IO.
+AsyncPassboltClient.login(serverUrl, privateKeyArmored, passphrase).use { client ->
     val resources = client.listResources(favoritesOnly = true)
     client.logout()
 }

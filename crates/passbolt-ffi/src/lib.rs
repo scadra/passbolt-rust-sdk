@@ -38,6 +38,7 @@ pub use types::{MetadataKeysSettings, MetadataTypesSettings, PasswordExpirySetti
 
 uniffi::setup_scaffolding!();
 
+use std::future::Future;
 use std::sync::{Arc, LazyLock};
 
 use passbolt_sdk::config::SdkConfig;
@@ -164,19 +165,97 @@ fn build_sdk_config(
 
 // ── PassboltClient ──────────────────────────────────────────────────────────
 
+/// Log in with `GPGAuth` on the runtime: the session the two clients share.
+async fn log_in(
+    server_url: String,
+    private_key_armored: String,
+    passphrase: String,
+    options: LoginOptions,
+) -> Result<Arc<Client>, PassboltError> {
+    let http_config = build_http_config(&options);
+    let config = build_sdk_config(server_url, private_key_armored, passphrase, options);
+    let mfa_provider = totp_provider(&config).map_err(|error| PassboltError::Config {
+        reason: error.to_string(),
+    })?;
+    let http = NativeHttpClient::new(&http_config).map_err(|error| PassboltError::Config {
+        reason: error.to_string(),
+    })?;
+    let client = Client::login(
+        http,
+        &config,
+        mfa_provider.map(|provider| Box::new(provider) as Box<dyn MfaProvider>),
+        config.mfa_retrys,
+    )
+    .await?;
+    Ok(Arc::new(client))
+}
+
+/// Wait for `call` on the runtime, for the blocking client.
+fn block_on<T>(call: impl Future<Output = Result<T, PassboltError>>) -> Result<T, PassboltError> {
+    RUNTIME.block_on(call)
+}
+
+/// Run `call` on the runtime and await it from the caller's executor, for the async client:
+/// the runtime serves the sockets, whatever polls the result.
+async fn spawn<T: Send + 'static>(
+    call: impl Future<Output = Result<T, PassboltError>> + Send + 'static,
+) -> Result<T, PassboltError> {
+    RUNTIME.spawn(call).await.unwrap_or_else(|error| {
+        Err(PassboltError::Other {
+            reason: error.to_string(),
+        })
+    })
+}
+
 /// Authenticated Passbolt client for CRUD operations.
 ///
 /// All methods are synchronous at the FFI boundary; they block internally
-/// on the tokio runtime. Call from background threads on mobile platforms.
+/// on the tokio runtime. Call from background threads on mobile platforms, or use
+/// [`AsyncPassboltClient`].
 #[derive(uniffi::Object)]
 pub struct PassboltClient {
-    inner: Client,
+    inner: Arc<Client>,
+}
+
+/// The same client with async methods: `await` them, they do not block the caller's thread.
+#[derive(uniffi::Object)]
+pub struct AsyncPassboltClient {
+    inner: Arc<Client>,
+}
+
+/// The methods of both clients, from one list: each body is async, with `client` the
+/// session; `PassboltClient` blocks on it, `AsyncPassboltClient` awaits it.
+macro_rules! client_methods {
+    ($(
+        $(#[$attribute:meta])*
+        fn $name:ident($client:ident $(, $argument:ident: $argument_type:ty)* $(,)?) -> $output:ty $body:block
+    )*) => {
+        #[uniffi::export]
+        impl PassboltClient {
+            $(
+                $(#[$attribute])*
+                pub fn $name(&self $(, $argument: $argument_type)*) -> $output {
+                    let $client = Arc::clone(&self.inner);
+                    block_on(async move $body)
+                }
+            )*
+        }
+
+        #[uniffi::export]
+        impl AsyncPassboltClient {
+            $(
+                $(#[$attribute])*
+                pub async fn $name(&self $(, $argument: $argument_type)*) -> $output {
+                    let $client = Arc::clone(&self.inner);
+                    spawn(async move $body).await
+                }
+            )*
+        }
+    };
 }
 
 #[uniffi::export]
 impl PassboltClient {
-    // ── Auth ────────────────────────────────────────────────────────────
-
     /// Authenticate against a Passbolt server and return a client session.
     #[uniffi::constructor]
     pub fn login(
@@ -200,50 +279,85 @@ impl PassboltClient {
         passphrase: String,
         options: LoginOptions,
     ) -> Result<Arc<Self>, PassboltError> {
-        let http_config = build_http_config(&options);
-        let config = build_sdk_config(server_url, private_key_armored, passphrase, options);
-        let mfa_provider = totp_provider(&config).map_err(|error| PassboltError::Config {
-            reason: error.to_string(),
-        })?;
-        RUNTIME.block_on(async {
-            let http =
-                NativeHttpClient::new(&http_config).map_err(|error| PassboltError::Config {
-                    reason: error.to_string(),
-                })?;
-
-            let client = Client::login(
-                http,
-                &config,
-                mfa_provider.map(|provider| Box::new(provider) as Box<dyn MfaProvider>),
-                config.mfa_retrys,
-            )
-            .await
-            .map_err(PassboltError::from)?;
-
-            Ok(Arc::new(Self { inner: client }))
-        })
+        let inner = block_on(log_in(server_url, private_key_armored, passphrase, options))?;
+        Ok(Arc::new(Self { inner }))
     }
 
+    /// Get the current user's ID.
+    #[must_use]
+    pub fn user_id(&self) -> String {
+        self.inner.user_id.clone()
+    }
+
+    /// Get the server base URL.
+    #[must_use]
+    pub fn base_url(&self) -> String {
+        self.inner.base_url.clone()
+    }
+}
+
+#[uniffi::export]
+impl AsyncPassboltClient {
+    /// Authenticate against a Passbolt server and return a client session.
+    #[uniffi::constructor]
+    pub async fn login(
+        server_url: String,
+        private_key_armored: String,
+        passphrase: String,
+    ) -> Result<Arc<Self>, PassboltError> {
+        Self::login_with_config(
+            server_url,
+            private_key_armored,
+            passphrase,
+            LoginOptions::default(),
+        )
+        .await
+    }
+
+    /// Authenticate with `options`, the pinned server and metadata keys among them.
+    #[uniffi::constructor]
+    pub async fn login_with_config(
+        server_url: String,
+        private_key_armored: String,
+        passphrase: String,
+        options: LoginOptions,
+    ) -> Result<Arc<Self>, PassboltError> {
+        let inner = spawn(log_in(server_url, private_key_armored, passphrase, options)).await?;
+        Ok(Arc::new(Self { inner }))
+    }
+
+    /// Get the current user's ID.
+    #[must_use]
+    pub fn user_id(&self) -> String {
+        self.inner.user_id.clone()
+    }
+
+    /// Get the server base URL.
+    #[must_use]
+    pub fn base_url(&self) -> String {
+        self.inner.base_url.clone()
+    }
+}
+
+client_methods! {
+    // ── Auth ────────────────────────────────────────────────────────────
+
     /// Terminate the server-side session.
-    pub fn logout(&self) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(self.inner.logout())
-            .map_err(PassboltError::from)
+    fn logout(client) -> Result<(), PassboltError> {
+        client.logout().await.map_err(PassboltError::from)
     }
 
     /// Check if the session is still valid.
-    pub fn check_auth(&self) -> Result<bool, PassboltError> {
-        RUNTIME
-            .block_on(self.inner.check_auth_status())
-            .map_err(Into::into)
+    fn check_auth(client) -> Result<bool, PassboltError> {
+        client.check_auth_status().await.map_err(Into::into)
     }
 
     // ── Resources ───────────────────────────────────────────────────────
 
     /// List resources with optional search and filters.
     #[uniffi::method(default(search = None, favorites_only = false, owned_by_me = false))]
-    pub fn list_resources(
-        &self,
+    fn list_resources(
+        client,
         search: Option<String>,
         favorites_only: bool,
         owned_by_me: bool,
@@ -253,19 +367,17 @@ impl PassboltClient {
             favorites_only,
             owned_by_me,
         };
-        let resources = RUNTIME
-            .block_on(self.inner.get_resources(query.into()))
+        let resources = client
+            .get_resources(query.into())
+            .await
             .map_err(PassboltError::from)?;
         Ok(resources.into_iter().map(Resource::from).collect())
     }
 
     /// A resource with its v5 metadata and its secret decrypted, for every resource type.
-    pub fn get_resource_view(&self, id: String) -> Result<ResourceView, PassboltError> {
-        let view = RUNTIME
-            .block_on(passbolt_sdk::resource::get::get_resource_view(
-                &self.inner,
-                &id,
-            ))
+    fn get_resource_view(client, id: String) -> Result<ResourceView, PassboltError> {
+        let view = passbolt_sdk::resource::get::get_resource_view(&client, &id)
+            .await
             .map_err(PassboltError::from)?;
         Ok(ResourceView::from(view))
     }
@@ -273,8 +385,8 @@ impl PassboltClient {
     /// Resources with their v5 metadata decrypted, searched by their decrypted name; their
     /// secrets too with `with_secrets`. One that does not decrypt has an `error`.
     #[uniffi::method(default(search = None, with_secrets = false))]
-    pub fn list_resource_views(
-        &self,
+    fn list_resource_views(
+        client,
         search: Option<String>,
         with_secrets: bool,
     ) -> Result<Vec<ResourceView>, PassboltError> {
@@ -282,162 +394,165 @@ impl PassboltClient {
             search,
             ..Default::default()
         };
-        let views = RUNTIME
-            .block_on(passbolt_sdk::resource::list::list_resources(
-                &self.inner,
-                query,
-                &[],
-                with_secrets.then_some(0),
-            ))
-            .map_err(PassboltError::from)?;
+        let views = passbolt_sdk::resource::list::list_resources(
+            &client,
+            query,
+            &[],
+            with_secrets.then_some(0),
+        )
+        .await
+        .map_err(PassboltError::from)?;
         Ok(views.into_iter().map(ResourceView::from).collect())
     }
 
     /// Create a resource of any type. Returns the created resource.
-    pub fn create_resource(&self, resource: NewResource) -> Result<Resource, PassboltError> {
+    fn create_resource(
+        client,
+        resource: NewResource,
+    ) -> Result<Resource, PassboltError> {
         let new_resource = resource.try_into()?;
-        let resource = RUNTIME
-            .block_on(passbolt_sdk::resource::create::create_resource(
-                &self.inner,
-                &new_resource,
-            ))
+        let resource = passbolt_sdk::resource::create::create_resource(&client, &new_resource)
+            .await
             .map_err(PassboltError::from)?;
         Ok(Resource::from(resource))
     }
 
     /// Update a resource; the fields left out keep their value.
-    pub fn update_resource(
-        &self,
+    fn update_resource(
+        client,
         id: String,
         changes: ResourceChanges,
     ) -> Result<Resource, PassboltError> {
         let changes = changes.try_into()?;
-        let resource = RUNTIME
-            .block_on(passbolt_sdk::resource::update::update_resource(
-                &self.inner,
-                &id,
-                &changes,
-            ))
+        let resource = passbolt_sdk::resource::update::update_resource(&client, &id, &changes)
+            .await
             .map_err(PassboltError::from)?;
         Ok(Resource::from(resource))
     }
 
     /// Share a resource with users and groups (`permission_type` 1, 7 or 15), or revoke with -1.
     #[uniffi::method(default(user_ids = [], group_ids = []))]
-    pub fn share_resource(
-        &self,
+    fn share_resource(
+        client,
         id: String,
         permission_type: i32,
         user_ids: Vec<String>,
         group_ids: Vec<String>,
     ) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(passbolt_sdk::resource::share::share_resource(
-                &self.inner,
-                &id,
-                &user_ids,
-                &group_ids,
-                permission_type,
-            ))
-            .map_err(Into::into)
+        passbolt_sdk::resource::share::share_resource(
+            &client,
+            &id,
+            &user_ids,
+            &group_ids,
+            permission_type,
+        )
+        .await
+        .map_err(Into::into)
     }
 
     /// Share a folder, and with `with_content` the sub-folders and resources the user owns.
     #[uniffi::method(default(user_ids = [], group_ids = [], with_content = false))]
-    pub fn share_folder(
-        &self,
+    fn share_folder(
+        client,
         id: String,
         permission_type: i32,
         user_ids: Vec<String>,
         group_ids: Vec<String>,
         with_content: bool,
     ) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(passbolt_sdk::folder::share::share_folder(
-                &self.inner,
-                &id,
-                &user_ids,
-                &group_ids,
-                permission_type,
-                with_content,
-            ))
-            .map_err(Into::into)
+        passbolt_sdk::folder::share::share_folder(
+            &client,
+            &id,
+            &user_ids,
+            &group_ids,
+            permission_type,
+            with_content,
+        )
+        .await
+        .map_err(Into::into)
     }
 
     /// Move a resource into a folder, or to the root without one.
     #[uniffi::method(default(folder_id = None))]
-    pub fn move_resource(
-        &self,
+    fn move_resource(
+        client,
         id: String,
         folder_id: Option<String>,
     ) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(self.inner.move_resource(&id, folder_id.as_deref()))
+        client
+            .move_resource(&id, folder_id.as_deref())
+            .await
             .map_err(Into::into)
     }
 
     /// Move a folder into another one, or to the root without one.
     #[uniffi::method(default(folder_id = None))]
-    pub fn move_folder(&self, id: String, folder_id: Option<String>) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(self.inner.move_folder(&id, folder_id.as_deref()))
+    fn move_folder(
+        client,
+        id: String,
+        folder_id: Option<String>,
+    ) -> Result<(), PassboltError> {
+        client
+            .move_folder(&id, folder_id.as_deref())
+            .await
             .map_err(Into::into)
     }
 
     /// Get a single resource by ID.
-    pub fn get_resource(&self, id: String) -> Result<Resource, PassboltError> {
-        let resource = RUNTIME
-            .block_on(self.inner.get_resource(&id))
+    fn get_resource(client, id: String) -> Result<Resource, PassboltError> {
+        let resource = client
+            .get_resource(&id)
+            .await
             .map_err(PassboltError::from)?;
         Ok(Resource::from(resource))
     }
 
     /// Get multiple resources by IDs.
-    pub fn get_resources_by_ids(&self, ids: Vec<String>) -> Result<Vec<Resource>, PassboltError> {
-        let resources = RUNTIME
-            .block_on(self.inner.get_resources_by_ids(&ids))
+    fn get_resources_by_ids(
+        client,
+        ids: Vec<String>,
+    ) -> Result<Vec<Resource>, PassboltError> {
+        let resources = client
+            .get_resources_by_ids(&ids)
+            .await
             .map_err(PassboltError::from)?;
         Ok(resources.into_iter().map(Resource::from).collect())
     }
 
     /// Decrypt a resource's secret. Pass the resource obtained from `get_resource`.
-    pub fn decrypt_resource_secret(
-        &self,
+    fn decrypt_resource_secret(
+        client,
         resource_id: String,
     ) -> Result<SecretData, PassboltError> {
-        RUNTIME.block_on(async {
-            let resource = self
-                .inner
-                .get_resource(&resource_id)
-                .await
-                .map_err(PassboltError::from)?;
-            let secret = self
-                .inner
-                .decrypt_resource_secret(&resource)
-                .await
-                .map_err(PassboltError::from)?;
-            Ok(SecretData::from(secret))
-        })
+        let resource = client
+            .get_resource(&resource_id)
+            .await
+            .map_err(PassboltError::from)?;
+        let secret = client
+            .decrypt_resource_secret(&resource)
+            .await
+            .map_err(PassboltError::from)?;
+        Ok(SecretData::from(secret))
     }
 
     /// Delete a resource.
-    pub fn delete_resource(&self, id: String) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(self.inner.delete_resource(&id))
-            .map_err(Into::into)
+    fn delete_resource(client, id: String) -> Result<(), PassboltError> {
+        client.delete_resource(&id).await.map_err(Into::into)
     }
 
     /// Bulk delete resources.
-    pub fn delete_resources(&self, ids: Vec<String>) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(self.inner.delete_resources(&ids))
-            .map_err(Into::into)
+    fn delete_resources(client, ids: Vec<String>) -> Result<(), PassboltError> {
+        client.delete_resources(&ids).await.map_err(Into::into)
     }
 
     /// Get permissions for a resource.
-    pub fn get_resource_permissions(&self, id: String) -> Result<Vec<Permission>, PassboltError> {
-        let permissions = RUNTIME
-            .block_on(self.inner.get_resource_permissions(&id))
+    fn get_resource_permissions(
+        client,
+        id: String,
+    ) -> Result<Vec<Permission>, PassboltError> {
+        let permissions = client
+            .get_resource_permissions(&id)
+            .await
             .map_err(PassboltError::from)?;
         Ok(permissions.into_iter().map(Permission::from).collect())
     }
@@ -446,75 +561,86 @@ impl PassboltClient {
 
     /// List all folders.
     #[uniffi::method(default(search = None))]
-    pub fn list_folders(&self, search: Option<String>) -> Result<Vec<Folder>, PassboltError> {
+    fn list_folders(
+        client,
+        search: Option<String>,
+    ) -> Result<Vec<Folder>, PassboltError> {
         let query = FolderQuery { search };
-        let folders = RUNTIME
-            .block_on(self.inner.get_folders(query.into()))
+        let folders = client
+            .get_folders(query.into())
+            .await
             .map_err(PassboltError::from)?;
         Ok(folders.into_iter().map(Folder::from).collect())
     }
 
     /// Get a single folder by ID.
-    pub fn get_folder(&self, id: String) -> Result<Folder, PassboltError> {
-        let folder = RUNTIME
-            .block_on(self.inner.get_folder(&id))
-            .map_err(PassboltError::from)?;
+    fn get_folder(client, id: String) -> Result<Folder, PassboltError> {
+        let folder = client.get_folder(&id).await.map_err(PassboltError::from)?;
         Ok(Folder::from(folder))
     }
 
     /// Create a folder, at the root or in `folder_parent_id`; in a parent folder it gets the
     /// parent's permissions.
     #[uniffi::method(default(folder_parent_id = None))]
-    pub fn create_folder(
-        &self,
+    fn create_folder(
+        client,
         name: String,
         folder_parent_id: Option<String>,
     ) -> Result<Folder, PassboltError> {
-        let folder = RUNTIME
-            .block_on(passbolt_sdk::folder::create::create_folder(
-                &self.inner,
-                &name,
-                folder_parent_id.as_deref(),
-            ))
-            .map_err(PassboltError::from)?;
+        let folder = passbolt_sdk::folder::create::create_folder(
+            &client,
+            &name,
+            folder_parent_id.as_deref(),
+        )
+        .await
+        .map_err(PassboltError::from)?;
         Ok(Folder::from(folder))
     }
 
     /// Rename a folder.
-    pub fn rename_folder(&self, id: String, name: String) -> Result<Folder, PassboltError> {
+    fn rename_folder(
+        client,
+        id: String,
+        name: String,
+    ) -> Result<Folder, PassboltError> {
         let payload = passbolt_sdk::types::UpdateFolderPayload { name };
-        let folder = RUNTIME
-            .block_on(self.inner.update_folder(&id, &payload))
+        let folder = client
+            .update_folder(&id, &payload)
+            .await
             .map_err(PassboltError::from)?;
         Ok(Folder::from(folder))
     }
 
     /// Delete a folder; its content moves to the root.
-    pub fn delete_folder(&self, id: String) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(self.inner.delete_folder(&id))
-            .map_err(Into::into)
+    fn delete_folder(client, id: String) -> Result<(), PassboltError> {
+        client.delete_folder(&id).await.map_err(Into::into)
     }
 
     /// Delete a folder with its sub-folders and the resources the user may delete in them.
-    pub fn delete_folder_with_content(&self, id: String) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(self.inner.delete_folder_with_content(&id))
+    fn delete_folder_with_content(client, id: String) -> Result<(), PassboltError> {
+        client
+            .delete_folder_with_content(&id)
+            .await
             .map_err(Into::into)
     }
 
     /// Get permissions for a folder.
-    pub fn get_folder_permissions(&self, id: String) -> Result<Vec<Permission>, PassboltError> {
-        let permissions = RUNTIME
-            .block_on(self.inner.get_folder_permissions(&id))
+    fn get_folder_permissions(
+        client,
+        id: String,
+    ) -> Result<Vec<Permission>, PassboltError> {
+        let permissions = client
+            .get_folder_permissions(&id)
+            .await
             .map_err(PassboltError::from)?;
         Ok(permissions.into_iter().map(Permission::from).collect())
     }
 
     /// Build a folder tree from the flat folder list.
-    pub fn get_folder_tree(&self) -> Result<Vec<FolderTreeNode>, PassboltError> {
-        let folders = RUNTIME
-            .block_on(self.inner.get_folders(passbolt_sdk::FolderQuery::default()))
+    fn get_folder_tree(client) -> Result<Vec<FolderTreeNode>, PassboltError> {
+        let folders = client
+            .get_folders(passbolt_sdk::FolderQuery::default())
+            .await
             .map_err(PassboltError::from)?;
         let tree = passbolt_sdk::build_folder_tree(&folders);
         Ok(tree.into_iter().map(FolderTreeNode::from).collect())
@@ -524,8 +650,8 @@ impl PassboltClient {
 
     /// List all users.
     #[uniffi::method(default(search = None, group_id = None, admin_only = false))]
-    pub fn list_users(
-        &self,
+    fn list_users(
+        client,
         search: Option<String>,
         group_id: Option<String>,
         admin_only: bool,
@@ -535,160 +661,160 @@ impl PassboltClient {
             group_id,
             admin_only,
         };
-        let users = RUNTIME
-            .block_on(self.inner.get_users(query.into()))
+        let users = client
+            .get_users(query.into())
+            .await
             .map_err(PassboltError::from)?;
         Ok(users.into_iter().map(User::from).collect())
     }
 
     /// Get the currently logged-in user.
-    pub fn get_me(&self) -> Result<User, PassboltError> {
-        let user = RUNTIME
-            .block_on(self.inner.get_me())
-            .map_err(PassboltError::from)?;
+    fn get_me(client) -> Result<User, PassboltError> {
+        let user = client.get_me().await.map_err(PassboltError::from)?;
         Ok(User::from(user))
     }
 
     /// Get a user by ID.
-    pub fn get_user(&self, id: String) -> Result<User, PassboltError> {
-        let user = RUNTIME
-            .block_on(self.inner.get_user(&id))
-            .map_err(PassboltError::from)?;
+    fn get_user(client, id: String) -> Result<User, PassboltError> {
+        let user = client.get_user(&id).await.map_err(PassboltError::from)?;
         Ok(User::from(user))
     }
 
     /// Delete a user.
-    pub fn delete_user(&self, id: String) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(self.inner.delete_user(&id))
-            .map_err(Into::into)
+    fn delete_user(client, id: String) -> Result<(), PassboltError> {
+        client.delete_user(&id).await.map_err(Into::into)
     }
 
     /// Preview the impact of deleting a user.
-    pub fn delete_user_dry_run(&self, id: String) -> Result<UserDeleteDryRun, PassboltError> {
-        let result = RUNTIME
-            .block_on(self.inner.delete_user_dry_run(&id))
+    fn delete_user_dry_run(
+        client,
+        id: String,
+    ) -> Result<UserDeleteDryRun, PassboltError> {
+        let result = client
+            .delete_user_dry_run(&id)
+            .await
             .map_err(PassboltError::from)?;
         Ok(UserDeleteDryRun::from(result))
     }
 
     /// Create a user with the role named `role` (`user` or `admin`).
-    pub fn create_user(
-        &self,
+    fn create_user(
+        client,
         username: String,
         first_name: String,
         last_name: String,
         role: String,
     ) -> Result<User, PassboltError> {
-        let user = RUNTIME
-            .block_on(passbolt_sdk::user::create::create_user(
-                &self.inner,
-                &username,
-                &first_name,
-                &last_name,
-                &role,
-            ))
-            .map_err(PassboltError::from)?;
+        let user = passbolt_sdk::user::create::create_user(
+            &client,
+            &username,
+            &first_name,
+            &last_name,
+            &role,
+        )
+        .await
+        .map_err(PassboltError::from)?;
         Ok(User::from(user))
     }
 
     /// Update a user's names or role; `None` keeps the value.
     #[uniffi::method(default(first_name = None, last_name = None, role = None))]
-    pub fn update_user(
-        &self,
+    fn update_user(
+        client,
         id: String,
         first_name: Option<String>,
         last_name: Option<String>,
         role: Option<String>,
     ) -> Result<User, PassboltError> {
-        let user = RUNTIME
-            .block_on(passbolt_sdk::user::update::update_user(
-                &self.inner,
-                &id,
-                first_name.as_deref(),
-                last_name.as_deref(),
-                role.as_deref(),
-            ))
-            .map_err(PassboltError::from)?;
+        let user = passbolt_sdk::user::update::update_user(
+            &client,
+            &id,
+            first_name.as_deref(),
+            last_name.as_deref(),
+            role.as_deref(),
+        )
+        .await
+        .map_err(PassboltError::from)?;
         Ok(User::from(user))
     }
 
     /// What blocks deleting the user: what they alone own or manage.
-    pub fn user_delete_blockers(&self, id: String) -> Result<DeleteBlockers, PassboltError> {
-        let blockers = RUNTIME
-            .block_on(self.inner.user_delete_blockers(&id))
+    fn user_delete_blockers(
+        client,
+        id: String,
+    ) -> Result<DeleteBlockers, PassboltError> {
+        let blockers = client
+            .user_delete_blockers(&id)
+            .await
             .map_err(PassboltError::from)?;
         Ok(DeleteBlockers::from(blockers))
     }
 
     /// Delete a user, giving what they alone own or manage to `successor_id`, a user or a
     /// group that already has access to it.
-    pub fn delete_user_with_transfer(
-        &self,
+    fn delete_user_with_transfer(
+        client,
         id: String,
         successor_id: String,
     ) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(async {
-                let blockers = self.inner.user_delete_blockers(&id).await?;
-                if blockers.is_empty() {
-                    return self.inner.delete_user(&id).await;
-                }
-                let transfer = blockers.transfer_to(&successor_id)?;
-                self.inner.delete_user_with_transfer(&id, &transfer).await
-            })
-            .map_err(Into::into)
+        async {
+            let blockers = client.user_delete_blockers(&id).await?;
+            if blockers.is_empty() {
+                return client.delete_user(&id).await;
+            }
+            let transfer = blockers.transfer_to(&successor_id)?;
+            client.delete_user_with_transfer(&id, &transfer).await
+        }
+        .await
+        .map_err(Into::into)
     }
 
     // ── Groups ──────────────────────────────────────────────────────────
 
     /// List all groups.
-    pub fn list_groups(&self) -> Result<Vec<Group>, PassboltError> {
-        let groups = RUNTIME
-            .block_on(self.inner.get_groups(passbolt_sdk::GroupQuery::default()))
+    fn list_groups(client) -> Result<Vec<Group>, PassboltError> {
+        let groups = client
+            .get_groups(passbolt_sdk::GroupQuery::default())
+            .await
             .map_err(PassboltError::from)?;
         Ok(groups.into_iter().map(Group::from).collect())
     }
 
     /// Get a group by ID.
-    pub fn get_group(&self, id: String) -> Result<Group, PassboltError> {
-        let group = RUNTIME
-            .block_on(self.inner.get_group(&id))
-            .map_err(PassboltError::from)?;
+    fn get_group(client, id: String) -> Result<Group, PassboltError> {
+        let group = client.get_group(&id).await.map_err(PassboltError::from)?;
         Ok(Group::from(group))
     }
 
     /// Delete a group.
-    pub fn delete_group(&self, id: String) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(self.inner.delete_group(&id))
-            .map_err(Into::into)
+    fn delete_group(client, id: String) -> Result<(), PassboltError> {
+        client.delete_group(&id).await.map_err(Into::into)
     }
 
     /// Preview the impact of deleting a group.
-    pub fn delete_group_dry_run(&self, id: String) -> Result<GroupDeleteDryRun, PassboltError> {
-        let result = RUNTIME
-            .block_on(self.inner.delete_group_dry_run(&id))
+    fn delete_group_dry_run(
+        client,
+        id: String,
+    ) -> Result<GroupDeleteDryRun, PassboltError> {
+        let result = client
+            .delete_group_dry_run(&id)
+            .await
             .map_err(PassboltError::from)?;
         Ok(GroupDeleteDryRun::from(result))
     }
 
     /// Create a group; a manager is also a member.
     #[uniffi::method(default(member_ids = [], manager_ids = []))]
-    pub fn create_group(
-        &self,
+    fn create_group(
+        client,
         name: String,
         member_ids: Vec<String>,
         manager_ids: Vec<String>,
     ) -> Result<Group, PassboltError> {
-        let group = RUNTIME
-            .block_on(passbolt_sdk::group::create::create_group(
-                &self.inner,
-                &name,
-                &member_ids,
-                &manager_ids,
-            ))
-            .map_err(PassboltError::from)?;
+        let group =
+            passbolt_sdk::group::create::create_group(&client, &name, &member_ids, &manager_ids)
+                .await
+                .map_err(PassboltError::from)?;
         Ok(Group::from(group))
     }
 
@@ -696,8 +822,8 @@ impl PassboltClient {
     /// who get the secrets of the group's resources. Giving a user the role they have, or
     /// removing a non-member, is an error.
     #[uniffi::method(default(name = None, add_member_ids = [], add_manager_ids = [], remove_member_ids = []))]
-    pub fn update_group(
-        &self,
+    fn update_group(
+        client,
         id: String,
         name: Option<String>,
         add_member_ids: Vec<String>,
@@ -706,146 +832,149 @@ impl PassboltClient {
     ) -> Result<Group, PassboltError> {
         use passbolt_sdk::group::update::update_group;
 
-        let update = |name: Option<&str>, members: &[String], managers: &[String], delete| {
-            RUNTIME
-                .block_on(update_group(
-                    &self.inner,
-                    &id,
-                    name,
-                    members,
-                    managers,
-                    delete,
-                ))
-                .map_err(PassboltError::from)
-        };
         let adds = !add_member_ids.is_empty() || !add_manager_ids.is_empty();
         if remove_member_ids.is_empty() {
-            return update(name.as_deref(), &add_member_ids, &add_manager_ids, false)
-                .map(Group::from);
+            let group = update_group(
+                &client,
+                &id,
+                name.as_deref(),
+                &add_member_ids,
+                &add_manager_ids,
+                false,
+            )
+            .await?;
+            return Ok(Group::from(group));
         }
-        let group = update(name.as_deref(), &remove_member_ids, &[], true)?;
+        let group =
+            update_group(&client, &id, name.as_deref(), &remove_member_ids, &[], true).await?;
         if !adds {
             return Ok(Group::from(group));
         }
-        update(None, &add_member_ids, &add_manager_ids, false).map(Group::from)
+        let group =
+            update_group(&client, &id, None, &add_member_ids, &add_manager_ids, false).await?;
+        Ok(Group::from(group))
     }
 
     /// What blocks deleting the group: what it alone owns.
-    pub fn group_delete_blockers(&self, id: String) -> Result<DeleteBlockers, PassboltError> {
-        let blockers = RUNTIME
-            .block_on(self.inner.group_delete_blockers(&id))
+    fn group_delete_blockers(
+        client,
+        id: String,
+    ) -> Result<DeleteBlockers, PassboltError> {
+        let blockers = client
+            .group_delete_blockers(&id)
+            .await
             .map_err(PassboltError::from)?;
         Ok(DeleteBlockers::from(blockers))
     }
 
     /// Delete a group, giving what it alone owns to `successor_id`, a user or a group that
     /// already has access to it.
-    pub fn delete_group_with_transfer(
-        &self,
+    fn delete_group_with_transfer(
+        client,
         id: String,
         successor_id: String,
     ) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(async {
-                let blockers = self.inner.group_delete_blockers(&id).await?;
-                if blockers.is_empty() {
-                    return self.inner.delete_group(&id).await;
-                }
-                let transfer = blockers.transfer_to(&successor_id)?;
-                self.inner.delete_group_with_transfer(&id, &transfer).await
-            })
-            .map_err(Into::into)
+        async {
+            let blockers = client.group_delete_blockers(&id).await?;
+            if blockers.is_empty() {
+                return client.delete_group(&id).await;
+            }
+            let transfer = blockers.transfer_to(&successor_id)?;
+            client.delete_group_with_transfer(&id, &transfer).await
+        }
+        .await
+        .map_err(Into::into)
     }
 
     // ── Tags ────────────────────────────────────────────────────────────
 
     /// List all tags.
-    pub fn get_tags(&self) -> Result<Vec<Tag>, PassboltError> {
-        let tags = RUNTIME
-            .block_on(self.inner.get_tags())
-            .map_err(PassboltError::from)?;
+    fn get_tags(client) -> Result<Vec<Tag>, PassboltError> {
+        let tags = client.get_tags().await.map_err(PassboltError::from)?;
         Ok(tags.into_iter().map(Tag::from).collect())
     }
 
     /// Add a tag to a resource, keeping its other tags; returns the resource's tags.
-    pub fn add_tag_to_resource(
-        &self,
+    fn add_tag_to_resource(
+        client,
         resource_id: String,
         slug: String,
     ) -> Result<Vec<Tag>, PassboltError> {
-        let tags = RUNTIME
-            .block_on(self.inner.add_tag_to_resource(&resource_id, &slug))
+        let tags = client
+            .add_tag_to_resource(&resource_id, &slug)
+            .await
             .map_err(PassboltError::from)?;
         Ok(tags.into_iter().map(Tag::from).collect())
     }
 
     /// Replace all the tags of a resource; returns its tags.
-    pub fn set_resource_tags(
-        &self,
+    fn set_resource_tags(
+        client,
         resource_id: String,
         slugs: Vec<String>,
     ) -> Result<Vec<Tag>, PassboltError> {
-        let tags = RUNTIME
-            .block_on(self.inner.update_resource_tags(&resource_id, &slugs))
+        let tags = client
+            .update_resource_tags(&resource_id, &slugs)
+            .await
             .map_err(PassboltError::from)?;
         Ok(tags.into_iter().map(Tag::from).collect())
     }
 
     /// Rename a tag.
-    pub fn rename_tag(&self, id: String, slug: String) -> Result<Tag, PassboltError> {
-        let tag = RUNTIME
-            .block_on(self.inner.update_tag(&id, &slug))
+    fn rename_tag(client, id: String, slug: String) -> Result<Tag, PassboltError> {
+        let tag = client
+            .update_tag(&id, &slug)
+            .await
             .map_err(PassboltError::from)?;
         Ok(Tag::from(tag))
     }
 
     /// Delete a tag.
-    pub fn delete_tag(&self, id: String) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(self.inner.delete_tag(&id))
-            .map_err(Into::into)
+    fn delete_tag(client, id: String) -> Result<(), PassboltError> {
+        client.delete_tag(&id).await.map_err(Into::into)
     }
 
     // ── Comments ────────────────────────────────────────────────────────
 
     /// Get comments for a resource.
-    pub fn get_comments(&self, resource_id: String) -> Result<Vec<Comment>, PassboltError> {
-        let comments = RUNTIME
-            .block_on(self.inner.get_comments(&resource_id))
+    fn get_comments(
+        client,
+        resource_id: String,
+    ) -> Result<Vec<Comment>, PassboltError> {
+        let comments = client
+            .get_comments(&resource_id)
+            .await
             .map_err(PassboltError::from)?;
         Ok(comments.into_iter().map(Comment::from).collect())
     }
 
     /// Create a comment on a resource.
     #[uniffi::method(default(parent_id = None))]
-    pub fn create_comment(
-        &self,
+    fn create_comment(
+        client,
         resource_id: String,
         content: String,
         parent_id: Option<String>,
     ) -> Result<Comment, PassboltError> {
-        let comment = RUNTIME
-            .block_on(
-                self.inner
-                    .create_comment(&resource_id, &content, parent_id.as_deref()),
-            )
+        let comment = client
+            .create_comment(&resource_id, &content, parent_id.as_deref())
+            .await
             .map_err(PassboltError::from)?;
         Ok(Comment::from(comment))
     }
 
     /// Delete a comment.
-    pub fn delete_comment(&self, id: String) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(self.inner.delete_comment(&id))
-            .map_err(Into::into)
+    fn delete_comment(client, id: String) -> Result<(), PassboltError> {
+        client.delete_comment(&id).await.map_err(Into::into)
     }
 
     // ── Sharing ─────────────────────────────────────────────────────────
 
     /// Search for users and groups (AROs) for sharing.
-    pub fn search_aros(&self, search: String) -> Result<Vec<Aro>, PassboltError> {
-        let aros = RUNTIME
-            .block_on(self.inner.search_aros(&search))
+    fn search_aros(client, search: String) -> Result<Vec<Aro>, PassboltError> {
+        let aros = client
+            .search_aros(&search)
+            .await
             .map_err(PassboltError::from)?;
         Ok(aros.into_iter().map(Aro::from).collect())
     }
@@ -853,92 +982,108 @@ impl PassboltClient {
     // ── Favorites ───────────────────────────────────────────────────────
 
     /// Add a resource to favorites.
-    pub fn add_favorite(&self, resource_id: String) -> Result<Favorite, PassboltError> {
-        let favorite = RUNTIME
-            .block_on(self.inner.add_favorite(&resource_id))
+    fn add_favorite(client, resource_id: String) -> Result<Favorite, PassboltError> {
+        let favorite = client
+            .add_favorite(&resource_id)
+            .await
             .map_err(PassboltError::from)?;
         Ok(Favorite::from(favorite))
     }
 
     /// Remove a favorite.
-    pub fn remove_favorite(&self, favorite_id: String) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(self.inner.remove_favorite(&favorite_id))
+    fn remove_favorite(client, favorite_id: String) -> Result<(), PassboltError> {
+        client
+            .remove_favorite(&favorite_id)
+            .await
             .map_err(Into::into)
     }
 
     // ── Password Expiry ─────────────────────────────────────────────────
 
     /// Get password expiry settings.
-    pub fn get_password_expiry_settings(&self) -> Result<PasswordExpirySettings, PassboltError> {
-        let settings = RUNTIME
-            .block_on(self.inner.get_password_expiry_settings())
+    fn get_password_expiry_settings(
+        client,
+    ) -> Result<PasswordExpirySettings, PassboltError> {
+        let settings = client
+            .get_password_expiry_settings()
+            .await
             .map_err(PassboltError::from)?;
         Ok(PasswordExpirySettings::from(settings))
     }
 
     /// Create or update the password expiry settings (admin).
-    pub fn save_password_expiry_settings(
-        &self,
+    fn save_password_expiry_settings(
+        client,
         settings: PasswordExpirySettings,
     ) -> Result<PasswordExpirySettings, PassboltError> {
-        let saved = RUNTIME
-            .block_on(self.inner.save_password_expiry_settings(&settings.into()))
+        let saved = client
+            .save_password_expiry_settings(&settings.into())
+            .await
             .map_err(PassboltError::from)?;
         Ok(PasswordExpirySettings::from(saved))
     }
 
     /// Delete the password expiry settings (admin): the defaults apply again.
-    pub fn delete_password_expiry_settings(&self, id: String) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(self.inner.delete_password_expiry_settings(&id))
+    fn delete_password_expiry_settings(
+        client,
+        id: String,
+    ) -> Result<(), PassboltError> {
+        client
+            .delete_password_expiry_settings(&id)
+            .await
             .map_err(Into::into)
     }
 
     // ── Resource types and metadata settings ────────────────────────────
 
     /// The resource types of the server.
-    pub fn list_resource_types(&self) -> Result<Vec<ResourceType>, PassboltError> {
-        let resource_types = RUNTIME
-            .block_on(self.inner.resource_types())
-            .map_err(PassboltError::from)?;
+    fn list_resource_types(client) -> Result<Vec<ResourceType>, PassboltError> {
+        let resource_types = client.resource_types().await.map_err(PassboltError::from)?;
         Ok(resource_types.iter().map(ResourceType::from).collect())
     }
 
     /// Which metadata versions the organization creates and allows.
-    pub fn get_metadata_types_settings(&self) -> Result<MetadataTypesSettings, PassboltError> {
-        let settings = RUNTIME
-            .block_on(self.inner.get_metadata_types_settings())
+    fn get_metadata_types_settings(
+        client,
+    ) -> Result<MetadataTypesSettings, PassboltError> {
+        let settings = client
+            .get_metadata_types_settings()
+            .await
             .map_err(PassboltError::from)?;
         Ok(MetadataTypesSettings::from(settings))
     }
 
     /// Save the metadata types settings (admin).
-    pub fn save_metadata_types_settings(
-        &self,
+    fn save_metadata_types_settings(
+        client,
         settings: MetadataTypesSettings,
     ) -> Result<MetadataTypesSettings, PassboltError> {
-        let saved = RUNTIME
-            .block_on(self.inner.save_metadata_types_settings(&settings.into()))
+        let saved = client
+            .save_metadata_types_settings(&settings.into())
+            .await
             .map_err(PassboltError::from)?;
         Ok(MetadataTypesSettings::from(saved))
     }
 
     /// How metadata keys are used in the organization.
-    pub fn get_metadata_keys_settings(&self) -> Result<MetadataKeysSettings, PassboltError> {
-        let settings = RUNTIME
-            .block_on(self.inner.get_metadata_keys_settings())
+    fn get_metadata_keys_settings(
+        client,
+    ) -> Result<MetadataKeysSettings, PassboltError> {
+        let settings = client
+            .get_metadata_keys_settings()
+            .await
             .map_err(PassboltError::from)?;
         Ok(MetadataKeysSettings::from(settings))
     }
 
     /// Save the metadata keys settings (admin).
-    pub fn save_metadata_keys_settings(
-        &self,
+    fn save_metadata_keys_settings(
+        client,
         settings: MetadataKeysSettings,
     ) -> Result<MetadataKeysSettings, PassboltError> {
-        let saved = RUNTIME
-            .block_on(self.inner.save_metadata_keys_settings(&settings.into()))
+        let saved = client
+            .save_metadata_keys_settings(&settings.into())
+            .await
             .map_err(PassboltError::from)?;
         Ok(MetadataKeysSettings::from(saved))
     }
@@ -947,37 +1092,24 @@ impl PassboltClient {
 
     /// Check if a password has been exposed in data breaches.
     /// Returns the number of times found (0 = not breached).
-    pub fn check_password_pwned(&self, password: String) -> Result<u64, PassboltError> {
-        RUNTIME
-            .block_on(self.inner.check_password_pwned(&password))
+    fn check_password_pwned(client, password: String) -> Result<u64, PassboltError> {
+        client
+            .check_password_pwned(&password)
+            .await
             .map_err(Into::into)
     }
 
     // ── Session info ────────────────────────────────────────────────────
 
-    /// Get the current user's ID.
-    pub fn user_id(&self) -> String {
-        self.inner.user_id.clone()
-    }
-
-    /// Get the server base URL.
-    pub fn base_url(&self) -> String {
-        self.inner.base_url.clone()
-    }
-
     /// Keep the session alive, as the browser extension does every few minutes.
-    pub fn keep_alive(&self) -> Result<(), PassboltError> {
-        RUNTIME
-            .block_on(self.inner.keep_alive())
-            .map_err(Into::into)
+    fn keep_alive(client) -> Result<(), PassboltError> {
+        client.keep_alive().await.map_err(Into::into)
     }
 
     /// The fingerprint of the active shared metadata key, to pin in
     /// [`LoginOptions::metadata_key_fingerprint`]; `None` without one.
-    pub fn metadata_key_fingerprint(&self) -> Result<Option<String>, PassboltError> {
-        let metadata_keys = RUNTIME
-            .block_on(self.inner.metadata_keys())
-            .map_err(PassboltError::from)?;
+    fn metadata_key_fingerprint(client) -> Result<Option<String>, PassboltError> {
+        let metadata_keys = client.metadata_keys().await.map_err(PassboltError::from)?;
         Ok(metadata_keys.active_fingerprint())
     }
 }

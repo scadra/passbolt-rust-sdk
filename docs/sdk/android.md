@@ -15,13 +15,14 @@ dependencies {
 }
 ```
 
-From Maven Central, the AAR brings JNA along. With the AAR file of a release instead, add JNA
-yourself:
+From Maven Central, the AAR brings JNA and kotlinx-coroutines along. With the AAR file of a
+release instead, add them yourself:
 
 ```kotlin
 dependencies {
     implementation(files("libs/passbolt-sdk-android-0.1.1.aar"))
     implementation("net.java.dev.jna:jna:5.14.0@aar")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
 }
 ```
 
@@ -29,29 +30,29 @@ Its R8 rules keep the classes JNA reads by reflection: nothing to add to minifie
 
 ## Log in and list
 
-Everything is in the package `com.passbolt.sdk`. The calls block until the server answers: they
-are not `suspend` functions, so run them on `Dispatchers.IO`, never on the main thread.
+Everything is in the package `com.passbolt.sdk`. `AsyncPassboltClient` has `suspend`
+functions: call them from any coroutine, the main one included, the SDK's own threads wait for
+the server.
 
-`PassboltClient` is `AutoCloseable`: `use { }` frees its native memory. `close()` does not end
-the server session, `logout()` does.
+`AsyncPassboltClient` is `AutoCloseable`: `use { }` frees its native memory. `close()` does not
+end the server session, `logout()` does.
 
 ```kotlin
-import com.passbolt.sdk.PassboltClient
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import com.passbolt.sdk.AsyncPassboltClient
 
 suspend fun resourceNames(serverUrl: String, privateKey: String, passphrase: String): List<String> =
-    withContext(Dispatchers.IO) {
-        PassboltClient.login(serverUrl, privateKey, passphrase).use { client ->
-            try {
-                // The v5 metadata decrypted: one view per resource.
-                client.listResourceViews(search = "github").map { view -> view.name }
-            } finally {
-                client.logout()
-            }
+    AsyncPassboltClient.login(serverUrl, privateKey, passphrase).use { client ->
+        try {
+            // The v5 metadata decrypted: one view per resource.
+            client.listResourceViews(search = "github").map { view -> view.name }
+        } finally {
+            client.logout()
         }
     }
 ```
+
+`PassboltClient` has the same methods, blocking until the server answers: run them on
+`Dispatchers.IO` or a thread of your own, never on the main thread.
 
 The methods return Kotlin data classes: `ResourceView`, `Resource`, `Folder`, `User`… Their
 optional fields are nullable, their lists `List`, and the numbers that cannot be negative

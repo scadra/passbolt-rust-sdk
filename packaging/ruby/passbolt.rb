@@ -21,6 +21,11 @@ end
 
 require_relative "passbolt/passbolt_ffi"
 
+# The Ruby generator of UniFFI 0.29 does not support async methods: each call of the generated
+# AsyncPassboltClient would return the handle of a Rust future, and leak it. Ruby has the
+# blocking Passbolt::Client only.
+PassboltFfi.send(:remove_const, :AsyncPassboltClient)
+
 module Passbolt
   # In every error the SDK raises: `rescue Passbolt::Error`. The classes below say what failed;
   # each has a `reason`, and Passbolt::ApiError the HTTP `status`.

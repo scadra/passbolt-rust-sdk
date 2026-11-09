@@ -31,6 +31,18 @@ they then write nothing without an error: the release profile strips, so `sdk.ym
 SDK library with `CARGO_PROFILE_RELEASE_STRIP=false`, and the script fails when a language comes
 out empty.
 
+## The two clients
+
+`crates/passbolt-ffi/src/lib.rs` lists each method once, in `client_methods!`, with an async
+body: the macro makes the blocking `PassboltClient` method, which waits on the FFI runtime, and
+the `AsyncPassboltClient` one, which spawns the body on that runtime and awaits it from the
+caller's executor. A method goes in the list, not in one of the `impl` blocks, so that both
+clients keep the same API. `rustfmt` does not format the list.
+
+The Ruby generator of UniFFI 0.29 has no async support: `packaging/ruby/passbolt.rb` removes
+`AsyncPassboltClient`. uniffi-bindgen-go makes its methods blocking: `packaging/go/rename`
+unexports it.
+
 ## Packaging
 
 | Package | Built from |

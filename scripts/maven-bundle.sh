@@ -62,10 +62,23 @@ pom() {
       <artifactId>jna</artifactId>
       <version>${JNA:-5.14.0}</version>
       <type>$jna_type</type>
-    </dependency>
+    </dependency>$(coroutines "$packaging")
   </dependencies>
 </project>
 POM
+}
+
+# The suspend functions of the Kotlin bindings need kotlinx-coroutines; Java has none.
+coroutines() {
+  [[ "$1" == aar ]] || return 0
+  cat <<DEPENDENCY
+
+    <dependency>
+      <groupId>org.jetbrains.kotlinx</groupId>
+      <artifactId>kotlinx-coroutines-core</artifactId>
+      <version>1.9.0</version>
+    </dependency>
+DEPENDENCY
 }
 
 # <artifact> <packaging> <file> <sources jar> <description> <jna type>

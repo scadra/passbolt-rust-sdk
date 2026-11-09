@@ -1,5 +1,6 @@
 // The jar loads its native library (JNA, from the classpath), maps Rust errors to the variants of
 // the checked PassboltException, and its builders give the records the Rust defaults.
+import com.passbolt.sdk.AsyncPassboltClient;
 import com.passbolt.sdk.LoginOptionsBuilder;
 import com.passbolt.sdk.NewResource;
 import com.passbolt.sdk.NewResourceBuilder;
@@ -9,6 +10,7 @@ import com.passbolt.sdk.PassboltException;
 import com.passbolt.sdk.ResourceChangesBuilder;
 
 import java.util.List;
+import java.util.concurrent.CompletionException;
 
 public class Smoke {
     public static void main(String[] args) throws PassboltException {
@@ -33,6 +35,17 @@ public class Smoke {
             throw new IllegalStateException("expected the login to fail");
         } catch (PassboltException error) {
             System.out.println("ok: login refused, " + error.getClass().getSimpleName());
+        }
+
+        // The future completes on the SDK's runtime, exceptionally with the variant.
+        try {
+            AsyncPassboltClient.loginWithConfig("http://127.0.0.1:9", "not a key", "", options).join();
+            throw new IllegalStateException("expected the async login to fail");
+        } catch (CompletionException error) {
+            if (!(error.getCause() instanceof PassboltException.Crypto)) {
+                throw new IllegalStateException("not a PassboltException.Crypto", error);
+            }
+            System.out.println("ok: async login refused, " + error.getCause().getClass().getSimpleName());
         }
     }
 

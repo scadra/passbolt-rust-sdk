@@ -10,7 +10,8 @@ gem install switch-case-passbolt-sdk
 ```
 
 Ruby 3.0 or later, with the `ffi` gem; the gem holds the native library of Linux (x86_64,
-aarch64), macOS and Windows. Its calls block.
+aarch64), macOS and Windows. Its calls block: the UniFFI generator of Ruby has no async support
+yet, so the gem has no async client.
 
 ## Log in and list
 

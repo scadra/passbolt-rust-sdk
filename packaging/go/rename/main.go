@@ -3,7 +3,8 @@
 //   - initialisms in capitals: Id → ID, Url → URL, Json → JSON…, as golint and the standard
 //     library write them (UserID, BaseURL, MetadataJSON);
 //   - the plumbing unexported: FfiConverter…, FfiDestroyer…, RustBuffer…, which callers have no
-//     use for;
+//     use for, and AsyncPassboltClient, whose async methods the generator makes blocking: a
+//     second PassboltClient;
 //   - the PassboltClient methods that packaging/go replaces with option structs unexported, so
 //     the package has one method of each name.
 //
@@ -43,6 +44,7 @@ var plumbing = []string{
 	"FfiConverter", "FfiDestroyer", "FfiObject", "RustBuffer", "GoRustBuffer",
 	"ExternalCRustBuffer", "BufReader", "BufWriter", "LowerIntoRustBuffer", "LiftFromRustBuffer",
 	"CFromRustBuffer", "BufLifter", "BufLowerer", "NativeError", "PassboltClientInterface",
+	"AsyncPassboltClient",
 }
 
 // The PassboltClient methods that packaging/go/options.go replaces.
