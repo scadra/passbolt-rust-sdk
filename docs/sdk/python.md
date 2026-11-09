@@ -9,8 +9,9 @@ sidebar_position: 4
 pip install switch-case-passbolt-sdk
 ```
 
-Python 3.9 or later, on Linux (x86_64, aarch64), macOS and Windows. The package is `passbolt`;
-its calls block. It ships type hints (`py.typed`).
+Python 3.9 or later, on Linux (x86_64, aarch64), macOS and Windows. The package is `passbolt`:
+the calls of `passbolt.Client` block, those of `passbolt.AsyncClient` are awaited. It ships type
+hints (`py.typed`).
 
 ## Log in and list
 
@@ -31,6 +32,29 @@ with passbolt.Client.login(
 
 The `with` block logs out at the end; without it, call `client.logout()`. A failed logout raises
 its `PassboltError`, unless the block is already leaving on an exception.
+
+## asyncio
+
+`passbolt.AsyncClient` has the methods of `Client` as coroutines, and the same login keywords.
+The requests run on the SDK's own threads: the event loop goes on meanwhile, and
+`asyncio.gather` runs several at once. `async with` logs out at the end, as `with` does.
+
+```python
+import asyncio
+
+import passbolt
+
+
+async def names(private_key: str, passphrase: str) -> list[str]:
+    async with await passbolt.AsyncClient.login(
+        "https://passbolt.example.com", private_key, passphrase
+    ) as client:
+        views, folders = await asyncio.gather(
+            client.list_resource_views("github"), client.list_folders()
+        )
+        print(len(folders), "folders")
+        return [view.name for view in views]
+```
 
 ## Pinning the server, MFA, TLS
 
