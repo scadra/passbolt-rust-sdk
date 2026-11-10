@@ -80,10 +80,10 @@ JSON bodies, and adds `X-CSRF-Token`; the backend sends them and keeps the cooki
 
 | | `NativeHttpClient` (`platform/native.rs`) | `WasmHttpClient` (`passbolt-wasm/src/http.rs`) |
 |---|---|---|
-| Transport | reqwest with rustls and the system roots | the global `fetch`, with credentials |
+| Transport | reqwest with rustls and the system roots | the global `fetch`, with credentials, or the `fetch` of the session |
 | Cookies | reqwest's cookie jar; `cookie()` reads it | the browser keeps them; under Node, Deno and Bun the client keeps those of `Set-Cookie` and sends them back |
 | CSRF token | the `csrfToken` cookie | `document.cookie`, or the `csrfTokenProvider` of the session (an extension reads the cookie with `browser.cookies`) |
-| Options | `NativeHttpConfig`: TLS skip, client certificate, proxy, `resolve`, timeout | none: TLS and proxies are the browser's |
+| Options | `NativeHttpConfig`: TLS skip, client certificate, proxy, `resolve`, timeout | none: TLS and proxies are the browser's, or those of the `fetch` given (undici with a `dispatcher`) |
 | Redirects | followed within the origin only | `fetch`'s |
 
 The tests give the SDK a third backend, `FakePassbolt` (see [Tests](#tests)).

@@ -54,12 +54,11 @@ Each session has its own provider: two sessions can talk to two servers.
 | Option | |
 |---|---|
 | `csrfTokenProvider` | Function returning the `csrfToken` cookie, or a promise of it |
+| `fetch` | Function sending the requests in place of the global `fetch`: see [TLS and proxies](#tls-and-proxies) |
 | `totpCode` | The TOTP code answering the MFA challenge |
 | `serverPublicKey` | The armored server key pinned with `PassboltSession.fetchServerKey(serverUrl)` |
 | `metadataKeyFingerprint` | The shared metadata key pinned with `session.metadataKeyFingerprint()` |
 | `openpgp` | The OpenPGP.js module (`import * as openpgp from "openpgp"`) to read and write messages with; default: the SDK's own |
-
-TLS and proxies are the browser's or the runtime's business.
 
 ```ts
 import { PassboltSession } from "@switch-case/passbolt-sdk";
@@ -71,6 +70,39 @@ const session = await PassboltSession.login(serverUrl, privateKeyArmored, passph
   totpCode: "123456",
 });
 ```
+
+## TLS and proxies
+
+The session sends its requests with the global `fetch`. A browser applies its own certificates
+and proxy settings. Node's `fetch` takes neither a proxy nor a TLS setting: give `login` a `fetch`
+that does, and give the same one to `fetchServerKey`.
+
+```ts
+import { Agent, ProxyAgent, fetch as undiciFetch } from "undici";
+import { PassboltSession, type FetchFunction } from "@switch-case/passbolt-sdk";
+
+// A server with a certificate of an internal authority:
+const dispatcher = new Agent({ connect: { ca: internalCaPem } });
+// or through a proxy: new ProxyAgent("http://proxy.example.com:3128")
+const fetch: FetchFunction = (url, init) => undiciFetch(url, { ...init, dispatcher });
+
+const { armoredKey } = await PassboltSession.fetchServerKey(serverUrl, { fetch });
+const session = await PassboltSession.login(serverUrl, privateKeyArmored, passphrase, {
+  fetch,
+  serverPublicKey: armoredKey,
+});
+```
+
+The function is called as `fetch(url, init)`, `init` holding plain values only (`method`,
+`headers` as an object, `body` as an `ArrayBuffer`), so any `fetch` takes it: the global one,
+undici's, node-fetch, or the request helper of a host application. The SDK reads `status`,
+`headers` and `arrayBuffer()` of what it returns. A rejection is a `NETWORK` error, with the
+cause Node gives: `fetch failed: self-signed certificate`.
+
+Without changing the code, Node also trusts the certificates of `NODE_EXTRA_CA_CERTS`, a PEM
+file read at start-up: `NODE_EXTRA_CA_CERTS=/etc/ssl/internal-ca.pem node app.js`. Skipping the
+check (`rejectUnauthorized: false`) leaves the session open to whoever answers at the address;
+pin the server key with `serverPublicKey` at least.
 
 ## Reading and writing
 
@@ -225,6 +257,7 @@ Main types: `Resource`, `ResourceView`, `SecretData`, `NewResource`, `ResourceCh
 `FolderTreeNode`, `User`, `Group`, `Permission`, `DeleteBlockers`, `Tag`, `Comment`, `Favorite`,
 `Aro`, `ResourceType`, `PasswordPolicies`, `PasswordGeneratorSettings`,
 `PassphraseGeneratorSettings`, `Strength`, `PasswordExpirySettings`, `MetadataTypesSettings`, `MetadataKeysSettings`,
-`LoginOptions`, `ServerKey`, `PassboltError`, `PassboltErrorCode`; the options `ResourceFilter`,
+`LoginOptions`, `FetchServerKeyOptions`, `FetchFunction`, `FetchInit`, `FetchResponse`, `ServerKey`,
+`PassboltError`, `PassboltErrorCode`; the options `ResourceFilter`,
 `ResourceViewFilter`, `FolderFilter`, `UserFilter`, `Share`, `FolderShare`, `NewUser`,
 `UserChanges`, `NewGroup`, `GroupChanges`.

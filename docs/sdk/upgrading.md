@@ -350,6 +350,8 @@ documentation.
 - `checkPasswordPwned` returns a `number`; it was a `bigint`.
 - `logout` rejects with the error of the server; it ignored it.
 - Each session has its own `csrfTokenProvider`.
+- New: a `fetch` login option, also taken by `fetchServerKey`, sends the requests in place of the
+  global `fetch`: undici's with a proxy or a certificate authority under Node.
 - Node.js 20.19 or later.
 
 | Before | After |
