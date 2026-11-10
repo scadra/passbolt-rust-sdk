@@ -1404,19 +1404,27 @@ fn settings_from_js<T: serde::de::DeserializeOwned + Default>(
 /// default.
 #[wasm_bindgen(js_name = "generatePassword")]
 pub fn generate_password(
-    #[wasm_bindgen(unchecked_param_type = "Partial<PasswordGeneratorSettings>")] settings: JsValue,
+    #[wasm_bindgen(unchecked_optional_param_type = "Partial<PasswordGeneratorSettings>")] settings: Option<
+        JsValue,
+    >,
 ) -> Result<String, JsValue> {
-    let settings = settings_from_js(settings, "password generator settings")?;
+    let settings = settings_from_js(
+        settings.unwrap_or(JsValue::UNDEFINED),
+        "password generator settings",
+    )?;
     passbolt_sdk::generator::generate_password(&settings).map_err(to_js_error)
 }
 
 /// A passphrase of words of the EFF list: 9 lowercase words joined by spaces by default.
 #[wasm_bindgen(js_name = "generatePassphrase")]
 pub fn generate_passphrase(
-    #[wasm_bindgen(unchecked_param_type = "Partial<PassphraseGeneratorSettings>")]
-    settings: JsValue,
+    #[wasm_bindgen(unchecked_optional_param_type = "Partial<PassphraseGeneratorSettings>")]
+    settings: Option<JsValue>,
 ) -> Result<String, JsValue> {
-    let settings = settings_from_js(settings, "passphrase generator settings")?;
+    let settings = settings_from_js(
+        settings.unwrap_or(JsValue::UNDEFINED),
+        "passphrase generator settings",
+    )?;
     passbolt_sdk::generator::generate_passphrase(&settings).map_err(to_js_error)
 }
 

@@ -760,7 +760,7 @@ async fn the_password_policies_generate_the_secret_of_the_organization() {
 fn a_password_is_generated_from_the_settings_given_only() {
     let settings = from_json(&json!({"length": 32, "mask_char1": false}));
 
-    let password = ok(generate_password(settings));
+    let password = ok(generate_password(Some(settings)));
 
     assert_eq!(password.chars().count(), 32);
     assert!(
@@ -770,10 +770,17 @@ fn a_password_is_generated_from_the_settings_given_only() {
 }
 
 #[wasm_bindgen_test]
+fn a_password_without_settings_has_the_length_of_the_extension() {
+    let password = ok(generate_password(None));
+
+    assert_eq!(password.chars().count(), 18);
+}
+
+#[wasm_bindgen_test]
 fn settings_that_cannot_generate_throw_an_invalid_argument() {
     let settings = from_json(&json!({"length": 4}));
 
-    let error = generate_password(settings).unwrap_err();
+    let error = generate_password(Some(settings)).unwrap_err();
 
     assert_eq!(code(&error), "INVALID_ARGUMENT");
 }
