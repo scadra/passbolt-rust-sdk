@@ -81,6 +81,9 @@ starts with a front matter (`title`, `sidebar_position`), each folder has a `REA
 index) and a `_category_.json` (its label and position in the sidebar). Link pages by their
 relative `.md` path.
 
+Draw diagrams as ` ```mermaid ` blocks ([Mermaid](https://mermaid.js.org)): GitHub and the site
+both render them. Keep ` ```text ` for what a command prints or a screen shows.
+
 `website/` builds the site from `docs/`; `.github/workflows/docs.yml` builds it on each change, a
 broken link or anchor failing the build, and publishes it to GitHub Pages from `master`. To preview
 a change:
