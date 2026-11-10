@@ -28,7 +28,7 @@ use passbolt_sdk::PassboltSdk;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-use crate::http::WasmHttpClient;
+use crate::http::{JsFunctions, WasmHttpClient};
 
 type Client = PassboltSdk<WasmHttpClient>;
 
@@ -40,6 +40,10 @@ extern "C" {
     /// The `LoginOptions` of `types.d.ts`; optional, so its own type rather than a `JsValue`.
     #[wasm_bindgen(typescript_type = "LoginOptions")]
     pub type LoginOptions;
+
+    /// The `FetchServerKeyOptions` of `types.d.ts`.
+    #[wasm_bindgen(typescript_type = "FetchServerKeyOptions")]
+    pub type FetchServerKeyOptions;
 }
 
 // ── Error conversion ─────────────────────────────────────────────────────────
@@ -164,6 +168,15 @@ impl passbolt_sdk::MfaProvider for GivenTotpCode {
 }
 
 /// `options[name]`, if `options` is an object holding it.
+/// The `csrfTokenProvider` and `fetch` of `options`.
+fn js_functions(options: &JsValue) -> JsFunctions {
+    let function = |name: &str| option(options, name).and_then(|value| value.dyn_into().ok());
+    JsFunctions {
+        csrf_token_provider: function("csrfTokenProvider"),
+        fetch: function("fetch"),
+    }
+}
+
 fn option(options: &JsValue, name: &str) -> Option<JsValue> {
     if !options.is_object() {
         return None;
@@ -348,6 +361,8 @@ impl PassboltSession {
     /// - `csrfTokenProvider`: function returning the `csrfToken` cookie, or a promise of it,
     ///   e.g. with `browser.cookies.get` in an extension. Default: `document.cookie`, readable
     ///   by pages served by Passbolt only, or in Node the cookie the server set.
+    /// - `fetch`: the function sending the requests, called as `fetch(url, init)`, e.g.
+    ///   undici's with a proxy or a TLS setting. Default: the global `fetch`.
     /// - `totpCode`: the TOTP code to answer the MFA challenge with.
     /// - `serverPublicKey`: the armored server key pinned with `fetchServerKey`; each login
     ///   then checks the server holds its private key.
@@ -363,12 +378,10 @@ impl PassboltSession {
         options: Option<LoginOptions>,
     ) -> Result<Self, JsValue> {
         let options = options.map_or(JsValue::UNDEFINED, JsValue::from);
-        let csrf_token_provider =
-            option(&options, "csrfTokenProvider").and_then(|provider| provider.dyn_into().ok());
         let mfa_provider = option(&options, "totpCode")
             .and_then(|code| code.as_string())
             .map(|code| Box::new(GivenTotpCode(code)) as Box<dyn passbolt_sdk::MfaProvider>);
-        let http = WasmHttpClient::with_csrf_token_provider(csrf_token_provider);
+        let http = WasmHttpClient::with_functions(js_functions(&options));
         let pin = |name: &str| {
             option(&options, name)
                 .and_then(|value| value.as_string())
@@ -392,11 +405,14 @@ impl PassboltSession {
 
     /// The server public key to pin, `{ fingerprint, armoredKey }`, the fingerprint computed
     /// from the key: show it to the user, then pass `armoredKey` as `serverPublicKey`.
+    /// `options.fetch` sends the request, as for `login`.
     #[wasm_bindgen(js_name = "fetchServerKey", unchecked_return_type = "ServerKey")]
     pub async fn fetch_server_key(
         #[wasm_bindgen(js_name = "serverUrl")] server_url: String,
+        options: Option<FetchServerKeyOptions>,
     ) -> Result<JsValue, JsValue> {
-        let http = WasmHttpClient::new();
+        let options = options.map_or(JsValue::UNDEFINED, JsValue::from);
+        let http = WasmHttpClient::with_functions(js_functions(&options));
         let (fingerprint, armored_key) = passbolt_sdk::auth::fetch_server_key(
             &http,
             server_url.trim_end_matches('/'),
@@ -1636,7 +1652,8 @@ mod wasm_tests {
                 "X-GPGAuth-Progress": progress,
                 ...headers,
             });
-            return async (request) => {
+            return async (url, init) => {
+                const request = new Request(url, init);
                 const body = request.method === "POST" ? await request.text() : "";
                 if (request.url.endsWith("/auth/login.json")) {
                     return body.includes("user_token_result")
@@ -1724,6 +1741,7 @@ mod wasm_tests {
     async fn test_fetch_server_key_gives_the_key_and_its_fingerprint() {
         let server_key = with_passbolt_fetch(PassboltSession::fetch_server_key(
             "http://127.0.0.1:1".into(),
+            None,
         ))
         .await
         .ok()
