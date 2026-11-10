@@ -1230,6 +1230,14 @@ pub fn get_key_fingerprint(private_key_armored: String) -> Result<String, Passbo
     Ok(key.fingerprint.clone())
 }
 
+/// The name of the `OpenPGP` engine this library runs by default: `gopenpgp`, `openpgpjs` or
+/// `rpgp`.
+#[uniffi::export]
+#[must_use]
+pub fn openpgp_engine() -> String {
+    passbolt_sdk::OpenPgp::default().name().to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -1271,6 +1279,17 @@ mod tests {
         assert_eq!(config.mfa_mode, "");
         assert_eq!(config.mfa_totp_token, "");
         assert!(totp_provider(&config).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_the_engine_is_gopenpgp_when_built_else_openpgpjs() {
+        let expected = if cfg!(feature = "gopenpgp") {
+            "gopenpgp"
+        } else {
+            "openpgpjs"
+        };
+
+        assert_eq!(openpgp_engine(), expected);
     }
 
     #[test]

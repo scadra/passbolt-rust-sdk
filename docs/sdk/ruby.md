@@ -5,15 +5,27 @@ sidebar_position: 9
 
 # Ruby
 
+Use the `passbolt` gem to log in to Passbolt and read, write and share secrets from Ruby.
+
+## Installation
+
+The gem is on RubyGems as `switch-case-passbolt-sdk`. It needs Ruby 3.0 or later and the `ffi`
+gem, and holds the native library of Linux (x86_64, aarch64), macOS and Windows.
+
 ```bash
 gem install switch-case-passbolt-sdk
 ```
 
-Ruby 3.0 or later, with the `ffi` gem; the gem holds the native library of Linux (x86_64,
-aarch64), macOS and Windows. Its calls block: the UniFFI generator of Ruby has no async support
-yet, so the gem has no async client.
+```ruby title="Gemfile"
+gem "switch-case-passbolt-sdk", require: "passbolt"
+```
 
-## Log in and list
+You load it with `require "passbolt"`.
+
+## Initialize
+
+Log in with `Passbolt::Client.login`. Its calls block: the UniFFI generator of Ruby has no async
+support yet, so the gem has no async client.
 
 ```ruby
 require "passbolt"
@@ -27,11 +39,25 @@ Passbolt::Client.login(
 end
 ```
 
-With a block, `login` logs out at the end; without one it returns the client: call
-`client.logout` when done. A failed logout raises its `Passbolt::Error`, unless the block is
-already leaving on an exception.
+With a block, `login` logs out at the end. Without one it returns the client: call
+`client.logout` when you are done. A failed logout raises its `Passbolt::Error`, unless the block
+is already leaving on an exception.
 
-## Pinning the server, MFA, TLS
+## Login options
+
+`login` takes these keywords after the URL, the key and the passphrase. Every keyword is optional.
+
+| Keyword | Description |
+|---|---|
+| `server_public_key` | The armored server key pinned with `Passbolt.fetch_server_key`. |
+| `metadata_key_fingerprint` | The pinned fingerprint of the shared metadata key. |
+| `mfa_totp_token` | The base32 TOTP secret, for an account with TOTP. |
+| `timeout_seconds` | Seconds a request may take. Default: 60; `0` waits forever. |
+| `tls_skip_verify` | Skip the certificate check. Default: `false`. |
+| `proxy` | The proxy URL. |
+| `client_certificate_pem`, `client_key_pem` | The PEM certificate and key, for mTLS. |
+
+### Pin the server key
 
 ```ruby
 server_key = Passbolt.fetch_server_key("https://passbolt.example.com")
@@ -49,14 +75,29 @@ client = Passbolt::Client.login(
 )
 ```
 
-Every keyword is optional.
+## Read resources
 
-## Reading and writing
+The calls return objects with readers: `Passbolt::ResourceView`, `Passbolt::Resource`,
+`Passbolt::Folder`, `Passbolt::User`… A `ResourceView` holds the fields every resource type
+shares, decrypted; the others, custom fields and icon among them, are the JSON objects
+`metadata_json` and `secret_json`.
+
+### Read a password
 
 ```ruby
 view = client.get_resource_view(resource_id)
 puts view.password
+```
 
+## Create and share resources
+
+`create_resource` takes a `Passbolt::NewResource`, `update_resource` a
+`Passbolt::ResourceChanges`. The fields you leave out keep their default.
+`Passbolt::PermissionType` holds `READ`, `UPDATE`, `OWNER` and `REVOKE`.
+
+### Create, update, share and move a resource
+
+```ruby
 created = client.create_resource(Passbolt::NewResource.new(name: "GitHub", username: "ada", password: "…"))
 client.update_resource(created.id, Passbolt::ResourceChanges.new(password: "new"))
 client.share_resource(created.id, user_ids: [user_id], permission_type: Passbolt::PermissionType::UPDATE)
@@ -65,17 +106,14 @@ folder = client.create_folder("Ops")
 client.move_resource(created.id, folder.id)
 ```
 
-The calls return objects with readers: `Passbolt::ResourceView`, `Passbolt::Resource`,
-`Passbolt::Folder`, `Passbolt::User`… A `ResourceView` holds the fields every resource type
-shares, decrypted; the others, custom fields and icon among them, are the JSON objects
-`metadata_json` and `secret_json`. The fields left out of `NewResource` and `ResourceChanges`
-keep their default.
+## Generate a password
 
-## Generating passwords
+Generate passwords from character sets, passphrases of words of the EFF list, and PIN codes, as
+the browser extension does. Start from the password policies of the organization or from settings
+of your own. The keywords are the fields of the settings; those you leave out keep the defaults of
+Passbolt.
 
-As the browser extension: passwords from character sets, passphrases of words of the EFF list,
-PIN codes, from the password policies of the organization or settings of your own. The keywords
-are the fields of the settings; those left out keep the defaults of Passbolt.
+### Generate secrets and rate them
 
 ```ruby
 policies = client.get_password_policies # the organization's: generator and settings
@@ -89,7 +127,12 @@ Passbolt.secret_strength(password) == Passbolt::Strength::VERY_STRONG # as the e
 Passbolt.secret_entropy(password) # in bits
 ```
 
-## Errors
+## Handle errors
+
+Every error of the SDK is a `Passbolt::Error`: `TransportError`, `AuthError`, `CryptoError`,
+`ApiError` (with the HTTP `status`), `NotFoundError`, `ConfigError` or `InvalidArgumentError`.
+
+### Catch a crypto error and an API error
 
 ```ruby
 begin
@@ -103,11 +146,19 @@ rescue Passbolt::Error => e
 end
 ```
 
-Every error of the SDK is a `Passbolt::Error`: `TransportError`, `AuthError`, `CryptoError`,
-`ApiError`, `NotFoundError`, `ConfigError` or `InvalidArgumentError`.
+## Method names
 
 The methods are those of the [overview](README.md#what-the-api-covers), in snake_case. Flags and
-optional arguments are keywords (`list_resources(search = nil, favorites_only: false,
-owned_by_me: false)`, `list_users(group_id:, admin_only:)`, `share_folder(id, permission_type:,
-user_ids:, group_ids:, with_content:)`); the others are positional. The generated bindings stay
-available as `PassboltFfi`.
+optional arguments are keywords; the others are positional:
+
+- `list_resources(search = nil, favorites_only: false, owned_by_me: false)`
+- `list_users(search = nil, group_id: nil, admin_only: false)`
+- `share_folder(id, permission_type:, user_ids: [], group_ids: [], with_content: false)`
+
+The generated bindings stay available as `PassboltFfi`.
+
+## Related
+
+- [Overview](README.md): the concepts shared by every language.
+- [API reference](api.md): every method, function and record.
+- [Upgrading](upgrading.md): the breaking changes since the 0.1.1 packages.

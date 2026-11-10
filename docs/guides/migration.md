@@ -5,8 +5,18 @@ sidebar_position: 7
 
 # Migration from another password manager
 
-`passbolt import` reads the export of another password manager, as the browser extension imports
-it, and creates the resources in Passbolt. See [import](../cli/commands/import.md).
+Import the export of another password manager into Passbolt, check it, and share it with your
+teams.
+
+`passbolt import` reads the file as the browser extension imports it, and creates the resources
+in Passbolt. See [import](../cli/commands/import.md).
+
+## Prerequisites
+
+- The `passbolt` CLI, configured for your account. See
+  [quick start](../getting-started/quick-start.md).
+- An encrypted disk to write the export file on.
+- [jq](https://jqlang.github.io/jq/), for the steps that read the import report.
 
 ## 1. Export from the other password manager
 
@@ -14,7 +24,7 @@ it, and creates the resources in Passbolt. See [import](../cli/commands/import.m
 
 | Source | File |
 |---|---|
-| KeePass, KeePassXC | a KDBX file (`.kdbx`, KDBX 3 or 4), or its CSV export |
+| KeePass, KeePassXC | A KDBX file (`.kdbx`, KDBX 3 or 4), or its CSV export |
 | LastPass | CSV |
 | 1Password | CSV |
 | Bitwarden | CSV |
@@ -26,15 +36,20 @@ it, and creates the resources in Passbolt. See [import](../cli/commands/import.m
 | LogMeOnce | CSV |
 | Netwrix Password Secure | CSV |
 
-A file ending in `.kdbx` is read as a KeePass database; any other file as CSV, its format
-recognised from its column names. The columns of each format are listed in
-[export csv](../cli/commands/export-csv.md). A CSV file must be UTF-8.
+- A file ending in `.kdbx` is read as a KeePass database. Any other file is read as CSV, its
+  format recognised from its column names. The columns of each format are listed in
+  [export csv](../cli/commands/export-csv.md).
+- A CSV file must be UTF-8.
 
+:::tip
 A KDBX file keeps more than a CSV: groups, several URLs, expiry dates, TOTP, custom fields,
 icons. Prefer it when the source can write one.
+:::
 
+:::caution
 The export file holds every password in clear (CSV) or behind one password (KDBX). Write it on an
 encrypted disk, and destroy it at the end (`shred -u`).
+:::
 
 ## 2. Import
 
@@ -50,8 +65,9 @@ passbolt import -f vault.kdbx --keyfile vault.key --json > import.json
 - Each row gets the resource type that stores what it holds: password, description, TOTP… A
   password of 4 to 12 digits alone becomes a PIN code.
 - The resources and folders are personal: only the account that imports them can see them.
+- Large files may need a longer `--timeout` (default `1m`, for the whole command).
 
-The report, with `--json`:
+With `--json`, the command prints a report:
 
 ```json
 {
@@ -65,21 +81,20 @@ The report, with `--json`:
 }
 ```
 
-Each entry of `errors` and `warnings` has a `title`, a `detail` and the `item` it is about (the
-name of the resource, or the path of the folder). When an item was not imported, the command
-lists it and exits with code 1, after importing the others: do not run it again on the same file,
-or the rest is imported twice. Fix the rows concerned and import them alone, or delete the import
-and start again:
+Each entry of `errors` and `warnings` has a `title`, a `detail` and the `item` it is about: the
+name of the resource, or the path of the folder.
+
+When an item was not imported, the command lists it and exits with code 1, after importing the
+others. Do not run it again on the same file, or the rest is imported twice. Fix the rows
+concerned and import them alone, or delete the import and start again:
 
 ```bash
 passbolt delete folder --id "$(jq -r .folder_id import.json)" --cascade
 ```
 
-Large files may need a longer `--timeout` (default `1m`, for the whole command).
-
 ## 3. Put the import in its place
 
-The import folder can be moved below an existing folder:
+Move the import folder below an existing folder, and rename it:
 
 ```bash
 import_folder=$(jq -r .folder_id import.json)
@@ -91,10 +106,10 @@ passbolt update folder --id "$import_folder" --name "From LastPass"
 
 `--with-folder-permissions` gives the folder the permissions of the destination, and copies the
 change onto the sub-folders and resources the user owns, as the browser extension does. Only an
-owner of the folder can. Without it, the folder and its content keep their permissions: personal,
-here.
+owner of the folder can use it. Without it, the folder and its content keep their permissions:
+personal, here.
 
-A single resource is moved the same way:
+Move a single resource the same way:
 
 ```bash
 passbolt move resource --id <UUID> --folder-parent-id "$TEAM_FOLDER_ID" --with-folder-permissions
@@ -102,7 +117,7 @@ passbolt move resource --id <UUID> --folder-parent-id "$TEAM_FOLDER_ID" --with-f
 
 ## 4. Check the result
 
-The folders imported, and the resources at the top of the import folder:
+List the folders imported, and the resources at the top of the import folder:
 
 ```bash
 passbolt list folder --folder "$import_folder" -c id -c name
@@ -151,5 +166,11 @@ for the permissions, groups and folders.
 - Destroy the export file of the old password manager, and its copies.
 - Change the master password of the old password manager, or close the account, once the teams
   use Passbolt.
-- The passwords themselves did not change: rotate the most sensitive ones (see
-  [rotating a password](rotation.md)).
+- The passwords themselves did not change: rotate the most sensitive ones. See
+  [rotating a password](rotation.md).
+
+## Next steps
+
+- [import](../cli/commands/import.md): every import option.
+- [Sharing](sharing.md): permissions, groups and folders.
+- [Rotating a password](rotation.md): change the imported passwords.

@@ -5,7 +5,8 @@ sidebar_position: 5
 
 # Architecture
 
-How the code is laid out, how a request travels, and where a new method goes.
+Find your way in the code: how the crates fit together, how a request travels, and where a new
+method goes.
 
 ## Crates
 
@@ -28,12 +29,14 @@ flowchart TD
 | `passbolt-wasm` | `passbolt-sdk` (no default features, `openpgpjs` on `wasm32`) | `WasmHttpClient` (`fetch`) | the JavaScript event loop |
 
 The bindings hold no logic of their own: they convert arguments and results, and map errors.
-The SDK features:
 
-| Feature | |
+The SDK has these features:
+
+| Feature | Brings |
 |---|---|
 | `native` (default) | `NativeHttpClient` (reqwest, rustls) and tokio |
 | `totp` | `TotpProvider`, the TOTP codes of a base32 secret |
+| `full` | `native` and `totp` |
 | `openpgpjs` | The OpenPGP.js engine |
 | `gopenpgp` | The gopenpgp engine, built with Go |
 | `interop` | The OpenPGP.js interoperability tests |
@@ -42,7 +45,7 @@ The SDK features:
 
 `crates/passbolt-sdk/src`:
 
-| Module | |
+| Module | Content |
 |---|---|
 | `client.rs` | `PassboltSdk<H: HttpClient>`: the session, the request helpers, the endpoints |
 | `auth.rs` | GPGAuth login, server key fetch and server verification |
@@ -57,10 +60,12 @@ The SDK features:
 | `exchange/`, `transfer.rs` | CSV and KeePass import and export, ownership transfer |
 | `config.rs`, `storage.rs`, `filter.rs`, `pwned.rs` | `SdkConfig`, storage, filters, Have I Been Pwned |
 
-An endpoint that is one request is a method of `PassboltSdk` (`get_folder`, `delete_tag`…). An
-operation of several requests, or one that encrypts, is a function of its module taking the
-client: `resource::get::get_resource_view(&client, id)`,
-`resource::list::list_resources(&client, query, …)`, `resource::share::share_resource(…)`.
+Where an operation lives depends on its size:
+
+- An endpoint that is one request is a method of `PassboltSdk` (`get_folder`, `delete_tag`…).
+- An operation of several requests, or one that encrypts, is a function of its module taking the
+  client: `resource::get::get_resource_view(&client, id)`,
+  `resource::list::list_resources(&client, query, …)`, `resource::share::share_resource(…)`.
 
 ### The HTTP abstraction
 
@@ -80,10 +85,10 @@ JSON bodies, and adds `X-CSRF-Token`; the backend sends them and keeps the cooki
 
 | | `NativeHttpClient` (`platform/native.rs`) | `WasmHttpClient` (`passbolt-wasm/src/http.rs`) |
 |---|---|---|
-| Transport | reqwest with rustls and the system roots | the global `fetch`, with credentials |
+| Transport | reqwest with rustls and the system roots | the global `fetch`, with credentials, or the `fetch` of the session |
 | Cookies | reqwest's cookie jar; `cookie()` reads it | the browser keeps them; under Node, Deno and Bun the client keeps those of `Set-Cookie` and sends them back |
 | CSRF token | the `csrfToken` cookie | `document.cookie`, or the `csrfTokenProvider` of the session (an extension reads the cookie with `browser.cookies`) |
-| Options | `NativeHttpConfig`: TLS skip, client certificate, proxy, `resolve`, timeout | none: TLS and proxies are the browser's |
+| Options | `NativeHttpConfig`: TLS skip, client certificate, proxy, `resolve`, timeout | none: TLS and proxies are the browser's, or those of the `fetch` given (undici with a `dispatcher`) |
 | Redirects | followed within the origin only | `fetch`'s |
 
 The tests give the SDK a third backend, `FakePassbolt` (see [Tests](#tests)).
@@ -210,7 +215,7 @@ which falls back to `/password-generator/settings.json` on servers before 4.2.
 
 `crates/passbolt-cli/src`:
 
-| Path | |
+| Path | Content |
 |---|---|
 | `main.rs` | `run` handles the commands that need no session (`completion`, `gendoc`, `generate --offline`, `configure`, `verify`), then logs in, calls `dispatch`, and logs out (`session::finish`); `dispatch` matches each `Commands` variant (`Create`, `Get`, `List`, `Update`, `Delete`, `Share`, `Move`, `Exec`, `Tui`, `Generate`, `Export`, `Import`, `MigrateMetadata`) |
 | `cli/root.rs` | The clap structures: `Cli`, `Commands` and their arguments |
@@ -263,43 +268,74 @@ async fn the_password_policies_of_the_organization_are_read() {
 
 The commands to run each level are in [Development](development.md#tests).
 
-## Adding a method end to end
+## Add a method end to end
 
-The path of a new API call, from the SDK to the docs:
+Follow a new API call from the SDK to the docs:
 
 ```text
 SDK  ->  tests/it  ->  FFI client_methods!  ->  WASM  ->  binding wrappers  ->  smoke tests  ->  docs
 ```
 
-1. **SDK.** A method of `PassboltSdk` in `client.rs` for one request, using `get`, `post`,
-   `put_request` or `delete_request`; a function of its module for more. The structures go in
-   `types.rs` with the field names of the API. It returns `Result<_, PassboltError>`.
-2. **SDK tests.** In `tests/it`: register the answer on `FakePassbolt`, from a fixture of
-   `tests/fixtures/data` in the shape of the real API, then check the result and the request
-   sent (`requests_to`). One behaviour per test.
-3. **FFI.** One entry in the `client_methods!` list of `crates/passbolt-ffi/src/lib.rs`, with a
-   doc comment and an async body taking `client`: both `PassboltClient` and
-   `AsyncPassboltClient` get it. Optional arguments get a default in
-   `#[uniffi::method(default(...))]`. A new record goes in `types.rs` (or `resource.rs`,
-   `generator.rs`) with `#[derive(uniffi::Record)]`, `#[uniffi(default = …)]` on its optional
-   fields, and a `From` conversion from the SDK type. Errors convert with
-   `PassboltError::from`.
-4. **WASM.** A method of the session in `crates/passbolt-wasm/src/lib.rs`, with a camelCase
-   `js_name` and `unchecked_return_type`; optional arguments in an options object. Declare the
-   types in `src/types.d.ts`, and add a sample of a new serialized structure to
-   `examples/typescript_samples.rs`, which the CI type-checks with `tsc --strict`.
-5. **Binding wrappers**, when the method has optional arguments or writes a record:
-   - Go: an option struct and its method in `packaging/go/options.go`, and the generated
-     method in the `replaced` list of `packaging/go/rename/main.go`.
-   - Ruby: the flags and optional arguments as keywords in `packaging/ruby/passbolt.rb`, and a
-     new record or enum in its `RECORDS` or `ENUMS`.
-   - Python: a new record or enum imported from `._ffi.passbolt_ffi` and listed in `__all__`,
-     in `crates/passbolt-ffi/python/passbolt/__init__.py`.
-   - Java: a builder in `packaging/java/src/com/passbolt/sdk/` for a record the caller writes.
-6. **Smoke tests.** `packaging/smoke/` for a change of shape (an option struct, a builder, a
-   wrapper).
-7. **Docs.** Regenerate the tables of the [API reference](../sdk/api.md), add the method to the
-   method table of [JavaScript](../sdk/javascript.md) and, when it matters, to the language
-   pages; add a line to `CHANGELOG.md`, under `[Unreleased]`.
-8. **End to end.** When the CLI uses it, a test in `crates/passbolt-cli/tests/e2e` against a
-   real server.
+### 1. Add it to the SDK
+
+Add a method of `PassboltSdk` in `client.rs` for one request, using `get`, `post`,
+`put_request` or `delete_request`; add a function of its module for more. The structures go in
+`types.rs`, with the field names of the API. It returns `Result<_, PassboltError>`.
+
+### 2. Test it in the SDK
+
+In `tests/it`, register the answer on `FakePassbolt`, from a fixture of `tests/fixtures/data` in
+the shape of the real API. Then check the result and the request sent (`requests_to`). Test one
+behaviour per test.
+
+### 3. Expose it through the FFI
+
+Add one entry to the `client_methods!` list of `crates/passbolt-ffi/src/lib.rs`, with a doc
+comment and an async body taking `client`: both `PassboltClient` and `AsyncPassboltClient` get
+it.
+
+- Optional arguments get a default in `#[uniffi::method(default(...))]`.
+- A new record goes in `types.rs` (or `resource.rs`, `generator.rs`) with
+  `#[derive(uniffi::Record)]`, `#[uniffi(default = …)]` on its optional fields, and a `From`
+  conversion from the SDK type.
+- Errors convert with `PassboltError::from`.
+
+### 4. Expose it through WASM
+
+Add a method of the session in `crates/passbolt-wasm/src/lib.rs`, with a camelCase `js_name` and
+`unchecked_return_type`; optional arguments go in an options object. Declare the types in
+`src/types.d.ts`, and add a sample of a new serialized structure to
+`examples/typescript_samples.rs`, which the CI type-checks with `tsc --strict`.
+
+### 5. Update the binding wrappers
+
+Do this when the method has optional arguments or writes a record:
+
+| Language | Change |
+|---|---|
+| Go | An option struct and its method in `packaging/go/options.go`, and the generated method in the `replaced` list of `packaging/go/rename/main.go`. |
+| Ruby | The flags and optional arguments as keywords in `packaging/ruby/passbolt.rb`, and a new record or enum in its `RECORDS` or `ENUMS`. |
+| Python | A new record or enum imported from `._ffi.passbolt_ffi` and listed in `__all__`, in `crates/passbolt-ffi/python/passbolt/__init__.py`. |
+| Java | A builder in `packaging/java/src/com/passbolt/sdk/` for a record the caller writes. |
+
+### 6. Update the smoke tests
+
+Change `packaging/smoke/` for a change of shape: an option struct, a builder, a wrapper.
+
+### 7. Document it
+
+- Regenerate the tables of the [API reference](../sdk/api.md).
+- Add the method to the method table of [JavaScript](../sdk/javascript.md) and, when it matters,
+  to the language pages.
+- Add a line to `CHANGELOG.md`, under `[Unreleased]`.
+
+### 8. Test it end to end
+
+When the CLI uses the method, add a test in `crates/passbolt-cli/tests/e2e` against a real
+server.
+
+## Related
+
+- [Development](development.md): build, check and run the tests.
+- [Bindings and CI](bindings-and-ci.md): generate the bindings and build the packages.
+- [Dependencies](dependencies.md): what each crate is built on.

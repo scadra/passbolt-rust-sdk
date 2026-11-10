@@ -81,6 +81,11 @@ module Passbolt
     PassboltFfi.get_key_fingerprint(private_key_armored)
   end
 
+  # The OpenPGP engine of the native library: "gopenpgp", "openpgpjs" or "rpgp".
+  def self.openpgp_engine
+    PassboltFfi.openpgp_engine
+  end
+
   # The ciphertext, armored, for every key of public_keys_armored.
   def self.encrypt_message(plaintext, public_keys_armored)
     PassboltFfi.encrypt_message(plaintext, public_keys_armored)

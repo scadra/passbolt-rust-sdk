@@ -4,6 +4,8 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 ### Added
+- The Sequoia OpenPGP engine on Nettle (`sequoia` feature, `OpenPgp::sequoia()`)
+- FFI bindings: `openpgp_engine()`, the name of the OpenPGP engine of the native library
 - LICENSE (AGPL-3.0), SECURITY.md, CONTRIBUTING.md and GitHub issue / pull request templates
 - Passbolt license header on every Rust source file, checked by `scripts/license-headers.sh`
 - SDK integration tests against an in-memory Passbolt API (`crates/passbolt-sdk/tests/it`)
@@ -21,6 +23,17 @@ This project adheres to [Semantic Versioning](http://semver.org/).
   blocking client. The Android AAR now depends on kotlinx-coroutines
 
 ### Changed
+- OpenPGP engines: the default engine is GopenPGP when the `gopenpgp` feature is built, else
+  OpenPGP.js (`openpgpjs`, now a default feature), else rPGP. The released CLI binaries and the
+  Python, Java, .NET, Ruby, Android and Swift packages are built with GopenPGP; the Go module
+  and JavaScript use OpenPGP.js. In JavaScript, without the `openpgp` option, the SDK
+  uses the OpenPGP.js 6.1.1 it bundles. `passbolt-cli` and `passbolt-ffi` get a `gopenpgp`
+  feature. The GopenPGP engine runs operations in parallel
+- Windows binaries and packages are built with MinGW (`x86_64-pc-windows-gnu`), which links
+  GopenPGP: the CLI archive is now `passbolt-cli-<version>-x86_64-pc-windows-gnu.zip`
+- CI runs the tests of the SDK and the bindings with GopenPGP on every system the packages are
+  built for (Linux x64, arm64 and musl, macOS arm64, Windows), and the Python, Java and .NET
+  smoke tests on Windows; every smoke test encrypts and decrypts, and checks the engine
 - Crate license changed from MIT to AGPL-3.0-or-later
 - README follows the Passbolt repositories layout (license, about, contributing, credits)
 - JavaScript SDK: methods with optional arguments take an options object (`listResourceViews({ search,

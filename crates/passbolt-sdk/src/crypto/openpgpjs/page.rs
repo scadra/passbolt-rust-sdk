@@ -74,6 +74,49 @@ extern "C" {
     ) -> Result<Promise, JsValue>;
 }
 
+/// The OpenPGP.js the SDK bundles, for pages that give none.
+#[wasm_bindgen(module = "/vendor/openpgpjs/openpgp.min.mjs")]
+extern "C" {
+    #[wasm_bindgen(thread_local_v2, js_name = config)]
+    static CONFIG: JsValue;
+    #[wasm_bindgen(thread_local_v2, js_name = enums)]
+    static ENUMS: JsValue;
+    #[wasm_bindgen(thread_local_v2, js_name = createMessage)]
+    static CREATE_MESSAGE: JsValue;
+    #[wasm_bindgen(thread_local_v2, js_name = decryptKey)]
+    static DECRYPT_KEY: JsValue;
+    #[wasm_bindgen(thread_local_v2, js_name = decryptSessionKeys)]
+    static DECRYPT_SESSION_KEYS: JsValue;
+    #[wasm_bindgen(thread_local_v2, js_name = encrypt)]
+    static ENCRYPT: JsValue;
+    #[wasm_bindgen(thread_local_v2, js_name = readKey)]
+    static READ_KEY: JsValue;
+    #[wasm_bindgen(thread_local_v2, js_name = readMessage)]
+    static READ_MESSAGE: JsValue;
+    #[wasm_bindgen(thread_local_v2, js_name = readPrivateKey)]
+    static READ_PRIVATE_KEY: JsValue;
+}
+
+/// The bundled OpenPGP.js, as a module of the names `engine.js` uses.
+pub fn bundled() -> JsValue {
+    let module = Object::new();
+    for (name, value) in [
+        ("config", &CONFIG),
+        ("enums", &ENUMS),
+        ("createMessage", &CREATE_MESSAGE),
+        ("decryptKey", &DECRYPT_KEY),
+        ("decryptSessionKeys", &DECRYPT_SESSION_KEYS),
+        ("encrypt", &ENCRYPT),
+        ("readKey", &READ_KEY),
+        ("readMessage", &READ_MESSAGE),
+        ("readPrivateKey", &READ_PRIVATE_KEY),
+    ] {
+        // Setting a property of a plain object does not fail.
+        let _ = value.with(|value| Reflect::set(&module, &name.into(), value));
+    }
+    module.into()
+}
+
 /// WebAssembly runs on one thread: the engine never leaves it.
 type Shared = Arc<SendWrapper<JsEngine>>;
 

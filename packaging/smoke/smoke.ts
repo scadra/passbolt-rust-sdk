@@ -12,6 +12,7 @@ import {
 } from "@switch-case/passbolt-sdk";
 import type {
   DeleteBlockers,
+  FetchFunction,
   Folder,
   FolderTreeNode,
   Group,
@@ -29,6 +30,13 @@ export async function typedSession(serverUrl: string, privateKey: string, passph
   const options: LoginOptions = { csrfTokenProvider: async () => "token", totpCode: "123456" };
   const session: PassboltSession = await PassboltSession.login(serverUrl, privateKey, passphrase, options);
   await PassboltSession.login(serverUrl, privateKey, passphrase);
+  const fetch: FetchFunction = async (url, init) => ({
+    status: url.startsWith("https://") && init.method === "GET" ? 200 : 201,
+    headers: new Map([["content-type", "application/json"]]),
+    arrayBuffer: async () => new ArrayBuffer(0),
+  });
+  await PassboltSession.login(serverUrl, privateKey, passphrase, { fetch });
+  await PassboltSession.fetchServerKey(serverUrl, { fetch });
 
   const views: ResourceView[] = await session.listResourceViews({ search: "github", withSecrets: true });
   await session.listResourceViews();

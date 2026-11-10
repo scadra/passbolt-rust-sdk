@@ -79,6 +79,8 @@ default = ["tui"]
 tui = ["dep:ratatui", "dep:arboard"]
 # End-to-end tests against a real server: scripts/e2e.sh
 e2e = []
+# The gopenpgp engine as the default one, as the released binaries are built: needs Go.
+gopenpgp = ["passbolt-sdk/gopenpgp"]
 
 [[test]]
 name = "e2e"

@@ -5,20 +5,36 @@ sidebar_position: 4
 
 # Dependencies
 
-What the SDK, the bindings and the CLI are built on, with the versions of `Cargo.lock` and the
-other lock files. Every license is permissive (MIT, Apache-2.0, Unlicense) or weak copyleft
-(MPL-2.0 for UniFFI, LGPL-3.0 for OpenPGP.js), compatible with the AGPL-3.0 of the project.
+See what the SDK, the bindings and the CLI are built on, with the versions of `Cargo.lock` and
+the other lock files, and their licenses.
 
-`cargo tree -p <crate> -e normal --depth 1` lists them again; `cargo metadata` gives the
-licenses and repositories of the whole tree, the indirect dependencies included.
+Every license is permissive (MIT, Apache-2.0, Unlicense) or weak copyleft (MPL-2.0 for UniFFI,
+LGPL-3.0 for OpenPGP.js), compatible with the AGPL-3.0 of the project.
+
+## List them yourself
+
+```bash
+cargo tree -p <CRATE> -e normal --depth 1   # the direct dependencies of a crate
+cargo metadata                              # licenses and repositories of the whole tree
+```
+
+`cargo metadata` includes the indirect dependencies.
 
 ## Rust crates
 
 ### passbolt-sdk
 
-The OpenPGP.js engine (`openpgpjs` feature) brings `rquickjs` and the WebCrypto primitives
-(`aes`, `aes-gcm`, `cbc`, `ctr`, `hkdf`, `sha2`); the `native` feature brings `reqwest` and
-`tokio`; WebAssembly brings `wasm-bindgen`, `js-sys` and `send_wrapper`.
+Some crates come with a feature or a target only:
+
+- The OpenPGP.js engine (`openpgpjs` feature) brings `rquickjs` and the WebCrypto primitives
+  (`aes`, `aes-gcm`, `cbc`, `ctr`, `hkdf`, `sha2`).
+- The Sequoia engine (`sequoia` feature) brings
+  [`sequoia-openpgp`](https://gitlab.com/sequoia-pgp/sequoia) 2.4 (LGPL-2.0-or-later) on
+  Nettle, and `sha2`; it needs Nettle and GMP (`nettle-dev`) and libclang to build.
+- On Android and iOS, the OpenPGP.js engine builds the `rquickjs` bindings with bindgen: it needs
+  libclang.
+- The `native` feature brings `reqwest` and `tokio`.
+- WebAssembly brings `wasm-bindgen`, `js-sys` and `send_wrapper`.
 
 | Crate | Version | License | Role |
 |---|---|---|---|
@@ -139,9 +155,9 @@ The OpenPGP.js engine (`openpgpjs` feature) brings `rquickjs` and the WebCrypto 
 
 | Component | Version | License | Where |
 |---|---|---|---|
-| [OpenPGP.js](https://github.com/openpgpjs/openpgpjs) | 6.1.1 | LGPL-3.0-or-later | `crates/passbolt-sdk/vendor/openpgpjs`, the `openpgpjs` engine; `tests/interop` checks what rPGP writes with it |
+| [OpenPGP.js](https://github.com/openpgpjs/openpgpjs) | 6.1.1 | LGPL-3.0-or-later | `crates/passbolt-sdk/vendor/openpgpjs`, the `openpgpjs` engine (default without `gopenpgp`, and in JavaScript); `tests/interop` checks what the SDK writes with it |
 | [EFF large wordlist](https://www.eff.org/dice) | 2016 | CC BY 3.0 US | `crates/passbolt-sdk/src/generator/words.txt`, the passphrases, as in the browser extension |
-| [GopenPGP](https://github.com/ProtonMail/gopenpgp) | 3.5.2 | MIT | `crates/passbolt-sdk/gopenpgp`, the optional `gopenpgp` engine (needs Go) |
+| [GopenPGP](https://github.com/ProtonMail/gopenpgp) | 3.5.2 | MIT | `crates/passbolt-sdk/gopenpgp`, the `gopenpgp` engine, default of the released binaries (needs Go) |
 | [JNA](https://github.com/java-native-access/jna) | 5.14.0 | Apache-2.0 OR LGPL-2.1 | Java and Android bindings: calls the native library |
 | [kotlinx.coroutines](https://github.com/Kotlin/kotlinx.coroutines) | 1.9.0 | Apache-2.0 | Android: the `suspend` functions of `AsyncPassboltClient` |
 | [ffi](https://github.com/ffi/ffi) (gem) | ~> 1.15 | BSD-3-Clause | Ruby bindings: calls the native library |
@@ -189,8 +205,18 @@ The OpenPGP.js engine (`openpgpjs` feature) brings `rquickjs` and the WebCrypto 
 [pypa/gh-action-pypi-publish](https://github.com/pypa/gh-action-pypi-publish) and
 [rubygems/configure-rubygems-credentials](https://github.com/rubygems/configure-rubygems-credentials).
 
-## Adding one
+## Add a dependency
 
-A new dependency needs a reason the standard library or a crate already there cannot give, a
-license from the list above, and a maintained repository. Prefer pure Rust (the musl and
-WebAssembly builds), and leave optional what only one feature uses, as `tui` does.
+A new dependency needs:
+
+- a reason the standard library or a crate already there cannot give;
+- a license from the list above;
+- a maintained repository.
+
+Prefer pure Rust, for the musl and WebAssembly builds. Leave optional what only one feature
+uses, as `tui` does.
+
+## Related
+
+- [Development](development.md): build and check the workspace.
+- [Bindings and CI](bindings-and-ci.md): where the build tools are used.

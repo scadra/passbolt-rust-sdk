@@ -13,11 +13,33 @@ import com.passbolt.sdk.ResourceChangesBuilder;
 import com.passbolt.sdk.Strength;
 import com.passbolt.sdk.WordCase;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CompletionException;
 
 public class Smoke {
-    public static void main(String[] args) throws PassboltException {
+    public static void main(String[] args) throws PassboltException, IOException {
+        // The OpenPGP engine of the native library encrypts and decrypts in this host: a test key
+        // of the repository, CI checking the engine each package is built with.
+        String engine = PassboltFfi.openpgpEngine();
+        String expected = System.getenv("PASSBOLT_EXPECTED_ENGINE");
+        if (expected != null && !engine.equals(expected)) {
+            throw new IllegalStateException("engine " + engine + ", expected " + expected);
+        }
+        String keysDirectory = System.getenv().getOrDefault("PASSBOLT_SMOKE_KEYS", "crates/passbolt-sdk/tests/fixtures/keys");
+        Path keys = Path.of(keysDirectory);
+        String armored = PassboltFfi.encryptMessage(
+            "smoke".getBytes(StandardCharsets.UTF_8), List.of(Files.readString(keys.resolve("erin_public.asc"))));
+        byte[] plaintext = PassboltFfi.decryptMessage(
+            armored, Files.readString(keys.resolve("erin_private.asc")), "erin-passphrase");
+        if (!new String(plaintext, StandardCharsets.UTF_8).equals("smoke")) {
+            throw new IllegalStateException("the message did not come back");
+        }
+        System.out.println("ok: " + engine + " encrypts and decrypts");
+
         try {
             PassboltFfi.getKeyFingerprint("not a key");
             throw new IllegalStateException("expected a crypto error");

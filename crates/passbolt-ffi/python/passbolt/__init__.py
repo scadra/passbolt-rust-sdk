@@ -70,6 +70,7 @@ from ._ffi.passbolt_ffi import (
     fetch_server_key,
     generate_pin_code,
     get_key_fingerprint,
+    openpgp_engine,
     secret_entropy,
     secret_strength,
 )
@@ -138,6 +139,7 @@ __all__ = [
     "generate_pin_code",
     "generate_secret",
     "get_key_fingerprint",
+    "openpgp_engine",
     "secret_entropy",
     "secret_strength",
 ]

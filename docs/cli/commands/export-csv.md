@@ -5,13 +5,44 @@ sidebar_position: 8
 
 # export csv
 
-Export to the CSV file of another password manager, as the browser extension writes it: every
-cell quoted, the folder path in the folder column, the TOTP as an `otpauth://` URI.
+Export your vault to the CSV file of another password manager.
+
+## export csv
+
+Write the resources to a CSV file as the browser extension writes it: every cell quoted, the
+folder path in the folder column, the TOTP as an `otpauth://` URI.
 
 ```bash
-passbolt export csv --format csv-kdbx                      # passbolt-export-<date>.csv
-passbolt export csv --format csv-kdbx -f vault.csv --folder-id <FOLDER_UUID>
+passbolt export csv [flags]
 ```
+
+### Flags
+
+| Flag | Required | Description |
+|---|---|---|
+| `--format <FORMAT>` | No | The CSV format. See [CSV formats](#csv-formats). Default: `csv-kdbx`. |
+| `-f, --file <FILE>` | No | File to write. Default: `passbolt-export-<date>.csv`. |
+| `--folder-id <UUID>` | No | Export only this folder and its sub-folders. Default: all. |
+
+A resource that does not decrypt is reported on stderr (`Skipping Export of Resource <ID> <NAME>
+Because of: <ERROR>`) and left out. The command then prints `Exported <N> resources to <FILE>`,
+or, with `--json`, the file, the format and the number of resources.
+
+### Examples
+
+#### Export the whole vault for KeePass
+
+```bash
+passbolt export csv --format csv-kdbx
+```
+
+#### Export one folder for Bitwarden
+
+```bash
+passbolt export csv --format csv-bitwarden -f vault.csv --folder-id <FOLDER_UUID>
+```
+
+## CSV formats
 
 | Format | Columns |
 |---|---|
@@ -27,6 +58,8 @@ passbolt export csv --format csv-kdbx -f vault.csv --folder-id <FOLDER_UUID>
 | `csv-logmeonce` | LogMeOnce: `name`, `url`, `note`, `group`, `username`, `password`, `extra` |
 | `csv-netwrix` | Netwrix Password Secure: `DataTags`, `Description`, `User name`, `Password`, `Internet address`, `Email address` |
 
-A resource that does not decrypt is reported and left out.
+## Related
 
-To import such a file, see [import](import.md).
+- [import](import.md): import such a file.
+- [export keepass](export-keepass.md): an encrypted KeePass file instead.
+- [Backup guide](../../guides/backup.md): back up your vault.

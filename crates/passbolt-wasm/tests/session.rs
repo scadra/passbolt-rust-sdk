@@ -90,7 +90,8 @@ impl Passbolt {
                 ...headers,
             });
             const requests = [];
-            const fetch = async (request) => {
+            const fetch = async (input, init) => {
+                const request = new Request(input, init);
                 const text = request.method === "GET" ? "" : await request.text();
                 const url = new URL(request.url);
                 if (url.pathname === "/auth/login.json") {
@@ -305,6 +306,28 @@ async fn the_session_gives_the_user_and_the_server() {
 
     assert_eq!(session.user_id(), ADA_ID);
     assert_eq!(session.base_url(), SERVER_URL);
+}
+
+#[wasm_bindgen_test]
+async fn the_session_sends_its_requests_with_the_given_fetch() {
+    let passbolt = Passbolt::new();
+    passbolt.on("GET", "/folders.json", &json!([]));
+    let global_fetch =
+        js_sys::Function::new_no_args("return Promise.reject(new Error('the global fetch'));");
+    js_sys::Reflect::set(&js_sys::global(), &"fetch".into(), &global_fetch).unwrap();
+    let options = js_sys::Object::new();
+    js_sys::Reflect::set(&options, &"fetch".into(), &passbolt.fetch).unwrap();
+
+    let session = ok(PassboltSession::login(
+        SERVER_URL.into(),
+        ADA_PRIVATE.into(),
+        ADA_PASSPHRASE.into(),
+        Some(options.unchecked_into()),
+    )
+    .await);
+    ok(session.list_folders(JsValue::UNDEFINED).await);
+
+    assert_eq!(passbolt.received("GET", "/folders.json").len(), 1);
 }
 
 #[wasm_bindgen_test]

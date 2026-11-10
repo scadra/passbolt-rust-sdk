@@ -5,10 +5,16 @@ sidebar_position: 5
 
 # Output
 
+Read what the commands print: tables, key-value lines, or JSON for scripts.
+
 ## Tables
 
-The default for `list` and permissions: every cell padded to its column, ` | ` between cells,
-the column names as headers, then an empty line.
+`list` and the permissions print a table: the column names as headers, every cell padded to its
+column, ` | ` between cells, then an empty line.
+
+```bash
+passbolt list resource
+```
 
 ```text
 id                                   | folder_parent_id | name   | username     | uri
@@ -16,13 +22,27 @@ a1b2c3d4-e5f6-7890-abcd-ef1234567890 |                  | GitHub | alice        
 b2c3d4e5-f6a7-8901-bcde-f12345678901 |                  | AWS    | ops@corp.com |
 ```
 
-`-c/--column` chooses the columns (repeatable), in any case and also in camelCase
-(`FolderParentID`, `CreatedTimestamp`…).
+- A line break in a value continues the cell on the next line, in its column.
+- Control characters are removed from the cells, so a resource name cannot send escape
+  sequences to your terminal.
+
+### Choose the columns
+
+`-c, --column` chooses the columns. Repeat it for several. Column names are read in any case and
+also in camelCase (`FolderParentID`, `CreatedTimestamp`…).
+
+```bash
+passbolt list resource -c name -c uri
+```
 
 ## JSON
 
-`--json`: each item with its fields, dates in UTC (`2024-01-01T10:00:00Z`), an empty
-`folder_parent_id` at the root; with `-c`, only those fields.
+`--json` prints JSON indented by two spaces; for `list`, an array of the items:
+
+- Each item with its fields.
+- Dates in UTC: `2024-01-01T10:00:00Z`.
+- An empty `folder_parent_id` for an item at the root.
+- With `-c`, only those fields.
 
 ```bash
 passbolt list resource --json | jq '.[].name'
@@ -31,7 +51,11 @@ passbolt list user -c username -c role --json
 
 ## Key-value
 
-`get` without `--json`:
+`get` without `--json` prints one `Key: value` line per field:
+
+```bash
+passbolt get resource --id <UUID>
+```
 
 ```text
 FolderParentID:
@@ -42,11 +66,18 @@ Password: s3cr3t
 Description:
 ```
 
-`get resource` then shows the other metadata fields, and what only the secret holds (note, PIN
-code, TOTP, custom fields, expiry).
+`get resource` then shows the other metadata fields, and what only the secret holds: note, PIN
+code, TOTP, custom fields, expiry.
 
 ## Writes
 
-`create` prints `ResourceID: <id>` (`FolderID`, `UserID`, `GroupID`), or `{"id": …}` with
-`--json`; `update`, `delete`, `share` and `move` print nothing, or `{"id": …, "result": …}` with
-`--json`.
+| Command | Without `--json` | With `--json` |
+|---|---|---|
+| `create` | `ResourceID: <id>` (or `FolderID`, `UserID`, `GroupID`) | `{"id": …}` |
+| `update`, `delete`, `share`, `move` | Nothing | `{"id": …, "result": …}` |
+
+## Related
+
+- [Filters](filters.md): keep only the rows you want.
+- [Commands](commands/README.md): the columns of each `list`.
+- [Scripting guide](../guides/scripting.md): JSON output in scripts.

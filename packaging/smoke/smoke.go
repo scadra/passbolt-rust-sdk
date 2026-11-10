@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	passbolt "github.com/scadra/passbolt-sdk-go"
 )
@@ -76,4 +77,31 @@ func main() {
 	view := passbolt.ResourceView{ID: "id", URIs: []string{"https://example.com"}}
 	_ = passbolt.LoginOptions{TLSSkipVerify: false}
 	fmt.Println("ok:", cryptoErr.Reason, view.ID)
+
+	// The OpenPGP engine of the native library encrypts and decrypts in this program: a test key
+	// of the repository, CI checking the engine each package is built with.
+	engine := passbolt.OpenpgpEngine()
+	if expected := os.Getenv("PASSBOLT_EXPECTED_ENGINE"); expected != "" && engine != expected {
+		fail("engine %s, expected %s", engine, expected)
+	}
+	keys := os.Getenv("PASSBOLT_SMOKE_KEYS")
+	if keys == "" {
+		keys = "crates/passbolt-sdk/tests/fixtures/keys"
+	}
+	read := func(name string) string {
+		text, err := os.ReadFile(filepath.Join(keys, name))
+		if err != nil {
+			fail("read %s: %v", name, err)
+		}
+		return string(text)
+	}
+	armored, err := passbolt.EncryptMessage([]byte("smoke"), []string{read("erin_public.asc")})
+	if err != nil {
+		fail("encrypt: %v", err)
+	}
+	plaintext, err := passbolt.DecryptMessage(armored, read("erin_private.asc"), "erin-passphrase")
+	if err != nil || string(plaintext) != "smoke" {
+		fail("decrypt: %q, %v", plaintext, err)
+	}
+	fmt.Println("ok:", engine, "encrypts and decrypts")
 }

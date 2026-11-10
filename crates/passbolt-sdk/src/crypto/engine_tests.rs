@@ -41,6 +41,8 @@ static ENGINES: LazyLock<Vec<OpenPgp>> = LazyLock::new(|| {
         OpenPgp::openpgpjs().unwrap(),
         #[cfg(all(feature = "gopenpgp", not(target_arch = "wasm32")))]
         OpenPgp::gopenpgp(),
+        #[cfg(all(feature = "sequoia", not(target_arch = "wasm32")))]
+        OpenPgp::sequoia(),
     ]
 });
 
@@ -193,7 +195,9 @@ async fn test_aead_messages_and_their_session_keys_are_read(
     #[case] armored: &str,
     #[case] algorithm: &str,
 ) {
-    for openpgp in ENGINES.iter() {
+    // Sequoia reads SEIPD v1 and v2 only, not the GnuPG AEAD (OCB) container.
+    let reads = |openpgp: &&OpenPgp| armored != GNUPG_AEAD_MESSAGE || openpgp.name() != "sequoia";
+    for openpgp in ENGINES.iter().filter(reads) {
         let erin = openpgp.parse_private_key(ERIN_PRIVATE).unwrap();
 
         let (plaintext, session_key) =
