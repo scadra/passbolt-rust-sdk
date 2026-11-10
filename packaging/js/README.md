@@ -24,6 +24,8 @@ try {
 Every session method returns a promise; errors are `Error`s named `PassboltError`, with a
 `code`. Node, Deno and Bun keep no cookies: the session keeps the cookies the server sets and
 sends them back. A browser or an extension keeps them; give `login` a `csrfTokenProvider` there,
-e.g. with `browser.cookies.get`.
+e.g. with `browser.cookies.get`. Under Node, a proxy or a certificate authority of your own goes
+through the `fetch` option of `login` and `fetchServerKey`, e.g. undici's `fetch` with a
+`dispatcher`.
 
 Documentation: https://github.com/scadra/passbolt-rust-sdk/blob/master/docs/sdk/javascript.md

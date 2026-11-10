@@ -19,14 +19,14 @@ use passbolt_sdk::error::TransportError;
 use passbolt_sdk::http::{HttpClient, HttpResponse};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{Headers, Request, RequestCredentials, RequestInit, RequestMode, Response};
+use web_sys::{Headers, Response};
 
 #[wasm_bindgen]
 extern "C" {
     /// The global `fetch`, available in windows and in workers (MV3 service worker)
     /// alike, unlike `web_sys::window()`.
     #[wasm_bindgen(js_name = fetch)]
-    fn global_fetch(request: &Request) -> js_sys::Promise;
+    fn global_fetch(url: &str, init: &js_sys::Object) -> js_sys::Promise;
 }
 
 const DEFAULT_HEADERS: [(&str, &str); 2] = [
@@ -55,17 +55,25 @@ fn build_request_headers<'header>(
 
 const CSRF_COOKIE: &str = "csrfToken";
 
-thread_local! {
-    /// The JS functions giving the `csrfToken` cookie, sync or as a promise, of each client that
-    /// has one: `fetch` cannot read `Set-Cookie`. WASM runs on one thread, and a JS function is
-    /// not `Send`, so the clients hold their key here, not the function.
-    static CSRF_TOKEN_PROVIDERS: RefCell<HashMap<u32, js_sys::Function>> =
-        RefCell::new(HashMap::new());
-    static NEXT_PROVIDER_KEY: Cell<u32> = const { Cell::new(0) };
+/// The JS functions a client was given.
+#[derive(Clone, Default)]
+pub struct JsFunctions {
+    /// Gives the `csrfToken` cookie, sync or as a promise: `fetch` cannot read `Set-Cookie`.
+    pub csrf_token_provider: Option<js_sys::Function>,
+    /// Sends the requests instead of the global `fetch`, as `fetch(url, init)` is called: with
+    /// a proxy, or a TLS setting of the caller's, which the global `fetch` of Node cannot take.
+    pub fetch: Option<js_sys::Function>,
 }
 
-fn csrf_token_provider(key: u32) -> Option<js_sys::Function> {
-    CSRF_TOKEN_PROVIDERS.with(|providers| providers.borrow().get(&key).cloned())
+thread_local! {
+    /// The JS functions of each client given some. WASM runs on one thread, and a JS function
+    /// is not `Send`, so the clients hold their key here, not the functions.
+    static CLIENT_FUNCTIONS: RefCell<HashMap<u32, JsFunctions>> = RefCell::new(HashMap::new());
+    static NEXT_FUNCTIONS_KEY: Cell<u32> = const { Cell::new(0) };
+}
+
+fn client_functions(key: u32) -> Option<JsFunctions> {
+    CLIENT_FUNCTIONS.with(|functions| functions.borrow().get(&key).cloned())
 }
 
 /// HTTP client using `fetch()` with cookie credentials.
@@ -77,14 +85,14 @@ fn csrf_token_provider(key: u32) -> Option<js_sys::Function> {
 pub struct WasmHttpClient {
     csrf_token: Mutex<Option<String>>,
     cookies: Mutex<Vec<(String, String)>>,
-    /// The key of its CSRF token provider in `CSRF_TOKEN_PROVIDERS`.
-    csrf_token_provider: Option<u32>,
+    /// The key of its functions in `CLIENT_FUNCTIONS`.
+    functions: Option<u32>,
 }
 
 impl Drop for WasmHttpClient {
     fn drop(&mut self) {
-        if let Some(key) = self.csrf_token_provider {
-            CSRF_TOKEN_PROVIDERS.with(|providers| providers.borrow_mut().remove(&key));
+        if let Some(key) = self.functions {
+            CLIENT_FUNCTIONS.with(|functions| functions.borrow_mut().remove(&key));
         }
     }
 }
@@ -95,34 +103,39 @@ impl WasmHttpClient {
         Self {
             csrf_token: Mutex::new(None),
             cookies: Mutex::new(Vec::new()),
-            csrf_token_provider: None,
+            functions: None,
         }
     }
 
-    /// A client reading the CSRF token with `provider` (e.g. `browser.cookies.get` in an
-    /// extension) instead of `document.cookie`, which only pages served by Passbolt can read.
-    /// Each client has its own: two sessions can talk to two servers.
+    /// A client calling `functions`: reading the CSRF token with its provider (e.g.
+    /// `browser.cookies.get` in an extension) instead of `document.cookie`, which only pages
+    /// served by Passbolt can read, and sending the requests with its `fetch`. Each client has
+    /// its own: two sessions can talk to two servers.
     #[must_use]
-    pub fn with_csrf_token_provider(provider: Option<js_sys::Function>) -> Self {
-        let csrf_token_provider = provider.map(|provider| {
-            let key = NEXT_PROVIDER_KEY.with(|next| {
+    pub fn with_functions(functions: JsFunctions) -> Self {
+        let given = functions.csrf_token_provider.is_some() || functions.fetch.is_some();
+        let functions = given.then(|| {
+            let key = NEXT_FUNCTIONS_KEY.with(|next| {
                 let key = next.get();
                 next.set(key.wrapping_add(1));
                 key
             });
-            CSRF_TOKEN_PROVIDERS.with(|providers| providers.borrow_mut().insert(key, provider));
+            CLIENT_FUNCTIONS.with(|kept| kept.borrow_mut().insert(key, functions));
             key
         });
-        Self {
-            csrf_token: Mutex::new(None),
-            cookies: Mutex::new(Vec::new()),
-            csrf_token_provider,
-        }
+        let mut client = Self::new();
+        client.functions = functions;
+        client
+    }
+
+    fn functions(&self) -> JsFunctions {
+        self.functions
+            .and_then(client_functions)
+            .unwrap_or_default()
     }
 
     async fn refresh_csrf_token(&self) {
-        let provider = self.csrf_token_provider.and_then(csrf_token_provider);
-        let token = match provider {
+        let token = match self.functions().csrf_token_provider {
             Some(provider) => provided_token(&provider).await,
             None => document_cookie()
                 .and_then(|cookies| cookie_value(&cookies, CSRF_COOKIE))
@@ -169,40 +182,40 @@ impl WasmHttpClient {
         headers: &[(&str, &str)],
         body: Option<&[u8]>,
     ) -> Result<HttpResponse, TransportError> {
-        let request_init = RequestInit::new();
-        request_init.set_method(method);
-        request_init.set_credentials(RequestCredentials::Include);
-        request_init.set_mode(RequestMode::Cors);
-
-        let request_headers = Headers::new().map_err(|error| js_err("Headers::new", &error))?;
-        for (name, value) in build_request_headers(headers) {
-            request_headers
-                .set(name, value)
-                .map_err(|error| js_err(&format!("set header {name}"), &error))?;
+        // Plain values only, which any `fetch` takes: the global one, or that of undici or
+        // node-fetch, whose `Request` and `Headers` are not the global ones.
+        let request_headers = js_sys::Object::new();
+        let cookie_header = self.cookie_header();
+        let cookie = cookie_header.as_deref().map(|cookie| ("Cookie", cookie));
+        for (name, value) in build_request_headers(headers).into_iter().chain(cookie) {
+            set_property(&request_headers, name, &JsValue::from_str(value))?;
         }
-        if let Some(cookie_header) = self.cookie_header() {
-            request_headers
-                .set("Cookie", &cookie_header)
-                .map_err(|error| js_err("set header Cookie", &error))?;
-        }
-        request_init.set_headers(&request_headers);
-
-        // Set body if present
+        let init = js_sys::Object::new();
+        set_property(&init, "method", &JsValue::from_str(method))?;
+        set_property(&init, "credentials", &JsValue::from_str("include"))?;
+        set_property(&init, "mode", &JsValue::from_str("cors"))?;
+        set_property(&init, "headers", &request_headers)?;
         if let Some(bytes) = body {
-            let body_array = Uint8Array::from(bytes);
-            request_init.set_body(&body_array);
+            set_property(&init, "body", &Uint8Array::from(bytes).buffer())?;
         }
 
-        let request = Request::new_with_str_and_init(url, &request_init)
-            .map_err(|error| js_err("Request::new", &error))?;
-
-        let response_value = JsFuture::from(global_fetch(&request))
+        let sent = match self.functions().fetch {
+            Some(fetch) => fetch
+                .call2(&JsValue::NULL, &JsValue::from_str(url), &init)
+                .map_err(|error| js_err(&format!("{method} {url}"), &error))?,
+            None => global_fetch(url, &init).into(),
+        };
+        let response_value = JsFuture::from(js_sys::Promise::resolve(&sent))
             .await
             .map_err(|error| js_err(&format!("{method} {url}"), &error))?;
 
-        let response: Response = response_value
-            .dyn_into()
-            .map_err(|_| TransportError::Http("Response is not a Response object".into()))?;
+        // Read by its fields: the `Response` of another `fetch` is not the global class.
+        if !response_value.is_object() {
+            return Err(TransportError::Http(
+                "fetch did not return a Response".into(),
+            ));
+        }
+        let response: Response = response_value.unchecked_into();
 
         let status = response.status();
 
@@ -354,12 +367,43 @@ impl HttpClient for WasmHttpClient {
     }
 }
 
+fn set_property(
+    object: &js_sys::Object,
+    name: &str,
+    value: &JsValue,
+) -> Result<(), TransportError> {
+    js_sys::Reflect::set(object, &JsValue::from_str(name), value)
+        .map(drop)
+        .map_err(|error| js_err(&format!("set {name}"), &error))
+}
+
 fn js_err(context: &str, err: &JsValue) -> TransportError {
     let message = err
         .as_string()
+        .or_else(|| err.dyn_ref::<js_sys::Error>().map(error_message))
         .or_else(|| js_sys::JSON::stringify(err).ok().map(String::from))
         .unwrap_or_else(|| format!("{err:?}"));
     TransportError::Network(format!("{context}: {message}"))
+}
+
+/// The message of `error` and of its causes: Node's `fetch failed` says why in its cause
+/// (`self-signed certificate`, `ECONNREFUSED`).
+fn error_message(error: &js_sys::Error) -> String {
+    let mut message = String::from(error.message());
+    let mut current = error.clone();
+    // A few levels: a cause may be its own cause.
+    for _ in 0..4 {
+        let Some(cause) = js_sys::Reflect::get(&current, &JsValue::from_str("cause"))
+            .ok()
+            .and_then(|cause| cause.dyn_into::<js_sys::Error>().ok())
+        else {
+            break;
+        };
+        message.push_str(": ");
+        message.push_str(&String::from(cause.message()));
+        current = cause;
+    }
+    message
 }
 
 #[cfg(test)]
@@ -471,9 +515,121 @@ mod wasm_tests {
 
     /// The CSRF token the client holds after a response, read with `provider`.
     async fn token_after_a_response(provider: Option<js_sys::Function>) -> Option<String> {
-        let client = WasmHttpClient::with_csrf_token_provider(provider);
+        let client = WasmHttpClient::with_functions(JsFunctions {
+            csrf_token_provider: provider,
+            fetch: None,
+        });
         client.get(JSON_DATA_URL, &[]).await.unwrap();
         client.cookie(JSON_DATA_URL, CSRF_COOKIE)
+    }
+
+    /// A client reading the CSRF token with a provider of body `source`.
+    fn client_with_provider(source: &str) -> WasmHttpClient {
+        WasmHttpClient::with_functions(JsFunctions {
+            csrf_token_provider: Some(js_sys::Function::new_no_args(source)),
+            fetch: None,
+        })
+    }
+
+    /// A client sending its requests with the `fetch` that `source` evaluates to.
+    fn client_with_fetch(source: &str) -> WasmHttpClient {
+        let fetch = js_sys::Function::new_no_args(&format!("return {source};"))
+            .call0(&JsValue::NULL)
+            .unwrap();
+        WasmHttpClient::with_functions(JsFunctions {
+            csrf_token_provider: None,
+            fetch: Some(fetch.unchecked_into()),
+        })
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_the_requests_go_through_the_given_fetch() {
+        let client = client_with_fetch(
+            r"async (url, init) => new Response(JSON.stringify({ url, method: init.method }))",
+        );
+
+        let response = client
+            .get("http://127.0.0.1:1/users/me.json", &[])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.body,
+            br#"{"url":"http://127.0.0.1:1/users/me.json","method":"GET"}"#
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_the_given_fetch_receives_plain_headers_and_body() {
+        let client = client_with_fetch(
+            r#"async (url, init) => new Response(JSON.stringify({
+                accept: init.headers["Accept"],
+                body: new TextDecoder().decode(init.body),
+            }))"#,
+        );
+
+        let response = client
+            .post("http://127.0.0.1:1/", &[], b"{\"name\":\"a\"}")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.body,
+            br#"{"accept":"application/json","body":"{\"name\":\"a\"}"}"#
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_a_response_of_another_class_is_read_by_its_fields() {
+        let client = client_with_fetch(
+            r#"async () => ({
+                status: 201,
+                headers: new Map([["content-type", "application/json"]]),
+                arrayBuffer: async () => new TextEncoder().encode("{}").buffer,
+            })"#,
+        );
+
+        let response = client.get("http://127.0.0.1:1/", &[]).await.unwrap();
+
+        assert_eq!(response.status, 201);
+        assert_eq!(response.body, b"{}");
+        assert!(response
+            .headers
+            .iter()
+            .any(|(name, value)| name == "content-type" && value == "application/json"));
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_a_fetch_that_rejects_is_a_network_error() {
+        let client =
+            client_with_fetch(r#"async () => { throw new Error("self-signed certificate"); }"#);
+
+        let Err(error) = client.get("http://127.0.0.1:1/", &[]).await else {
+            panic!("the request succeeded");
+        };
+
+        assert!(
+            matches!(&error, TransportError::Network(message) if message.contains("self-signed certificate")),
+            "{error:?}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    async fn test_the_cause_of_a_failed_fetch_is_in_the_error() {
+        let client = client_with_fetch(
+            r#"async () => {
+                throw new TypeError("fetch failed", { cause: new Error("self-signed certificate") });
+            }"#,
+        );
+
+        let Err(error) = client.get("http://127.0.0.1:1/", &[]).await else {
+            panic!("the request succeeded");
+        };
+
+        assert!(
+            matches!(&error, TransportError::Network(message) if message.ends_with("fetch failed: self-signed certificate")),
+            "{error:?}"
+        );
     }
 
     #[wasm_bindgen_test]
@@ -488,12 +644,8 @@ mod wasm_tests {
 
     #[wasm_bindgen_test]
     async fn test_each_client_reads_the_token_with_its_own_provider() {
-        let first = WasmHttpClient::with_csrf_token_provider(Some(js_sys::Function::new_no_args(
-            "return 'first';",
-        )));
-        let second = WasmHttpClient::with_csrf_token_provider(Some(js_sys::Function::new_no_args(
-            "return 'second';",
-        )));
+        let first = client_with_provider("return 'first';");
+        let second = client_with_provider("return 'second';");
 
         first.get(JSON_DATA_URL, &[]).await.unwrap();
         second.get(JSON_DATA_URL, &[]).await.unwrap();
@@ -510,14 +662,12 @@ mod wasm_tests {
 
     #[wasm_bindgen_test]
     fn test_a_dropped_client_releases_its_provider() {
-        let client = WasmHttpClient::with_csrf_token_provider(Some(js_sys::Function::new_no_args(
-            "return 'token';",
-        )));
-        let key = client.csrf_token_provider.unwrap();
+        let client = client_with_provider("return 'token';");
+        let key = client.functions.unwrap();
 
         drop(client);
 
-        assert!(csrf_token_provider(key).is_none());
+        assert!(client_functions(key).is_none());
     }
 
     #[wasm_bindgen_test]
@@ -547,7 +697,8 @@ mod wasm_tests {
     fn install_cookie_setting_fetch() -> JsValue {
         let fetch = js_sys::Function::new_no_args(
             r#"
-            return async (request) => {
+            return async (url, init) => {
+                const request = new Request(url, init);
                 const headers = new Headers({ "Content-Type": "application/json" });
                 headers.append("Set-Cookie", "passbolt_session=s1; path=/; HttpOnly");
                 headers.append("Set-Cookie", "csrfToken=t1; path=/");

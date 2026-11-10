@@ -8,10 +8,43 @@ export type Timestamp = string;
 /** A JSON value, as the server or the encrypted data hold it. */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
+/**
+ * What the SDK passes to `LoginOptions.fetch`: plain values, which any `fetch` takes (the global
+ * one, undici's, node-fetch).
+ */
+export interface FetchInit {
+  method: string;
+  headers: Record<string, string>;
+  body?: ArrayBuffer;
+  credentials: "include";
+  mode: "cors";
+}
+
+/** What the SDK reads of the response of `LoginOptions.fetch`: a `Response` has it. */
+export interface FetchResponse {
+  readonly status: number;
+  readonly headers: Iterable<[string, string]> & { getSetCookie?(): string[] };
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+/** Sends a request of the SDK, as `fetch(url, init)` does. */
+export type FetchFunction = (url: string, init: FetchInit) => Promise<FetchResponse>;
+
+/** Options of `PassboltSession.fetchServerKey`. */
+export interface FetchServerKeyOptions {
+  /** Sends the request instead of the global `fetch`: see `LoginOptions.fetch`. */
+  fetch?: FetchFunction;
+}
+
 /** Options of `PassboltSession.login`. */
 export interface LoginOptions {
   /** Returns the `csrfToken` cookie, or a promise of it; e.g. with `browser.cookies.get`. */
   csrfTokenProvider?: () => string | null | undefined | Promise<string | null | undefined>;
+  /**
+   * Sends the requests instead of the global `fetch`: with a proxy, or a TLS setting the global
+   * `fetch` of Node cannot take, e.g. undici's `fetch` with a `dispatcher`.
+   */
+  fetch?: FetchFunction;
   /** The TOTP code answering the MFA challenge. */
   totpCode?: string;
   /** The armored server key pinned with `PassboltSession.fetchServerKey`. */
