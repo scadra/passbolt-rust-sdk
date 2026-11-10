@@ -40,6 +40,24 @@ You can try a demo of passbolt at [https://demo.passbolt.com](https://demo.passb
 
 A fast, secure CLI and SDK for [Passbolt](https://www.passbolt.com/) — written in Rust.
 
+[![CI](https://github.com/scadra/passbolt-rust-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/scadra/passbolt-rust-sdk/actions/workflows/ci.yml)
+[![SDK and CLI builds](https://github.com/scadra/passbolt-rust-sdk/actions/workflows/sdk.yml/badge.svg)](https://github.com/scadra/passbolt-rust-sdk/actions/workflows/sdk.yml)
+[![Documentation](https://img.shields.io/badge/docs-scadra.github.io-d40101)](https://scadra.github.io/passbolt-rust-sdk/)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
+
+| | Package |
+|---|---|
+| CLI | [![Release](https://img.shields.io/github/v/release/scadra/passbolt-rust-sdk?label=release)](https://github.com/scadra/passbolt-rust-sdk/releases) [![crates.io](https://img.shields.io/crates/v/switch-case-passbolt-cli?label=crates.io)](https://crates.io/crates/switch-case-passbolt-cli) |
+| Rust | [![crates.io](https://img.shields.io/crates/v/switch-case-passbolt-sdk?label=crates.io)](https://crates.io/crates/switch-case-passbolt-sdk) |
+| JavaScript / TypeScript | [![npm](https://img.shields.io/npm/v/@switch-case/passbolt-sdk?label=npm)](https://www.npmjs.com/package/@switch-case/passbolt-sdk) |
+| Python | [![PyPI](https://img.shields.io/pypi/v/switch-case-passbolt-sdk?label=PyPI)](https://pypi.org/project/switch-case-passbolt-sdk/) |
+| Java | [![Maven Central](https://img.shields.io/maven-central/v/io.github.scadra/passbolt-sdk?label=Maven%20Central)](https://central.sonatype.com/artifact/io.github.scadra/passbolt-sdk) |
+| Android | [![Maven Central](https://img.shields.io/maven-central/v/io.github.scadra/passbolt-sdk-android?label=Maven%20Central)](https://central.sonatype.com/artifact/io.github.scadra/passbolt-sdk-android) |
+| .NET | [![NuGet](https://img.shields.io/nuget/v/SwitchCase.Passbolt.Sdk?label=NuGet)](https://www.nuget.org/packages/SwitchCase.Passbolt.Sdk) |
+| Ruby | [![RubyGems](https://img.shields.io/gem/v/switch-case-passbolt-sdk?label=RubyGems)](https://rubygems.org/gems/switch-case-passbolt-sdk) |
+| Go | [![Go Reference](https://pkg.go.dev/badge/github.com/scadra/passbolt-sdk-go.svg)](https://pkg.go.dev/github.com/scadra/passbolt-sdk-go) |
+| Swift (iOS, macOS) | [![Swift Package](https://img.shields.io/github/v/tag/scadra/passbolt-sdk-swift?label=Swift%20Package)](https://github.com/scadra/passbolt-sdk-swift) |
+
 No OpenSSL dependency: pure Rust TLS and OpenPGP.
 The workspace also ships the `passbolt-sdk` library and its WASM and FFI bindings.
 
@@ -75,16 +93,21 @@ passbolt create resource --name "GitHub" --username "john" --uri https://github.
 The documentation is in [`docs/`](docs/README.md), also published as a site on
 [GitHub Pages](https://scadra.github.io/passbolt-rust-sdk/):
 
-- [Installation](docs/getting-started/installation.md) and [quick start](docs/getting-started/quick-start.md)
+- [Installation](docs/getting-started/installation.md), step by step, and [quick start](docs/getting-started/quick-start.md)
+- [Concepts](docs/concepts.md): keys, v4 and v5 resources, metadata keys, permissions
 - [CLI](docs/cli/README.md): [configuration](docs/cli/configuration.md),
   [authentication and MFA](docs/cli/authentication.md), [commands](docs/cli/commands/README.md),
-  [output](docs/cli/output.md), [filters](docs/cli/filters.md), [terminal UI](docs/cli/tui.md)
+  [output](docs/cli/output.md), [filters](docs/cli/filters.md), [terminal UI](docs/cli/tui.md),
+  [troubleshooting](docs/cli/troubleshooting.md)
 - [SDK](docs/sdk/README.md): [Rust](docs/sdk/rust.md), [JavaScript/TypeScript](docs/sdk/javascript.md),
   [Python](docs/sdk/python.md), [Java](docs/sdk/java.md), [Android](docs/sdk/android.md),
-  [.NET](docs/sdk/dotnet.md), [Go](docs/sdk/go.md), [Ruby](docs/sdk/ruby.md), [Swift](docs/sdk/swift.md)
+  [.NET](docs/sdk/dotnet.md), [Go](docs/sdk/go.md), [Ruby](docs/sdk/ruby.md), [Swift](docs/sdk/swift.md),
+  [API reference](docs/sdk/api.md), [upgrading](docs/sdk/upgrading.md)
+- [Guides](docs/guides/README.md): CI, scripting, `exec`, rotation, backups, migration, sharing
 - [Security](docs/security.md)
-- [Development](docs/contributing/development.md), [bindings and CI](docs/contributing/bindings-and-ci.md),
-  [publishing](docs/contributing/publishing.md)
+- [Development](docs/contributing/development.md), [architecture](docs/contributing/architecture.md),
+  [bindings and CI](docs/contributing/bindings-and-ci.md), [publishing](docs/contributing/publishing.md),
+  [dependencies](docs/contributing/dependencies.md)
 
 # Credits
 
