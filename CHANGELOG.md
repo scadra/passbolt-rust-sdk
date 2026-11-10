@@ -7,6 +7,9 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 - LICENSE (AGPL-3.0), SECURITY.md, CONTRIBUTING.md and GitHub issue / pull request templates
 - Passbolt license header on every Rust source file, checked by `scripts/license-headers.sh`
 - SDK integration tests against an in-memory Passbolt API (`crates/passbolt-sdk/tests/it`)
+- CLI: `passbolt tui`, a terminal UI to browse the folders and resources, search, copy the
+  password, username, URI or TOTP code (cleared from the clipboard after 30 seconds; through the
+  terminal, OSC 52, over SSH), show the password, and create, edit or delete a resource
 - Password generator of the browser extension in the SDK and every binding: passwords from its
   character sets, passphrases of its EFF word list, PIN codes, the password policies of the
   organization (`get_password_policies`, `save_password_policies`), and the entropy and strength

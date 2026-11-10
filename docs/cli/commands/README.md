@@ -17,6 +17,7 @@ sidebar_position: 1
 | [import](import.md) | a CSV file of another password manager, or a KeePass KDBX file |
 | [migrate-metadata](migrate-metadata.md) | upgrade v4 resources to v5 |
 | [generate](generate.md) | a password, passphrase or PIN code, from the password policies |
+| [tui](../tui.md) | browse, copy and edit the resources from the keyboard |
 
 `configure` and `verify` are described in [configuration](../configuration.md) and
 [authentication](../authentication.md), `completion` in [installation](../../getting-started/installation.md#shell-completion).

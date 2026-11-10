@@ -13,6 +13,8 @@
 mod cli;
 mod config;
 mod keepass;
+#[cfg(feature = "tui")]
+mod tui;
 mod util;
 
 use std::io::Write;
@@ -127,13 +129,23 @@ async fn run(cli: Cli) -> Result<()> {
                 session::finish(&client).await;
                 result
             };
-            // The command run by `exec` takes the time it needs.
-            if matches!(command, Commands::Exec(_)) {
+            // The command run by `exec` and the terminal UI take the time they need.
+            if is_unbounded(command) {
                 work.await
             } else {
                 with_deadline(&config, work).await
             }
         }
+    }
+}
+
+/// A command without the deadline of `--timeout`: it runs as long as the user wants.
+const fn is_unbounded(command: &Commands) -> bool {
+    match command {
+        Commands::Exec(_) => true,
+        #[cfg(feature = "tui")]
+        Commands::Tui => true,
+        _ => false,
     }
 }
 
@@ -907,6 +919,12 @@ async fn dispatch(
         // ── Exec ────────────────────────────────────────────────────────────
         Commands::Exec(args) => {
             cli::exec::run(args, client, debug).await?;
+        }
+
+        // ── Terminal UI ─────────────────────────────────────────────────────
+        #[cfg(feature = "tui")]
+        Commands::Tui => {
+            tui::run(client).await?;
         }
 
         // ── Generate ────────────────────────────────────────────────────────

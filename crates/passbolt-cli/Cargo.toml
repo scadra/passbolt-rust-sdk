@@ -49,6 +49,10 @@ cel = { version = "0.15", default-features = false, features = ["chrono", "regex
 rpassword = "7"
 chrono = { version = "0.4", features = ["serde"] }
 
+# Terminal UI (`passbolt tui`, feature tui): ratatui re-exports the crossterm it draws with
+ratatui = { version = "0.29", optional = true }
+arboard = { version = "3", default-features = false, optional = true }
+
 # KeePass export
 keepass = { version = "0.6", features = ["save_kdbx4"] }
 secstr = "0.5"
@@ -70,6 +74,9 @@ xml-rs = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [features]
+default = ["tui"]
+# `passbolt tui`, the terminal UI
+tui = ["dep:ratatui", "dep:arboard"]
 # End-to-end tests against a real server: scripts/e2e.sh
 e2e = []
 

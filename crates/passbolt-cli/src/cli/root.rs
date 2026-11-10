@@ -210,6 +210,10 @@ pub enum Commands {
         shared_only: bool,
     },
 
+    /// Browse, copy and edit the resources in a terminal UI
+    #[cfg(feature = "tui")]
+    Tui,
+
     /// Generate a password, passphrase or PIN code as the browser extension does, from the
     /// password policies of the organization
     Generate(crate::cli::generate::GenerateArgs),
