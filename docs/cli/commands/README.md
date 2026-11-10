@@ -23,4 +23,5 @@ sidebar_position: 1
 [authentication](../authentication.md), `completion` in [installation](../../getting-started/installation.md#shell-completion).
 
 The options of each command are also in `passbolt <verb> <entity> --help`, and `passbolt gendoc
---type markdown|man` writes them all to `./doc` or `./man`.
+--type markdown|man` writes them all to `./doc` or `./man` (`-o, --output-dir <DIR>` for another
+folder, created if absent).
