@@ -81,7 +81,7 @@ The documentation is in [`docs/`](docs/README.md), also published as a site on
 - [Installation](docs/getting-started/installation.md) and [quick start](docs/getting-started/quick-start.md)
 - [CLI](docs/cli/README.md): [configuration](docs/cli/configuration.md),
   [authentication and MFA](docs/cli/authentication.md), [commands](docs/cli/commands/README.md),
-  [output](docs/cli/output.md), [filters](docs/cli/filters.md)
+  [output](docs/cli/output.md), [filters](docs/cli/filters.md), [terminal UI](docs/cli/tui.md)
 - [SDK](docs/sdk/README.md): [Rust](docs/sdk/rust.md), [JavaScript/TypeScript](docs/sdk/javascript.md),
   [Python](docs/sdk/python.md), [Java](docs/sdk/java.md), [Android](docs/sdk/android.md),
   [.NET](docs/sdk/dotnet.md), [Go](docs/sdk/go.md), [Ruby](docs/sdk/ruby.md), [Swift](docs/sdk/swift.md)

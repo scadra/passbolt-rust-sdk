@@ -19,8 +19,8 @@ passbolt [GLOBAL FLAGS] <verb> <entity> [OPTIONS]
 | `share` | `resource`, `folder` |
 | `move` | `resource`, `folder` |
 
-And `configure`, `verify`, `exec`, `export keepass`, `export csv`, `import`, `migrate-metadata`,
-`completion`, `gendoc`.
+And `tui`, `generate`, `configure`, `verify`, `exec`, `export keepass`, `export csv`, `import`,
+`migrate-metadata`, `completion`, `gendoc`.
 `passbolt <command> --help` describes each one.
 
 ## Pages
@@ -32,6 +32,7 @@ And `configure`, `verify`, `exec`, `export keepass`, `export csv`, `import`, `mi
 - [Output](output.md): tables, JSON, key-value.
 - [Filters](filters.md): `--filter` expressions and expiry dates.
 - [Coming from go-passbolt-cli](go-passbolt-cli.md).
+- [Terminal UI](tui.md): `passbolt tui`, browse and copy from the keyboard.
 
 ## Errors
 
