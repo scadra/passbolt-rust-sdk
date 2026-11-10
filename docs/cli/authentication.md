@@ -37,8 +37,8 @@ passbolt verify --force   # trust keys that changed, once your administrator con
 - The active shared metadata key is pinned: shared metadata is only encrypted for it. It is
   pinned only when the account logs in without MFA.
 - A pinned key that changed is refused until `--force`.
-- go-passbolt-cli's `server_verify_token` / `server_verify_enc_token` are saved too: either CLI
-  checks the server with the same config file.
+- The `server_verify_token` / `server_verify_enc_token` verification tokens are saved too, and
+  checked at each login.
 
 ## MFA
 
@@ -61,9 +61,8 @@ The CLI computes the current code. `--mfa-totp-offset` compensates for clock dri
 attempt waits for the next TOTP code: the same code is never sent twice.
 
 The server disables an account after too many wrong codes: the CLI sends at most 3 per session,
-whatever `--mfa-retrys` says (go-passbolt-cli sends `--mfaRetrys` + 1), and stops as soon as the
+whatever `--mfa-retrys` says, and stops as soon as the
 server ends the session. An account without TOTP (Yubikey, Duo…) gets an error naming the MFA it
 has.
 
-**`none`** disables MFA, for accounts without it. Any other mode is `none`, as for
-go-passbolt-cli.
+**`none`** disables MFA, for accounts without it. Any other mode is `none`.

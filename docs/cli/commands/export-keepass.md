@@ -5,8 +5,7 @@ sidebar_position: 7
 
 # export keepass
 
-Export all accessible resources to a KeePass `.kdbx` file, as the browser extension writes it,
-with the flags of go-passbolt-cli.
+Export all accessible resources to a KeePass `.kdbx` file, as the browser extension writes it.
 
 ```bash
 # Writes passbolt-export.kdbx; the KeePass password is prompted (or read from stdin when piped):
@@ -36,6 +35,6 @@ An empty answer to the password prompt writes a file without password, as the br
 does; a KDBX 4 file needs a password or a key file.
 
 A resource that cannot be decrypted is reported on stdout (`Skipping Export of Resource <id>
-<name> Because of: <error>`) and skipped; the export still succeeds, as with go-passbolt-cli.
+<name> Because of: <error>`) and skipped; the export still succeeds.
 
 A large vault may need a longer `--timeout`, which bounds the whole command.

@@ -7,11 +7,9 @@ sidebar_position: 2
 
 ## Config file
 
-`~/.config/passbolt/config.toml`. When it does not exist, the config file of go-passbolt-cli is
-read (and `configure` / `verify` update it, with its keys):
-`~/.config/go-passbolt-cli/go-passbolt-cli.{json,toml,yaml,yml}`. `--config` takes a `.toml`,
-`.json` or `.yaml` file. Keys are read whatever their case and underscores: go-passbolt-cli's
-`serveraddress` or `serverAddress` is `server_address`. Reading or writing a config file
+`~/.config/passbolt/config.toml`. `--config` takes a `.toml`, `.json` or `.yaml` file. Keys are
+read whatever their case and underscores: `serveraddress` or `serverAddress` is
+`server_address`. Reading or writing a config file
 restricts it to its owner (`0600`).
 
 ```toml
@@ -41,7 +39,7 @@ tls_skip_verify        = false
 # Written by `passbolt verify`: do not edit by hand
 # server_public_key        = """-----BEGIN PGP PUBLIC KEY BLOCK----- ..."""
 # metadata_key_fingerprint = "..."
-# server_verify_token      = "..."   # go-passbolt-cli's verification, also checked
+# server_verify_token      = "..."   # verification token, also checked
 # server_verify_enc_token  = "..."
 
 # Performance
@@ -54,13 +52,13 @@ debug                  = false
 
 ## Priority order
 
-CLI flags > `PASSBOLT_*` variables > go-passbolt-cli variables (`SERVERADDRESS`,
+CLI flags > `PASSBOLT_*` variables > plain variables (`SERVERADDRESS`,
 `USERPASSWORD`, `MFAMODE`…: the flag name in capitals) > config file > defaults.
 
 Durations use Go's syntax (`30s`, `1m30s`, `500ms`, `-1m`); a plain number is seconds.
 Booleans take `--debug`, `--debug=true` or `--debug=false`; in a variable or a file also `1`,
-`0`, `t`, `f`. An invalid go-passbolt-cli variable is ignored, as go-passbolt-cli does
-(`DEBUG=*` does not stop the CLI); an invalid `PASSBOLT_*` variable is an error.
+`0`, `t`, `f`. An invalid plain variable is ignored (`DEBUG=*` does not stop the CLI); an invalid
+`PASSBOLT_*` variable is an error.
 
 ## Saving settings: `configure`
 
@@ -79,10 +77,10 @@ ends up on disk. Give a secret on the command line to save it.
 ## Global flags
 
 These flags apply to every command and can be set by flag, variable or config file. Each flag
-also takes go-passbolt-cli's spelling (`--serverAddress`, `--userPrivateKeyFile`,
-`--mfaTotpToken`, `--tlsSkipVerify`…), and each setting go-passbolt-cli reads from the
-environment is also read from its variable (`SERVERADDRESS`, `USERPRIVATEKEY`, `MFATOTPTOKEN`…).
-go-passbolt-cli's deprecated `--totpToken` and `--totpOffset` are taken with a warning.
+also takes a camelCase spelling (`--serverAddress`, `--userPrivateKeyFile`, `--mfaTotpToken`,
+`--tlsSkipVerify`…), and each setting is also read from its plain variable (`SERVERADDRESS`,
+`USERPRIVATEKEY`, `MFATOTPTOKEN`…). The deprecated `--totpToken` and `--totpOffset` are taken
+with a warning.
 
 | Flag | Variable | Default | Description |
 |---|---|---|---|

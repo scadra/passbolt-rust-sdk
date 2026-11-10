@@ -31,7 +31,6 @@ And `tui`, `generate`, `configure`, `verify`, `exec`, `export keepass`, `export 
 - [Commands](commands/README.md): every command and its options.
 - [Output](output.md): tables, JSON, key-value.
 - [Filters](filters.md): `--filter` expressions and expiry dates.
-- [Coming from go-passbolt-cli](go-passbolt-cli.md).
 - [Terminal UI](tui.md): `passbolt tui`, browse and copy from the keyboard.
 
 ## Errors
