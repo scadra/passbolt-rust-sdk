@@ -26,7 +26,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use passbolt_sdk::generator::{generate_secret, PasswordPolicies};
 use passbolt_sdk::resource::view::ResourceView;
-use passbolt_sdk::types::{Folder, FolderTreeNode};
+use passbolt_sdk::types::FolderTreeNode;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::DefaultTerminal;
 use zeroize::Zeroizing;
@@ -39,8 +39,8 @@ use form::FormOutcome;
 /// How often the screen is drawn again without a key: the clipboard countdown.
 const TICK: Duration = Duration::from_millis(250);
 
-/// The folders, their tree and the resources, without their secrets.
-async fn load(client: &Client) -> Result<(Vec<Folder>, Vec<FolderTreeNode>, Vec<ResourceView>)> {
+/// The folder tree and the resources, without their secrets.
+async fn load(client: &Client) -> Result<(Vec<FolderTreeNode>, Vec<ResourceView>)> {
     let folders = client
         .get_folders(passbolt_sdk::FolderQuery::default())
         .await
@@ -54,13 +54,19 @@ async fn load(client: &Client) -> Result<(Vec<Folder>, Vec<FolderTreeNode>, Vec<
     )
     .await
     .context("listing Resource")?;
-    Ok((folders, tree, resources))
+    Ok((tree, resources))
 }
 
 pub async fn run(client: &Client) -> Result<()> {
     eprintln!("Loading the resources…");
-    let (folders, tree, resources) = load(client).await?;
-    let mut app = App::new(&folders, &tree, resources);
+    let (tree, resources) = load(client).await?;
+    let server = client
+        .base_url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string();
+    let mut app = App::new(server, &tree, resources);
     let mut session = Session {
         client,
         clipboard: Clipboard::new(),
@@ -98,10 +104,10 @@ impl Session<'_> {
                 continue;
             }
             if let Some(action) = app.handle_key(key) {
-                app.status = "Working…".into();
+                app.flash("Working…");
                 terminal.draw(|frame| ui::draw(frame, app))?;
                 if let Err(error) = self.perform(app, action).await {
-                    app.status = format!("Error: {error:#}");
+                    app.flash(format!("Error: {error:#}"));
                 }
             }
         }
@@ -115,11 +121,15 @@ impl Session<'_> {
                     .await
                     .context("decrypting the secret")?;
                 let Some(password) = view.password.map(Zeroizing::new) else {
-                    app.status = format!("{} has no password.", view.name);
+                    app.flash(format!("{} has no password.", view.name));
                     return Ok(());
                 };
                 let copied = self.clipboard.copy(&password, true);
-                app.status = copied_message(&format!("Password of {}", view.name), copied, true);
+                app.flash(copied_message(
+                    &format!("Password of {}", view.name),
+                    copied,
+                    true,
+                ));
             }
             Action::CopyUsername(id) => {
                 self.copy_field(app, &id, "Username", |view| &view.username);
@@ -132,10 +142,9 @@ impl Session<'_> {
                     .await
                     .context("generating the TOTP code")?;
                 let copied = self.clipboard.copy(&code, true);
-                app.status = format!(
-                    "{} ({ttl}s left)",
-                    copied_message(&format!("TOTP code of {}", app.name_of(&id)), copied, true)
-                );
+                let message =
+                    copied_message(&format!("TOTP code of {}", app.name_of(&id)), copied, true);
+                app.flash(format!("{message} ({ttl}s left)"));
             }
             Action::OpenUri(id) => {
                 let uri = app
@@ -145,17 +154,25 @@ impl Session<'_> {
                     .map(|view| view.uri.clone())
                     .unwrap_or_default();
                 open_in_browser(&uri)?;
-                app.status = format!("Opened {uri}");
+                app.flash(format!("Opened {uri}"));
             }
             Action::Reveal(id) => {
                 let view = passbolt_sdk::resource::get::get_resource_view(self.client, &id)
                     .await
                     .context("decrypting the secret")?;
+                let note = view
+                    .secret
+                    .as_ref()
+                    .and_then(|secret| secret.get("description"))
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|note| !note.is_empty())
+                    .map(|note| Zeroizing::new(note.to_string()));
                 app.revealed = Some(Revealed {
                     id,
                     password: Zeroizing::new(view.password.unwrap_or_default()),
+                    note,
                 });
-                app.status = "Shown: s hides it.".into();
+                app.flash("Shown: s hides it.");
             }
             Action::Delete(id) => {
                 let name = app.name_of(&id);
@@ -164,13 +181,13 @@ impl Session<'_> {
                     .await
                     .context("deleting Resource")?;
                 self.reload(app).await?;
-                app.status = format!("{name} deleted.");
+                app.flash(format!("{name} deleted."));
             }
             Action::Save(outcome) => self.save(app, outcome).await?,
             Action::Generate => self.generate(app).await?,
             Action::Refresh => {
                 self.reload(app).await?;
-                app.status = format!("{} resources.", app.resources.len());
+                app.flash(format!("{} resources.", app.resources.len()));
             }
         }
         Ok(())
@@ -193,7 +210,7 @@ impl Session<'_> {
         };
         app.mode = Mode::Normal;
         self.reload(app).await?;
-        app.status = done;
+        app.flash(done);
         Ok(())
     }
 
@@ -212,7 +229,7 @@ impl Session<'_> {
         if let Mode::Form(form) = &mut app.mode {
             form.set_password(secret);
         }
-        app.status = "Generated from the password policies: Ctrl+R shows it.".into();
+        app.flash("Generated from the password policies: Ctrl+R shows it.");
         Ok(())
     }
 
@@ -227,15 +244,15 @@ impl Session<'_> {
             return;
         };
         if value.is_empty() {
-            app.status = format!("No {}.", label.to_lowercase());
+            app.flash(format!("No {}.", label.to_lowercase()));
             return;
         }
         let copied = self.clipboard.copy(value, false);
-        app.status = copied_message(label, copied, false);
+        app.flash(copied_message(label, copied, false));
     }
 
     async fn reload(&self, app: &mut App) -> Result<()> {
-        let (_, tree, resources) = load(self.client).await?;
+        let (tree, resources) = load(self.client).await?;
         let folder_id = app.selected_folder_id();
         app.folders = app::folder_rows(&tree);
         app.folder_index = app
