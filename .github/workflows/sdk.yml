@@ -78,8 +78,8 @@ jobs:
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, ffi: true }
           # Static binary for any Linux; no SDK library (musl cdylibs are not portable).
           - { target: x86_64-unknown-linux-musl, os: ubuntu-22.04, ffi: false }
-          - { target: x86_64-apple-darwin, os: macos-14, ffi: true }
-          - { target: aarch64-apple-darwin, os: macos-14, ffi: true }
+          - { target: x86_64-apple-darwin, os: macos-15, ffi: true }
+          - { target: aarch64-apple-darwin, os: macos-15, ffi: true }
           - { target: x86_64-pc-windows-msvc, os: windows-2022, ffi: true }
     defaults:
       run:
@@ -202,8 +202,8 @@ jobs:
         include:
           - { os: ubuntu-22.04, target: x86_64, smoke: true }
           - { os: ubuntu-22.04-arm, target: aarch64, smoke: true }
-          - { os: macos-14, target: x86_64, smoke: false }
-          - { os: macos-14, target: aarch64, smoke: true }
+          - { os: macos-15, target: x86_64, smoke: false }
+          - { os: macos-15, target: aarch64, smoke: true }
           - { os: windows-2022, target: x64, smoke: true }
     steps:
       - uses: actions/checkout@v4
@@ -521,7 +521,7 @@ jobs:
   ios:
     name: iOS and macOS
     needs: [version, bindings]
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       TARGETS: aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-darwin x86_64-apple-darwin
       # The oldest systems of packaging/swift/Package.swift.
