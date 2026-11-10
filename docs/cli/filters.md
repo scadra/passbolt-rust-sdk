@@ -8,7 +8,7 @@ sidebar_position: 6
 ## `--filter`
 
 `--filter` takes a [CEL](https://github.com/google/cel-spec) expression over the columns of the
-list (see `-c`), as go-passbolt-cli does, with their types: text, booleans (`deleted`,
+list (see `-c`), with their types: text, booleans (`deleted`,
 `expired`, `personal`, `active`, `disabled`), numbers (`user_count`), timestamps
 (`created_timestamp`, `modified_timestamp`, `expired_at`) and maps (`metadata`, `secret`).
 

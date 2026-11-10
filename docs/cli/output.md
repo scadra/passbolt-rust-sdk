@@ -5,8 +5,6 @@ sidebar_position: 5
 
 # Output
 
-The output is go-passbolt-cli's, so that scripts written for it keep working.
-
 ## Tables
 
 The default for `list` and permissions: every cell padded to its column, ` | ` between cells,
@@ -18,12 +16,12 @@ a1b2c3d4-e5f6-7890-abcd-ef1234567890 |                  | GitHub | alice        
 b2c3d4e5-f6a7-8901-bcde-f12345678901 |                  | AWS    | ops@corp.com |
 ```
 
-`-c/--column` chooses the columns (repeatable), in any case and in go-passbolt-cli's spellings
+`-c/--column` chooses the columns (repeatable), in any case and also in camelCase
 (`FolderParentID`, `CreatedTimestamp`…).
 
 ## JSON
 
-`--json`: each item with go-passbolt-cli's fields, dates in UTC (`2024-01-01T10:00:00Z`), an empty
+`--json`: each item with its fields, dates in UTC (`2024-01-01T10:00:00Z`), an empty
 `folder_parent_id` at the root; with `-c`, only those fields.
 
 ```bash

@@ -40,7 +40,7 @@ You can try a demo of passbolt at [https://demo.passbolt.com](https://demo.passb
 
 A fast, secure CLI and SDK for [Passbolt](https://www.passbolt.com/) — written in Rust.
 
-Full alternative to [go-passbolt-cli](https://github.com/passbolt/go-passbolt-cli) with no OpenSSL dependency (pure Rust TLS + GPG).
+No OpenSSL dependency: pure Rust TLS and OpenPGP.
 The workspace also ships the `passbolt-sdk` library and its WASM and FFI bindings.
 
 # Contributing
@@ -69,9 +69,6 @@ passbolt list resource
 passbolt get resource --id <UUID>
 passbolt create resource --name "GitHub" --username "john" --uri https://github.com
 ```
-
-`passbolt` accepts go-passbolt-cli's commands, flags, variables, config file and filters, and
-prints the same output: see [Coming from go-passbolt-cli](docs/cli/go-passbolt-cli.md).
 
 ## Documentation
 
