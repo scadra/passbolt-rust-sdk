@@ -23,11 +23,17 @@ and understand both v4 resources and v5 encrypted metadata.
 
 ## Where to start
 
-- **Use Passbolt from a terminal or a script**: [install the CLI](getting-started/installation.md),
-  then follow the [quick start](getting-started/quick-start.md).
+- **Use Passbolt from a terminal or a script**: [install the CLI](getting-started/installation.md)
+  step by step, then follow the [quick start](getting-started/quick-start.md); the
+  [guides](guides/README.md) show it in CI, scripts, backups and migrations.
+- **Understand what the client does**: [concepts](concepts.md) (keys, v4 and v5 resources,
+  metadata keys, permissions) and [security](security.md).
 - **Call Passbolt from an application**: read the [SDK overview](sdk/README.md), then the page of
-  your language.
-- **Work on passbolt-rust itself**: [development](contributing/development.md).
+  your language and the [API reference](sdk/api.md); [upgrading](sdk/upgrading.md) lists the
+  changes since 0.1.1.
+- **Something fails**: [troubleshooting](cli/troubleshooting.md).
+- **Work on passbolt-rust itself**: [development](contributing/development.md) and
+  [architecture](contributing/architecture.md).
 
 ## License
 
