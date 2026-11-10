@@ -9,18 +9,15 @@ How the code is laid out, how a request travels, and where a new method goes.
 
 ## Crates
 
-```text
-                         passbolt-sdk
-          (GPGAuth, OpenPGP, v5 metadata, Passbolt API)
-          generic over HttpClient; features native, totp,
-          openpgpjs, gopenpgp
-         /                  |                     \
- passbolt-cli          passbolt-ffi           passbolt-wasm
- the passbolt binary   UniFFI: Python, Java,   wasm-bindgen: JavaScript,
- (clap, tokio,         Kotlin, Swift, C#,      TypeScript
- ratatui)              Go, Ruby                (fetch, OpenPGP.js)
- native + totp         native + totp           no default features;
-                                               openpgpjs on wasm32
+```mermaid
+flowchart TD
+    sdk["<b>passbolt-sdk</b><br/>GPGAuth, OpenPGP, v5 metadata, Passbolt API<br/>generic over HttpClient<br/>features: native, totp, openpgpjs, gopenpgp"]
+    cli["<b>passbolt-cli</b><br/>the passbolt binary<br/>clap, tokio, ratatui<br/>native + totp"]
+    ffi["<b>passbolt-ffi</b><br/>UniFFI: Python, Java, Kotlin,<br/>Swift, C#, Go, Ruby<br/>native + totp"]
+    wasm["<b>passbolt-wasm</b><br/>wasm-bindgen: JavaScript, TypeScript<br/>fetch, OpenPGP.js<br/>no default features; openpgpjs on wasm32"]
+    sdk --> cli
+    sdk --> ffi
+    sdk --> wasm
 ```
 
 | Crate | Depends on | HTTP | Async runtime |
@@ -95,23 +92,25 @@ The tests give the SDK a third backend, `FakePassbolt` (see [Tests](#tests)).
 
 `PassboltSdk::login(http, &config, mfa_provider, max_attempts)`:
 
-```text
-1. check_server_url             refuse http:// except to a loopback address
-2. parse the private key        with the OpenPgp engine of the config
-3. check_server_identity        with a pinned server key: encrypt a fresh nonce for it,
-                                POST /auth/verify.json (GPGAuth stage 0), expect it back in
-                                X-GPGAuth-Verify-Response; with the token pair stored by
-                                passbolt verify: send it again; with neither: skip
-4. auth::login                  POST /auth/login.json {gpg_auth: {keyid}}         (stage 1)
-                                  <- X-GPGAuth-User-Auth-Token: the encrypted nonce
-                                decrypt it, check it is a GPGAuth nonce
-                                POST /auth/login.json {keyid, user_token_result}  (complete)
-                                  <- CSRF token (header, cookie or body), user id
-5. fetch_current_user           GET /users/me.json?contain[gpgkey]=1: the first request
-                                after login, which sets the csrfToken cookie; encrypt a probe
-                                with the server's copy of the user's public key and decrypt it
-                                with the private key
-6. no CSRF token                -> AuthError::LoginFailed
+```mermaid
+sequenceDiagram
+    participant SDK as PassboltSdk::login
+    participant Server as Passbolt server
+    Note over SDK: 1. check_server_url: refuse http:// except to a loopback address
+    Note over SDK: 2. parse the private key with the OpenPgp engine of the config
+    opt 3. check_server_identity, with a pinned key or the token pair of passbolt verify
+        SDK->>Server: POST /auth/verify.json (stage 0), a fresh nonce encrypted for the server key
+        Server-->>SDK: X-GPGAuth-Verify-Response: the nonce
+    end
+    SDK->>Server: 4. POST /auth/login.json {gpg_auth: {keyid}} (stage 1)
+    Server-->>SDK: X-GPGAuth-User-Auth-Token: the encrypted nonce
+    Note over SDK: decrypt it, check it is a GPGAuth nonce
+    SDK->>Server: POST /auth/login.json {keyid, user_token_result} (complete)
+    Server-->>SDK: CSRF token (header, cookie or body), user id
+    SDK->>Server: 5. GET /users/me.json?contain[gpgkey]=1 (fetch_current_user)
+    Server-->>SDK: the user and the server's copy of their public key, csrfToken cookie
+    Note over SDK: encrypt a probe with that key, decrypt it with the private key
+    Note over SDK: 6. no CSRF token: AuthError::LoginFailed
 ```
 
 Each GPGAuth answer must carry the `X-GPGAuth-*` headers of its stage
@@ -131,15 +130,16 @@ session: the server disables an account after 4 failed verifications. A challeng
 
 ### A request's path
 
-```text
-client.get::<T>(path)        client.post::<T>(path, &json)    put_request, delete_request
-          \                          |                              /
-           send(method, url, body)        answers the MFA challenge, replays once
-             send_once                    adds X-CSRF-Token (not on GET), calls the
-                                          HttpClient, remembers a new csrfToken cookie
-           parse_response::<T>(response)
-             status >= 400   -> ApiError { status, header.message, validation_errors: body }
-             otherwise       -> serde_json::from_value(body.body)
+```mermaid
+flowchart TD
+    get["client.get::&lt;T&gt;(path)"] --> send
+    post["client.post::&lt;T&gt;(path, &json)"] --> send
+    other["put_request, delete_request"] --> send
+    send["<b>send</b>(method, url, body)<br/>answers the MFA challenge, replays once"] --> once
+    once["<b>send_once</b><br/>adds X-CSRF-Token (not on GET), calls the HttpClient,<br/>remembers a new csrfToken cookie"] --> parse
+    parse{"<b>parse_response</b>::&lt;T&gt;(response)"}
+    parse -- "status >= 400" --> error["ApiError { status, header.message,<br/>validation_errors: body }"]
+    parse -- otherwise --> ok["serde_json::from_value(body.body)"]
 ```
 
 Passbolt wraps every answer in an envelope, `{"header": {…, "message", "pagination"}, "body":

@@ -7,12 +7,13 @@ sidebar_position: 1
 
 One Rust library, `passbolt-sdk`, and two thin layers that make it callable from other languages:
 
-```text
-                    passbolt-sdk (Rust: login, crypto, API)
-                   /                                    \
-     passbolt-ffi (UniFFI)                        passbolt-wasm (wasm-bindgen)
-     Python, Java, Android/Kotlin,                JavaScript, TypeScript
-     .NET, Go, Ruby, Swift                        (browsers, extensions, Node 20+)
+```mermaid
+flowchart TD
+    sdk["<b>passbolt-sdk</b><br/>Rust: login, crypto, API"]
+    ffi["<b>passbolt-ffi</b> (UniFFI)<br/>Python, Java, Android/Kotlin,<br/>.NET, Go, Ruby, Swift"]
+    wasm["<b>passbolt-wasm</b> (wasm-bindgen)<br/>JavaScript, TypeScript<br/>browsers, extensions, Node 20+"]
+    sdk --> ffi
+    sdk --> wasm
 ```
 
 The encryption, the GPGAuth login and the Passbolt API calls are the same code in every language:

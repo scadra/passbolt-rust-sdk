@@ -20,9 +20,12 @@ module.exports = {
   markdown: {
     // Plain Markdown: `<UUID>` and `{…}` in the pages are text, not JSX.
     format: "detect",
+    // ```mermaid blocks are diagrams, as on GitHub.
+    mermaid: true,
     hooks: { onBrokenMarkdownLinks: "throw" },
   },
   i18n: { defaultLocale: "en", locales: ["en"] },
+  themes: ["@docusaurus/theme-mermaid"],
   presets: [
     [
       "classic",
@@ -44,6 +47,7 @@ module.exports = {
     /** @type {import('@docusaurus/preset-classic').ThemeConfig} */
     ({
       colorMode: { defaultMode: "dark", respectPrefersColorScheme: true },
+      mermaid: { theme: { light: "neutral", dark: "dark" } },
       navbar: {
         title: "Rust SDK & CLI",
         logo: { alt: "Passbolt", src: "img/logo.svg", width: 120 },
