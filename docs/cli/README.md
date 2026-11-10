@@ -32,6 +32,7 @@ And `tui`, `generate`, `configure`, `verify`, `exec`, `export keepass`, `export 
 - [Output](output.md): tables, JSON, key-value.
 - [Filters](filters.md): `--filter` expressions and expiry dates.
 - [Terminal UI](tui.md): `passbolt tui`, browse and copy from the keyboard.
+- [Troubleshooting](troubleshooting.md): error messages, their causes and fixes, exit codes.
 
 ## Errors
 
