@@ -11,12 +11,18 @@ Any environment variable holding a `passbolt://<UUID>` URI is replaced with the 
 of that resource before the command starts; the command inherits all the other variables.
 
 ```bash
-export DB_PASSWORD="passbolt://a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+# The clients read their password from these variables.
+export PGPASSWORD="passbolt://a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+export MYSQL_PWD="passbolt://a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 passbolt exec -- psql -U myuser -d mydb
-passbolt exec -- mysql -u root -p"$DB_PASSWORD"
+passbolt exec -- mysql -u root
 passbolt exec -- ansible-playbook site.yml
 ```
 
-With `--debug`, each replaced variable is named on stderr (`<KEY> env var populated with
+The command must read the variable itself: in `mysql -p"$DB_PASSWORD"`, your shell expands the
+variable before `exec` runs, and the command gets the `passbolt://` URI, not the password. See
+the [exec guide](../../guides/exec.md) for Docker, Ansible and Terraform.
+
+With `--debug`, each replaced variable is named on stdout (`<KEY> env var populated with
 resource id <ID>`), never its value.

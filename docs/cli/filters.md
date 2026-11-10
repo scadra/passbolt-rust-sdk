@@ -53,4 +53,5 @@ first operator written splits a field condition: `uri=https://a/?x!=y` is `uri` 
 ```bash
 passbolt create resource --name "Temp token" --expiry "7d"
 passbolt update resource --id <UUID> --expiry "none"
+passbolt update resource --id <UUID> --expiry=-1h   # a negative value needs the = form
 ```

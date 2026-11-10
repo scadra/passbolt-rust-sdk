@@ -8,6 +8,7 @@ const [owner, name] = repository.split("/");
 /** @type {import('@docusaurus/types').Config} */
 module.exports = {
   title: "passbolt-rust",
+  favicon: "img/favicon.ico",
   tagline: "A command-line client and an SDK for Passbolt, written in Rust",
   url: `https://${owner}.github.io`,
   baseUrl: `/${name}/`,
@@ -35,24 +36,54 @@ module.exports = {
         },
         blog: false,
         pages: false,
-        theme: {},
+        theme: { customCss: require.resolve("./src/css/custom.css") },
       }),
     ],
   ],
   themeConfig:
     /** @type {import('@docusaurus/preset-classic').ThemeConfig} */
     ({
+      colorMode: { defaultMode: "dark", respectPrefersColorScheme: true },
       navbar: {
-        title: "passbolt-rust",
+        title: "Rust SDK & CLI",
+        logo: { alt: "Passbolt", src: "img/logo.svg", width: 120 },
         items: [
           { to: "/getting-started/installation", label: "Install", position: "left" },
           { to: "/cli", label: "CLI", position: "left" },
           { to: "/sdk", label: "SDK", position: "left" },
+          { to: "/guides", label: "Guides", position: "left" },
+          { href: "https://www.passbolt.com/docs", label: "Passbolt docs", position: "right" },
           { href: `https://github.com/${repository}`, label: "GitHub", position: "right" },
         ],
       },
       footer: {
         style: "dark",
+        logo: { alt: "Passbolt", src: "img/logo.svg", href: "https://www.passbolt.com", width: 120 },
+        links: [
+          {
+            title: "Docs",
+            items: [
+              { label: "Install", to: "/getting-started/installation" },
+              { label: "CLI", to: "/cli" },
+              { label: "SDK", to: "/sdk" },
+              { label: "Guides", to: "/guides" },
+            ],
+          },
+          {
+            title: "Community",
+            items: [
+              { label: "Forum", href: "https://community.passbolt.com" },
+              { label: "Issues", href: `https://github.com/${repository}/issues` },
+            ],
+          },
+          {
+            title: "Passbolt",
+            items: [
+              { label: "passbolt.com", href: "https://www.passbolt.com" },
+              { label: "Passbolt docs", href: "https://www.passbolt.com/docs" },
+            ],
+          },
+        ],
         copyright: "AGPL-3.0-or-later. Passbolt is a registered trademark of Passbolt SA.",
       },
       prism: {
