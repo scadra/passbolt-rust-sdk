@@ -12,7 +12,8 @@
 
 // The operations of the gopenpgp engine, as go-passbolt runs them, called from
 // `src/crypto/gopenpgp.rs` with a JSON request. Keys are named by their armored text and read
-// once; a private key is unlocked once per passphrase, until it is forgotten.
+// once; a private key is unlocked once per passphrase, until its last holder forgets it.
+// Operations run in parallel: only the keys held are behind a lock.
 package main
 
 import (
@@ -68,6 +69,8 @@ var (
 	privateKeys  = map[string]*crypto.Key{}
 	publicKeys   = map[string]*crypto.Key{}
 	unlockedKeys = map[string]unlockedKey{}
+	// The handles held on each key, by its armored text: it is forgotten with the last one.
+	holders = map[string]int{}
 )
 
 // The names of the symmetric algorithms, by OpenPGP id.
@@ -82,9 +85,7 @@ func Call(input []byte) []byte {
 	var req request
 	res, err := response{}, json.Unmarshal(input, &req)
 	if err == nil {
-		lock.Lock()
 		res, err = run(&req)
-		lock.Unlock()
 	}
 	if err != nil {
 		res = response{Error: err.Error()}
@@ -97,17 +98,14 @@ func run(req *request) (response, error) {
 	switch req.Op {
 	case "readPrivateKey":
 		key, err := privateKey(req.Armored)
+		hold(req.Armored, err)
 		return fingerprintOf(key), err
 	case "readPublicKey":
 		key, err := publicKey(req.Armored)
+		hold(req.Armored, err)
 		return fingerprintOf(key), err
 	case "forget":
-		delete(privateKeys, req.Armored)
-		delete(publicKeys, req.Armored)
-		if unlocked, held := unlockedKeys[req.Armored]; held {
-			unlocked.key.ClearPrivateParams()
-			delete(unlockedKeys, req.Armored)
-		}
+		forget(req.Armored)
 		return response{}, nil
 	case "decrypt":
 		data, _, err := decrypt(req.Message, req.Key, req.Passphrase, false)
@@ -132,6 +130,33 @@ func run(req *request) (response, error) {
 	return response{}, fmt.Errorf("unknown operation %q", req.Op)
 }
 
+// hold counts a handle on the key `armored` when it was read.
+func hold(armored string, err error) {
+	if err != nil {
+		return
+	}
+	lock.Lock()
+	defer lock.Unlock()
+	holders[armored]++
+}
+
+// forget drops a handle on the key `armored`, and the key with its last handle: no operation
+// uses it any more.
+func forget(armored string) {
+	lock.Lock()
+	defer lock.Unlock()
+	if holders[armored]--; holders[armored] > 0 {
+		return
+	}
+	delete(holders, armored)
+	delete(privateKeys, armored)
+	delete(publicKeys, armored)
+	if unlocked, held := unlockedKeys[armored]; held {
+		unlocked.key.ClearPrivateParams()
+		delete(unlockedKeys, armored)
+	}
+}
+
 func fingerprintOf(key *crypto.Key) response {
 	if key == nil {
 		return response{}
@@ -140,7 +165,10 @@ func fingerprintOf(key *crypto.Key) response {
 }
 
 func privateKey(armored string) (*crypto.Key, error) {
-	if key, held := privateKeys[armored]; held {
+	lock.Lock()
+	key, held := privateKeys[armored]
+	lock.Unlock()
+	if held {
 		return key, nil
 	}
 	key, err := crypto.NewKeyFromArmored(armored)
@@ -150,12 +178,17 @@ func privateKey(armored string) (*crypto.Key, error) {
 	if !key.IsPrivate() {
 		return nil, errors.New("a public key, not a private key")
 	}
+	lock.Lock()
 	privateKeys[armored] = key
+	lock.Unlock()
 	return key, nil
 }
 
 func publicKey(armored string) (*crypto.Key, error) {
-	if key, held := publicKeys[armored]; held {
+	lock.Lock()
+	key, held := publicKeys[armored]
+	lock.Unlock()
+	if held {
 		return key, nil
 	}
 	key, err := crypto.NewKeyFromArmored(armored)
@@ -165,13 +198,18 @@ func publicKey(armored string) (*crypto.Key, error) {
 	if key.IsPrivate() {
 		return nil, errors.New("a private key, not a public key")
 	}
+	lock.Lock()
 	publicKeys[armored] = key
+	lock.Unlock()
 	return key, nil
 }
 
 func unlock(armored, passphrase string) (*crypto.Key, error) {
 	digest := sha256.Sum256([]byte(passphrase))
-	if unlocked, held := unlockedKeys[armored]; held && unlocked.digest == digest {
+	lock.Lock()
+	unlocked, held := unlockedKeys[armored]
+	lock.Unlock()
+	if held && unlocked.digest == digest {
 		return unlocked.key, nil
 	}
 	key, err := privateKey(armored)
@@ -187,7 +225,10 @@ func unlock(armored, passphrase string) (*crypto.Key, error) {
 			return nil, err
 		}
 	}
+	// Unlocked out of the lock, which a passphrase derivation would hold for long.
+	lock.Lock()
 	unlockedKeys[armored] = unlockedKey{digest: digest, key: key}
+	lock.Unlock()
 	return key, nil
 }
 

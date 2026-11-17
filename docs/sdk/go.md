@@ -5,13 +5,18 @@ sidebar_position: 8
 
 # Go
 
+Use the `passbolt` package to log in to Passbolt and read, write and share secrets from Go.
+
+## Installation
+
+The module is `github.com/scadra/passbolt-sdk-go`, and the package `passbolt`.
+
 ```bash
 go get github.com/scadra/passbolt-sdk-go@v0.1.1
 ```
 
-The package is `passbolt`. It links the static library of Linux (x86_64, aarch64) or macOS (Intel,
-Apple silicon) with cgo, so it builds with `CGO_ENABLED=1` and a C compiler; Windows is not covered.
-Its calls block until the server answers.
+It links the static library of Linux (x86_64, aarch64) or macOS (Intel, Apple silicon) with cgo,
+so it builds with `CGO_ENABLED=1` and a C compiler. Windows is not covered.
 
 The same module is the `passbolt-sdk-go-<version>.tar.gz` of each release, for a build without
 network access:
@@ -22,7 +27,9 @@ go mod edit -require github.com/scadra/passbolt-sdk-go@v0.0.0 \
             -replace github.com/scadra/passbolt-sdk-go=./passbolt-sdk-go
 ```
 
-## Log in and list
+## Initialize
+
+Log in with `passbolt.PassboltClientLogin`. Its calls block until the server answers.
 
 ```go
 package main
@@ -60,11 +67,67 @@ func main() {
 `Close` makes the client an `io.Closer`; `Logout` and `Destroy` are the two halves of it. It
 returns the error of the logout, and releases the client anyway.
 
+## Login options
+
+`PassboltClientLoginWithConfig` takes a `passbolt.LoginOptions`. Its optional fields are
+pointers, `nil` for none.
+
+| Field | Type | Description |
+|---|---|---|
+| `ServerPublicKey` | `*string` | The armored server key pinned with `passbolt.FetchServerKey`. |
+| `MetadataKeyFingerprint` | `*string` | The pinned fingerprint of the shared metadata key. |
+| `MfaTotpToken` | `*string` | The base32 TOTP secret, for an account with TOTP. |
+| `TimeoutSeconds` | `*uint64` | Seconds a request may take. Default: 60; `0` waits forever. |
+| `Proxy` | `*string` | The proxy URL. |
+| `TLSSkipVerify` | `bool` | Skip the certificate check. Default: `false`. |
+| `ClientCertificatePem`, `ClientKeyPem` | `*string` | The PEM certificate and key, for mTLS. |
+
+### Pin the server key and answer MFA
+
+```go
+serverKey, err := passbolt.FetchServerKey("https://passbolt.example.com", false)
+if err != nil {
+	return err
+}
+fmt.Println("Check this fingerprint with your administrator:", serverKey.Fingerprint)
+
+totpSecret := os.Getenv("PASSBOLT_TOTP_SECRET") // the base32 TOTP secret, for an account with TOTP
+timeout := uint64(30)                           // 60 by default, 0 waits forever
+client, err := passbolt.PassboltClientLoginWithConfig(
+	"https://passbolt.example.com", privateKey, passphrase,
+	passbolt.LoginOptions{
+		ServerPublicKey: &serverKey.ArmoredKey,
+		MfaTotpToken:    &totpSecret,
+		TimeoutSeconds:  &timeout,
+	})
+if err != nil {
+	return err
+}
+defer client.Close()
+```
+
 ## Options
 
-Go has no default arguments: the calls with optional arguments take an option struct, whose
-zero value asks for the defaults. A field left out keeps its default, an empty string is no
-value, and the `List` methods take `nil` for no filter:
+Go has no default arguments: the calls with optional arguments take an option struct, whose zero
+value asks for the defaults. A field left out keeps its default, an empty string is no value, and
+the `List` methods take `nil` for no filter.
+
+| Method | Options |
+|---|---|
+| `ListResources` | `*ResourceListOptions`: `Search`, `FavoritesOnly`, `OwnedByMe` |
+| `ListResourceViews` | `*ResourceViewListOptions`: `Search`, `WithSecrets` |
+| `ListFolders` | `*FolderListOptions`: `Search` |
+| `ListUsers` | `*UserListOptions`: `Search`, `GroupID`, `AdminOnly` |
+| `UpdateGroup` | `GroupChanges`: `Name`, `AddMemberIDs`, `AddManagerIDs`, `RemoveMemberIDs` |
+| `UpdateUser` | `UserChanges`: `FirstName`, `LastName`, `Role` |
+| `ShareResource` | `Share`: `Permission`, `UserIDs`, `GroupIDs` |
+| `ShareFolder` | `FolderShare`: `Permission`, `UserIDs`, `GroupIDs`, `WithContent` |
+
+The records (`LoginOptions`, `NewResource`, `ResourceChanges`…) keep pointers for their optional
+fields, `nil` for none. So do the few calls with one optional argument, such as
+`CreateFolder(name, nil)` for a folder at the root.
+
+### Filter lists and change a group
 
 ```go
 all, err := client.ListResources(nil)
@@ -92,51 +155,13 @@ if err != nil {
 fmt.Println(group.Name)
 ```
 
-| Method | Options |
-|---|---|
-| `ListResources` | `*ResourceListOptions`: `Search`, `FavoritesOnly`, `OwnedByMe` |
-| `ListResourceViews` | `*ResourceViewListOptions`: `Search`, `WithSecrets` |
-| `ListFolders` | `*FolderListOptions`: `Search` |
-| `ListUsers` | `*UserListOptions`: `Search`, `GroupID`, `AdminOnly` |
-| `UpdateGroup` | `GroupChanges`: `Name`, `AddMemberIDs`, `AddManagerIDs`, `RemoveMemberIDs` |
-| `UpdateUser` | `UserChanges`: `FirstName`, `LastName`, `Role` |
-| `ShareResource` | `Share`: `Permission`, `UserIDs`, `GroupIDs` |
-| `ShareFolder` | `FolderShare`: `Permission`, `UserIDs`, `GroupIDs`, `WithContent` |
-
-The records (`LoginOptions`, `NewResource`, `ResourceChanges`…) keep pointers for their optional
-fields, `nil` for none; so do the few calls with one optional argument, such as
-`CreateFolder(name, nil)` for a folder at the root.
-
-## Pinning the server, MFA, TLS
-
-```go
-serverKey, err := passbolt.FetchServerKey("https://passbolt.example.com", false)
-if err != nil {
-	return err
-}
-fmt.Println("Check this fingerprint with your administrator:", serverKey.Fingerprint)
-
-totpSecret := os.Getenv("PASSBOLT_TOTP_SECRET") // the base32 TOTP secret, for an account with TOTP
-timeout := uint64(30)                           // 60 by default, 0 waits forever
-client, err := passbolt.PassboltClientLoginWithConfig(
-	"https://passbolt.example.com", privateKey, passphrase,
-	passbolt.LoginOptions{
-		ServerPublicKey: &serverKey.ArmoredKey,
-		MfaTotpToken:    &totpSecret,
-		TimeoutSeconds:  &timeout,
-	})
-if err != nil {
-	return err
-}
-defer client.Close()
-```
-
-## Reading and writing
+## Read resources
 
 A `ResourceView` holds the fields every resource type shares, decrypted (`Name`, `Username`,
-`URIs`, `Password`, `Totp`…); the others, custom fields and icon among them, are the JSON
-objects `MetadataJSON` and `SecretJSON`. `NewResource` and `ResourceChanges` write the same
-fields, the fields left out keep their default:
+`URIs`, `Password`, `Totp`…); the others, custom fields and icon among them, are the JSON objects
+`MetadataJSON` and `SecretJSON`.
+
+### Read a password
 
 ```go
 view, err := client.GetResourceView(resourceID)
@@ -146,7 +171,16 @@ if err != nil {
 if view.Password != nil {
 	fmt.Println(*view.Password)
 }
+```
 
+## Create and share resources
+
+`NewResource` and `ResourceChanges` write the same fields as `ResourceView`; the fields you leave
+out keep their default.
+
+### Create, update and share a resource
+
+```go
 username, password := "ada", "…"
 created, err := client.CreateResource(passbolt.NewResource{
 	Name:     "GitHub",
@@ -168,42 +202,18 @@ if err := client.ShareResource(created.ID, passbolt.Share{
 }
 ```
 
-## Contexts
+## Generate a password
 
-The calls take no `context.Context`: the Rust call they make cannot be interrupted, it stops
-when the server answers or at the login timeout. `passbolt.Call` and `passbolt.Run` make a call
-in a goroutine and stop *waiting* for it when the context ends, returning `ctx.Err()`, for a
-server handler that must answer before its deadline:
+Generate passwords from character sets, passphrases of words of the EFF list, and PIN codes, as
+the browser extension does. Start from the password policies of the organization or from settings
+of your own.
 
-```go
-ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-defer cancel()
-views, err := passbolt.Call(ctx, func() ([]passbolt.ResourceView, error) {
-	return client.ListResourceViews(nil)
-})
-if errors.Is(err, context.DeadlineExceeded) {
-	return err // the request goes on in the background, its result is dropped
-}
-if err != nil {
-	return err
-}
-fmt.Println(len(views))
-
-if err := passbolt.Run(ctx, func() error { return client.DeleteResource(resourceID) }); err != nil {
-	return err
-}
-```
-
-The call abandoned still runs to its end: after a context error, a write may have happened,
-read the state back rather than assume it did not. A context that has already ended makes no
-call. To bound the call itself, set `LoginOptions.TimeoutSeconds`.
-
-## Generating passwords
-
-As the browser extension: passwords from character sets, passphrases of words of the EFF list,
-PIN codes, from the password policies of the organization or settings of your own. The zero
-value of the settings has no character set: start from `DefaultPasswordPolicies` or the
+:::note
+The zero value of the settings has no character set: start from `DefaultPasswordPolicies` or the
 policies of the server.
+:::
+
+### Generate secrets and rate them
 
 ```go
 policies, err := client.GetPasswordPolicies() // the organization's: generator and settings
@@ -229,12 +239,14 @@ if passbolt.SecretStrength(password) == passbolt.StrengthVeryStrong {
 }
 ```
 
-## Errors
+## Handle errors
 
-Each call returns its failure as a `*passbolt.PassboltError` wrapping one variant per cause,
-`PassboltErrorAuth`, `PassboltErrorAPI` (with the HTTP `Status`), `PassboltErrorNotFound`…
-each with its `Reason`. Match the variant with `errors.As`, or its kind with `errors.Is` and the
-`ErrPassboltError…` values:
+Each call returns its failure as a `*passbolt.PassboltError` wrapping one variant per cause:
+`PassboltErrorAuth`, `PassboltErrorAPI` (with the HTTP `Status`), `PassboltErrorNotFound`…, each
+with its `Reason`. Match the variant with `errors.As`, or its kind with `errors.Is` and the
+`ErrPassboltError…` values.
+
+### Handle a missing resource and an API error
 
 ```go
 _, err := client.GetResource(resourceID)
@@ -250,7 +262,43 @@ default:
 }
 ```
 
-## Names
+## Set a deadline with a context
+
+The calls take no `context.Context`: the Rust call they make cannot be interrupted, and stops when
+the server answers or at the login timeout. `passbolt.Call` and `passbolt.Run` make a call in a
+goroutine and stop *waiting* for it when the context ends, returning `ctx.Err()`, for a server
+handler that must answer before its deadline.
+
+### Give up waiting after five seconds
+
+```go
+ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+defer cancel()
+views, err := passbolt.Call(ctx, func() ([]passbolt.ResourceView, error) {
+	return client.ListResourceViews(nil)
+})
+if errors.Is(err, context.DeadlineExceeded) {
+	return err // the request goes on in the background, its result is dropped
+}
+if err != nil {
+	return err
+}
+fmt.Println(len(views))
+
+if err := passbolt.Run(ctx, func() error { return client.DeleteResource(resourceID) }); err != nil {
+	return err
+}
+```
+
+:::caution
+The abandoned call still runs to its end: after a context error, a write may have happened. Read
+the state back rather than assume it did not.
+:::
+
+A context that has already ended makes no call. To bound the call itself, set
+`LoginOptions.TimeoutSeconds`.
+
+## Method names
 
 The methods are those of the [overview](README.md#what-the-api-covers), in PascalCase, generated
 from the Rust names:
@@ -259,8 +307,14 @@ from the Rust names:
   `PassboltClientLoginWithConfig`.
 - Initialisms are capitals, as in the standard library: `ID`, `URL`, `URIs`, `MetadataJSON`,
   `GetResourcesByIDs`, `BaseURL()`, `PassboltErrorAPI`.
-- The calls with optional arguments take the option structs above; the others take every
+- The calls with optional arguments take the [option structs](#options); the others take every
   argument, `nil` for an optional one.
 - The client is safe to use from several goroutines. Its methods are those of the type
   `*PassboltClient`: for a test double, declare the interface of the methods your code calls.
 - The `Destroy` method of a record does nothing worth calling.
+
+## Related
+
+- [Overview](README.md): the concepts shared by every language.
+- [API reference](api.md): every method, function and record.
+- [Upgrading](upgrading.md): the breaking changes since the 0.1.1 packages.

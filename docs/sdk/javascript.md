@@ -5,17 +5,38 @@ sidebar_position: 3
 
 # JavaScript and TypeScript
 
+Use `@switch-case/passbolt-sdk` to log in to Passbolt and read, write and share secrets from
+Node.js, Deno, Bun, browsers and extensions.
+
+## Installation
+
+The package is on npm as `@switch-case/passbolt-sdk`: the SDK compiled to WebAssembly, with its
+TypeScript declarations.
+
 ```bash
 npm install @switch-case/passbolt-sdk
 ```
 
-The SDK compiled to WebAssembly, with its TypeScript declarations. Node.js (20.19 or later), Deno
-and Bun load its `node/` build, with `import` or `require`; bundlers (webpack, Vite…) its
-`bundler/` build. Every session method returns a promise.
+```bash
+yarn add @switch-case/passbolt-sdk
+```
 
-## Node.js, Deno, Bun
+```bash
+pnpm add @switch-case/passbolt-sdk
+```
 
-These runtimes keep no cookies: the session keeps those the server sets and sends them back,
+- Node.js 20.19 or later, Deno and Bun load its `node/` build, with `import` or `require`.
+- Bundlers (webpack, Vite…) load its `bundler/` build.
+
+Every session method returns a promise.
+
+## Initialize
+
+Log in with `PassboltSession.login`, then call `logout()` when you are done.
+
+### Node.js, Deno and Bun
+
+These runtimes keep no cookies: the session keeps those the server sets and sends them back, with
 nothing to configure.
 
 ```ts
@@ -32,11 +53,11 @@ try {
 
 CommonJS takes the same exports: `const { PassboltSession } = require("@switch-case/passbolt-sdk");`.
 
-## Browsers and extensions
+### Browsers and extensions
 
-The browser keeps the session cookie; the session needs the `csrfToken` cookie, which `fetch`
-cannot read. A page served by Passbolt reads it from `document.cookie`; an extension gives a
-provider:
+The browser keeps the session cookie. The session needs the `csrfToken` cookie, which `fetch`
+cannot read: a page served by Passbolt reads it from `document.cookie`, and an extension gives a
+provider.
 
 ```ts
 import { PassboltSession } from "@switch-case/passbolt-sdk";
@@ -47,18 +68,38 @@ const session = await PassboltSession.login(serverUrl, privateKeyArmored, passph
 });
 ```
 
-Each session has its own provider: two sessions can talk to two servers.
+Each session has its own provider, so two sessions can talk to two servers.
+
+### Free the session
+
+`logout()` ends the session on the server. The session object also holds WebAssembly memory,
+released when it is garbage collected, or at once with `free()`. With TypeScript 5.2 or later,
+`using` frees it at the end of the block:
+
+```ts
+import { PassboltSession } from "@switch-case/passbolt-sdk";
+
+{
+  using session = await PassboltSession.login(serverUrl, privateKeyArmored, passphrase);
+  console.log(session.userId, session.baseUrl);
+  await session.logout();
+}
+```
 
 ## Login options
 
-| Option | |
-|---|---|
-| `csrfTokenProvider` | Function returning the `csrfToken` cookie, or a promise of it |
-| `fetch` | Function sending the requests in place of the global `fetch`: see [TLS and proxies](#tls-and-proxies) |
-| `totpCode` | The TOTP code answering the MFA challenge |
-| `serverPublicKey` | The armored server key pinned with `PassboltSession.fetchServerKey(serverUrl)` |
-| `metadataKeyFingerprint` | The shared metadata key pinned with `session.metadataKeyFingerprint()` |
-| `openpgp` | The OpenPGP.js module (`import * as openpgp from "openpgp"`) to read and write messages with; default: the SDK's own |
+`login` takes an options object as its fourth argument.
+
+| Option | Type | Description |
+|---|---|---|
+| `csrfTokenProvider` | Function | Returns the `csrfToken` cookie, or a promise of it. |
+| `fetch` | `FetchFunction` | Sends the requests in place of the global `fetch`. See [TLS and proxies](#tls-and-proxies). |
+| `totpCode` | `string` | The TOTP code answering the MFA challenge. |
+| `serverPublicKey` | `string` | The armored server key pinned with `PassboltSession.fetchServerKey(serverUrl)`. |
+| `metadataKeyFingerprint` | `string` | The shared metadata key pinned with `session.metadataKeyFingerprint()`. |
+| `openpgp` | `object` | The OpenPGP.js module (`import * as openpgp from "openpgp"`) to read and write messages with, for example the one of a browser extension. Default: the OpenPGP.js 6.1.1 the SDK bundles. |
+
+### Pin the server key and answer MFA
 
 ```ts
 import { PassboltSession } from "@switch-case/passbolt-sdk";
@@ -93,31 +134,57 @@ const session = await PassboltSession.login(serverUrl, privateKeyArmored, passph
 });
 ```
 
-The function is called as `fetch(url, init)`, `init` holding plain values only (`method`,
-`headers` as an object, `body` as an `ArrayBuffer`), so any `fetch` takes it: the global one,
-undici's, node-fetch, or the request helper of a host application. The SDK reads `status`,
-`headers` and `arrayBuffer()` of what it returns. A rejection is a `NETWORK` error, with the
-cause Node gives: `fetch failed: self-signed certificate`.
+The SDK calls the function as `fetch(url, init)`:
 
-Without changing the code, Node also trusts the certificates of `NODE_EXTRA_CA_CERTS`, a PEM
-file read at start-up: `NODE_EXTRA_CA_CERTS=/etc/ssl/internal-ca.pem node app.js`. Skipping the
-check (`rejectUnauthorized: false`) leaves the session open to whoever answers at the address;
-pin the server key with `serverPublicKey` at least.
+- `init` holds plain values only: `method`, `headers` as an object, `body` as an `ArrayBuffer`.
+  Any `fetch` takes it: the global one, undici's, node-fetch, or the request helper of a host
+  application.
+- The SDK reads `status`, `headers` and `arrayBuffer()` of what it returns.
+- A rejection is a `NETWORK` error, with the cause Node gives: `fetch failed: self-signed
+  certificate`.
 
-## Reading and writing
+Without changing the code, Node also trusts the certificates of `NODE_EXTRA_CA_CERTS`, a PEM file
+read at start-up:
 
-Methods with optional arguments take an options object.
+```bash
+NODE_EXTRA_CA_CERTS=/etc/ssl/internal-ca.pem node app.js
+```
+
+:::caution
+Skipping the check (`rejectUnauthorized: false`) leaves the session open to whoever answers at the
+address. Pin the server key with `serverPublicKey` at least.
+:::
+
+## Read resources
+
+`getResourceView` and `listResourceViews` decrypt the name, username, URIs and, on request, the
+secret. Methods with optional arguments take an options object.
+
+### Read a resource and search your resources
 
 ```ts
 const view = await session.getResourceView(id); // name, username, uris, password, secret…
 const withSecrets = await session.listResourceViews({ search: "github", withSecrets: true });
 const favorites = await session.listResources({ favoritesOnly: true });
+```
 
+## Create and share resources
+
+`createResource` takes the fields of the resource, `updateResource` only the fields to change.
+Permission types are `1` read, `7` update, `15` owner, `-1` to revoke.
+
+### Create, update, share and move a resource
+
+```ts
 const created = await session.createResource({ name: "GitHub", username: "ada", password: "s3cret" });
 await session.updateResource(created.id, { password: "new" });
 await session.shareResource(created.id, { userIds: [userId], permissionType: 7 });
 await session.moveResource(created.id, folderId);
+```
 
+### Manage folders, users and groups
+
+```ts
 const folder = await session.createFolder("Ops");
 await session.shareFolder(folder.id, { groupIds: [groupId], permissionType: 1, withContent: true });
 
@@ -126,14 +193,16 @@ const group = await session.createGroup({ name: "Ops", managerIds: [session.user
 await session.updateGroup(group.id, { name: "Infra", removeMemberIds: [betty.id] });
 ```
 
-Permission types are `1` read, `7` update, `15` owner, `-1` to revoke.
+## Generate a password
 
-## Generating passwords
+Generate passwords from character sets, passphrases of words of the EFF list, and PIN codes, as
+the browser extension does. Start from the password policies of the organization or from settings
+of your own.
 
-As the browser extension: passwords from character sets, passphrases of words of the EFF list,
-PIN codes, from the password policies of the organization or settings of your own. The settings
-have the shape of the API, the `PasswordPoliciesDto` of the extension; the fields left out keep
-the defaults of Passbolt. The functions need no session.
+The settings have the shape of the API, the `PasswordPoliciesDto` of the extension: the fields you
+leave out keep the defaults of Passbolt. The functions need no session.
+
+### Generate secrets and rate them
 
 ```ts
 import {
@@ -156,11 +225,13 @@ secretStrength(password); // "very-strong", the ids of the extension
 secretEntropy(password); // in bits
 ```
 
-## Errors
+## Handle errors
 
-Every failure rejects the promise (or throws, for the synchronous helpers) with an `Error` named
-`PassboltError`, whose `code` says what failed; an API error also has the HTTP `status` and the
-`validationErrors` of the server. `isPassboltError` narrows an unknown error to it:
+Every failure rejects the promise, or throws for the synchronous helpers, with an `Error` named
+`PassboltError`. Its `code` says what failed; an API error also has the HTTP `status` and the
+`validationErrors` of the server. `isPassboltError` narrows an unknown error to it.
+
+### Handle a missing resource and an expired session
 
 ```ts
 import { isPassboltError } from "@switch-case/passbolt-sdk";
@@ -182,32 +253,31 @@ try {
 }
 ```
 
-| `code` | |
+| `code` | Description |
 |---|---|
-| `NETWORK`, `TIMEOUT` | The server could not be reached |
-| `LOGIN_FAILED`, `SESSION_EXPIRED` | The login failed, or the session ended |
-| `MFA_REQUIRED`, `MFA_FAILED`, `MFA_UNSUPPORTED`, `MFA_LOCKED_OUT` | The MFA challenge: no `totpCode`, a wrong one, no TOTP provider, too many attempts |
-| `SERVER_IDENTITY_MISMATCH`, `UNTRUSTED_METADATA_KEY` | A pinned key does not match |
-| `INVALID_KEY`, `DECRYPTION_FAILED`, `ENCRYPTION_FAILED`, `CRYPTO` | OpenPGP |
-| `NOT_FOUND` | No such item (an API 404 too) |
-| `API` | Another API error, with its `status` |
-| `INVALID_ARGUMENT` | An argument, or an option, the SDK refuses before any request |
-| `INVALID_RESPONSE`, `CONFIG`, `UNKNOWN` | Anything else |
+| `NETWORK`, `TIMEOUT` | The server could not be reached. |
+| `LOGIN_FAILED`, `SESSION_EXPIRED` | The login failed, or the session ended. |
+| `MFA_REQUIRED`, `MFA_FAILED`, `MFA_UNSUPPORTED`, `MFA_LOCKED_OUT` | The MFA challenge: no `totpCode`, a wrong one, no TOTP provider, too many attempts. |
+| `SERVER_IDENTITY_MISMATCH`, `UNTRUSTED_METADATA_KEY` | A pinned key does not match. |
+| `INVALID_KEY`, `DECRYPTION_FAILED`, `ENCRYPTION_FAILED`, `CRYPTO` | OpenPGP. |
+| `NOT_FOUND` | No such item (an API 404 too). |
+| `API` | Another API error, with its `status`. |
+| `INVALID_ARGUMENT` | An argument, or an option, the SDK refuses before any request. |
+| `INVALID_RESPONSE`, `CONFIG`, `UNKNOWN` | Anything else. |
 
-## Session lifetime
+## Encrypt and decrypt messages
 
-`logout()` ends the session on the server. The session object also holds WebAssembly memory,
-released when it is garbage collected, or at once with `free()`; with TypeScript 5.2+, `using`
-frees it at the end of the block:
+The stateless helpers work outside a session: `encryptMessage(plaintext, publicKeysArmored)`,
+`decryptMessage(armoredMessage, privateKeyArmored, passphrase)` and
+`getKeyFingerprint(privateKeyArmored)`.
+
+### Encrypt a message and decrypt it
 
 ```ts
-import { PassboltSession } from "@switch-case/passbolt-sdk";
+import { decryptMessage, encryptMessage } from "@switch-case/passbolt-sdk";
 
-{
-  using session = await PassboltSession.login(serverUrl, privateKeyArmored, passphrase);
-  console.log(session.userId, session.baseUrl);
-  await session.logout();
-}
+const armored = await encryptMessage(new TextEncoder().encode("hello"), [publicKeyArmored]);
+const plaintext = new TextDecoder().decode(await decryptMessage(armored, privateKeyArmored, passphrase));
 ```
 
 ## Methods
@@ -223,24 +293,19 @@ import { PassboltSession } from "@switch-case/passbolt-sdk";
 | Settings | `getPasswordPolicies`, `savePasswordPolicies`, `getPasswordExpirySettings`, `savePasswordExpirySettings`, `deletePasswordExpirySettings`, `listResourceTypes`, `getMetadataTypesSettings`, `saveMetadataTypesSettings`, `getMetadataKeysSettings`, `saveMetadataKeysSettings` |
 | Other | `searchAros`, `checkPasswordPwned` (a `number`) |
 
-Stateless helpers, outside a session: `encryptMessage(plaintext, publicKeysArmored)`,
-`decryptMessage(armoredMessage, privateKeyArmored, passphrase)`,
-`getKeyFingerprint(privateKeyArmored)`, `isPassboltError(error)`, and the generator:
-`generatePassword`, `generatePassphrase`, `generateSecret`, `generatePinCode`, `secretEntropy`,
-`secretStrength`.
-
-```ts
-import { decryptMessage, encryptMessage } from "@switch-case/passbolt-sdk";
-
-const armored = await encryptMessage(new TextEncoder().encode("hello"), [publicKeyArmored]);
-const plaintext = new TextDecoder().decode(await decryptMessage(armored, privateKeyArmored, passphrase));
-```
+The functions outside a session: `encryptMessage`, `decryptMessage`, `getKeyFingerprint`,
+`isPassboltError`, and the generator: `generatePassword`, `generatePassphrase`, `generateSecret`,
+`generatePinCode`, `secretEntropy`, `secretStrength`.
 
 ## Types
 
-The declarations type what each method takes and returns. The options of the methods are
-camelCase; the objects of the Passbolt API keep its field names (`folder_parent_id`,
-`groups_users`…), with `null` for an absent value and dates as RFC 3339 strings:
+The declarations type what each method takes and returns.
+
+- The options of the methods are camelCase.
+- The objects of the Passbolt API keep its field names (`folder_parent_id`, `groups_users`…), with
+  `null` for an absent value and dates as RFC 3339 strings.
+
+### Type a login and its results
 
 ```ts
 import { PassboltSession } from "@switch-case/passbolt-sdk";
@@ -253,11 +318,22 @@ const created: Resource = await session.createResource({ name: "GitHub" } satisf
 console.log(views.length, created.folder_parent_id);
 ```
 
-Main types: `Resource`, `ResourceView`, `SecretData`, `NewResource`, `ResourceChanges`, `Folder`,
-`FolderTreeNode`, `User`, `Group`, `Permission`, `DeleteBlockers`, `Tag`, `Comment`, `Favorite`,
-`Aro`, `ResourceType`, `PasswordPolicies`, `PasswordGeneratorSettings`,
-`PassphraseGeneratorSettings`, `Strength`, `PasswordExpirySettings`, `MetadataTypesSettings`, `MetadataKeysSettings`,
-`LoginOptions`, `FetchServerKeyOptions`, `FetchFunction`, `FetchInit`, `FetchResponse`, `ServerKey`,
-`PassboltError`, `PassboltErrorCode`; the options `ResourceFilter`,
-`ResourceViewFilter`, `FolderFilter`, `UserFilter`, `Share`, `FolderShare`, `NewUser`,
-`UserChanges`, `NewGroup`, `GroupChanges`.
+The main types:
+
+- Records: `Resource`, `ResourceView`, `SecretData`, `NewResource`, `ResourceChanges`, `Folder`,
+  `FolderTreeNode`, `User`, `Group`, `Permission`, `DeleteBlockers`, `Tag`, `Comment`, `Favorite`,
+  `Aro`, `ResourceType`.
+- Generator and settings: `PasswordPolicies`, `PasswordGeneratorSettings`,
+  `PassphraseGeneratorSettings`, `Strength`, `PasswordExpirySettings`, `MetadataTypesSettings`,
+  `MetadataKeysSettings`.
+- Login and transport: `LoginOptions`, `FetchServerKeyOptions`, `FetchFunction`, `FetchInit`,
+  `FetchResponse`, `ServerKey`.
+- Errors: `PassboltError`, `PassboltErrorCode`.
+- Options: `ResourceFilter`, `ResourceViewFilter`, `FolderFilter`, `UserFilter`, `Share`,
+  `FolderShare`, `NewUser`, `UserChanges`, `NewGroup`, `GroupChanges`.
+
+## Related
+
+- [Overview](README.md): the concepts shared by every language.
+- [API reference](api.md#javascript): how the JavaScript API differs from the other bindings.
+- [Upgrading](upgrading.md): the breaking changes since the 0.1.1 packages.

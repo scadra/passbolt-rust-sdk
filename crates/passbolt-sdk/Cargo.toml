@@ -7,7 +7,7 @@ description = "Passbolt SDK — Rust library for the Passbolt API"
 license = "AGPL-3.0-or-later"
 
 [features]
-default = ["native"]
+default = ["native", "openpgpjs"]
 native = ["dep:reqwest", "dep:tokio"]
 totp = ["dep:totp-rs"]
 full = ["native", "totp"]
@@ -15,7 +15,10 @@ full = ["native", "totp"]
 interop = []
 # The gopenpgp engine, the library of go-passbolt: needs Go to build (`GO`, else `go`).
 gopenpgp = []
-# The OpenPGP.js engine: in an embedded QuickJS, or in WebAssembly the OpenPGP.js of the page.
+# The Sequoia engine, on Nettle: needs Nettle and GMP (`nettle-dev`) and libclang to build.
+sequoia = ["dep:sequoia-openpgp", "dep:sha2"]
+# The OpenPGP.js engine: in an embedded QuickJS, or in WebAssembly the OpenPGP.js of the page,
+# else the bundled one. The default engine, after gopenpgp when it is built; else rPGP.
 openpgpjs = [
     "dep:rquickjs", "dep:aes", "dep:aes-gcm", "dep:cbc", "dep:ctr", "dep:hkdf", "dep:sha2",
     "dep:wasm-bindgen", "dep:js-sys", "dep:wasm-bindgen-futures", "dep:send_wrapper",
@@ -61,6 +64,9 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "rustls-tls-nati
 # TOTP (gated behind totp feature)
 totp-rs = { version = "5", features = ["serde_support", "gen_secret"], optional = true }
 
+# Sequoia engine (gated behind sequoia feature), on Nettle.
+sequoia-openpgp = { version = "2.4", default-features = false, features = ["crypto-nettle", "compression"], optional = true }
+
 # OpenPGP.js engine (gated behind openpgpjs feature): QuickJS and the WebCrypto it needs.
 # In the browser, the engine runs on the OpenPGP.js of the page instead.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -71,6 +77,10 @@ cbc = { version = "0.1", features = ["alloc"], optional = true }
 ctr = { version = "0.9", optional = true }
 hkdf = { version = "0.12", optional = true }
 sha2 = { version = "0.10", optional = true }
+
+# rquickjs ships no bindings for Android and iOS: bindgen writes them, with the libclang of the host.
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+rquickjs = { version = "0.14", features = ["parallel", "bindgen"], optional = true }
 
 # In the browser, rPGP reads the clock and the randomness through the Web APIs.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

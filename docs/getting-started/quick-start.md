@@ -5,8 +5,14 @@ sidebar_position: 2
 
 # Quick start
 
-You need the address of your Passbolt server, your OpenPGP private key (the one of your Passbolt
-account, exported from the browser extension) and its passphrase.
+Connect the CLI to your Passbolt server, then read, write and use your secrets.
+
+## Prerequisites
+
+- The `passbolt` CLI. See [installation](installation.md).
+- The address of your Passbolt server.
+- The OpenPGP private key of your Passbolt account, exported from the browser extension, and its
+  passphrase.
 
 ## 1. Save your settings
 
@@ -17,9 +23,11 @@ passbolt configure \
   --user-password "my-passphrase"
 ```
 
-The content of the key file is saved in `~/.config/passbolt/config.toml`, readable by you only.
-Leave `--user-password` out to be asked for it at each command instead. See
-[configuration](../cli/configuration.md) for every setting.
+The CLI copies the key into `~/.config/passbolt/config.toml`, which only you can read.
+
+:::tip
+Leave `--user-password` out and the CLI asks for the passphrase at each command.
+:::
 
 ## 2. Pin the server's identity
 
@@ -27,37 +35,46 @@ Leave `--user-password` out to be asked for it at each command instead. See
 passbolt verify
 ```
 
-The server proves it holds its private key, and its key is saved: each later login checks it
-again, so another server answering at the same address is refused. Recommended, see
-[authentication](../cli/authentication.md).
+The server proves it holds its private key, and the CLI saves that key. Each later login checks
+it again, so another server answering at the same address is refused.
 
 ## 3. Read your secrets
 
 ```bash
-passbolt list resource                       # id, folder, name, username, uri
-passbolt list resource --search github       # names holding "github", any case
-passbolt get resource --id <UUID>            # decrypted password, description, …
+passbolt list resource
+passbolt list resource --search github
+passbolt get resource --id <UUID>
+```
+
+`list resource` shows the ID, folder, name, username and URI of each resource; `get resource`
+decrypts the password and the description. Add `--json` to read the output with `jq`:
+
+```bash
 passbolt list resource --json | jq '.[].name'
 ```
 
-## 4. Write
+## 4. Create and share a resource
 
 ```bash
 passbolt create resource --name "GitHub" --username "john" --uri https://github.com
 passbolt share resource --id <UUID> --type 7 --user <USER_UUID>
 ```
 
-`create resource` asks for the password when it is not given.
+`create resource` asks for the password when you leave `--password` out.
 
 ## 5. Use a secret without printing it
 
 ```bash
-export DB_PASSWORD="passbolt://<UUID>"
+export PGPASSWORD="passbolt://<UUID>"
 passbolt exec -- psql -U myuser -d mydb
 ```
 
-## Next
+`exec` replaces each variable holding a `passbolt://` URI with the password of that resource,
+for the command it runs only. `psql` reads its password from `PGPASSWORD`.
 
-- Every command: [commands](../cli/commands/README.md).
-- Tables, JSON and `--filter`: [output](../cli/output.md), [filters](../cli/filters.md).
-- MFA accounts: [authentication](../cli/authentication.md#mfa).
+## Next steps
+
+- [Commands](../cli/commands/README.md): every command and its flags.
+- [Output](../cli/output.md) and [filters](../cli/filters.md): tables, JSON and `--filter`.
+- [Authentication](../cli/authentication.md#mfa): accounts with MFA.
+- [Configuration](../cli/configuration.md): every setting.

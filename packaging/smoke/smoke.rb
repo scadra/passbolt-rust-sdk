@@ -25,3 +25,14 @@ abort "passphrase: #{passphrase}" unless passphrase == passphrase.upcase
 abort "strength" unless Passbolt.secret_strength(Passbolt.generate_secret) == Passbolt::Strength::STRONG
 abort "pin" unless Passbolt.generate_pin_code(6).length == 6
 puts "ok: generator"
+
+# The OpenPGP engine of the native library encrypts and decrypts in this host: a test key of the
+# repository, CI checking the engine each package is built with.
+engine = Passbolt.openpgp_engine
+expected = ENV["PASSBOLT_EXPECTED_ENGINE"]
+abort "engine #{engine}, expected #{expected}" if expected && engine != expected
+keys = ENV.fetch("PASSBOLT_SMOKE_KEYS", "crates/passbolt-sdk/tests/fixtures/keys")
+armored = Passbolt.encrypt_message("smoke".b, [File.read(File.join(keys, "erin_public.asc"))])
+plaintext = Passbolt.decrypt_message(armored, File.read(File.join(keys, "erin_private.asc")), "erin-passphrase")
+abort "the message did not come back" unless plaintext == "smoke".b
+puts "ok: #{engine} encrypts and decrypts"

@@ -42,6 +42,27 @@ jobs:
       - run: npm ci --prefix tests/interop --no-audit --no-fund
       - run: cargo test -p passbolt-sdk --features interop --test it interop
 
+  # The engines the default build leaves out: gopenpgp, the default engine of the released
+  # binaries, and Sequoia, on Nettle.
+  engines:
+    name: OpenPGP engines (gopenpgp, Sequoia)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: crates/passbolt-sdk/gopenpgp/go.mod
+          cache-dependency-path: crates/passbolt-sdk/gopenpgp/go.sum
+      - run: sudo apt-get update && sudo apt-get install -y nettle-dev libclang-dev
+      - run: go vet ./... && go test -race ./...
+        working-directory: crates/passbolt-sdk/gopenpgp
+      - run: cargo clippy --workspace --all-targets --features passbolt-sdk/gopenpgp,passbolt-sdk/sequoia -- -D warnings
+      - run: cargo test --workspace --features passbolt-sdk/gopenpgp,passbolt-sdk/sequoia
+
   wasm:
     name: WASM tests (Node)
     runs-on: ubuntu-latest

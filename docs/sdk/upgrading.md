@@ -5,27 +5,39 @@ sidebar_position: 12
 
 # Upgrading
 
-The breaking changes since the 0.1.1 packages, the version the language pages install, in each
-binding and in the CLI. They are the changes of the `[Unreleased]` section of `CHANGELOG.md`,
-made after the tag `v0.1.2`. Each section shows the code before and after.
+Move your code from the 0.1.1 packages to the current SDK, binding by binding.
+
+The 0.1.1 packages are the version the language pages install. The changes below are those of the
+`[Unreleased]` section of `CHANGELOG.md`, made after the tag `v0.1.2`. Each section lists the
+breaking changes, then shows the code before and after.
 
 | Binding | Breaking changes |
 |---|---|
-| Every FFI binding | Type names, resource views and writes, share argument order, `login_with_options`, `logout` |
-| Python | Package `passbolt` instead of `passbolt_ffi` |
-| Ruby | `require "passbolt"` and `Passbolt::` names |
-| Go | Option structs, Go initialisms, `Close` |
-| Java | Records with accessors, builders |
-| Android | kotlinx-coroutines dependency |
-| Swift | Release asset names |
-| .NET | Public types, `PassboltFfi` |
-| JavaScript | Options objects, error codes, `checkPasswordPwned`, `logout` |
-| Rust | `logout` returns a `Result` |
-| CLI | None |
+| [Every FFI binding](#every-ffi-binding) | Type names, resource views and writes, share argument order, `login_with_options`, `logout` |
+| [Python](#python) | Package `passbolt` instead of `passbolt_ffi` |
+| [Ruby](#ruby) | `require "passbolt"` and `Passbolt::` names |
+| [Go](#go) | Option structs, Go initialisms, `Close` |
+| [Java](#java) | Records with accessors, builders |
+| [Android](#android) | kotlinx-coroutines dependency |
+| [Swift](#swift) | Release asset names |
+| [.NET](#net) | Public types, `PassboltFfi` |
+| [JavaScript](#javascript) | Options objects, error codes, `checkPasswordPwned`, `logout` |
+| [Rust](#rust) | `logout` returns a `Result` |
+| [CLI](#cli) | None |
 
 ## Every FFI binding
 
-### Types without the `Ffi` prefix
+These changes apply to Python, Ruby, Go, Java, Android/Kotlin, Swift and .NET:
+
+- The records and the error lose their `Ffi` prefix.
+- `get_resource_view` and `list_resource_views` return records, not JSON text.
+- `create_resource` and `update_resource` take records, not JSON text.
+- Optional arguments and record fields have defaults.
+- `share_resource` and `share_folder` take the permission type first.
+- `login_with_options` is gone.
+- `logout` returns its error.
+
+### Drop the `Ffi` prefix
 
 The records and the error lose their `Ffi` prefix:
 
@@ -36,104 +48,110 @@ The records and the error lose their `Ffi` prefix:
 | `PassboltFfiError` (Python, Ruby, Swift, Go) | `PassboltError` |
 | `PassboltFfiException` (Kotlin, Java, .NET) | `PassboltException` |
 
-```kotlin
-// Before
+```kotlin title="Before"
 val options = FfiLoginOptions(
     tlsSkipVerify = false, proxy = null, mfaTotpToken = null,
     serverPublicKey = serverKey.armoredKey, metadataKeyFingerprint = null,
     timeoutSeconds = null, clientCertificatePem = null, clientKeyPem = null,
 )
 try { client.getResourceView(id) } catch (error: PassboltFfiException.NotFound) { }
+```
 
-// After
+```kotlin title="After"
 val options = LoginOptions(serverPublicKey = serverKey.armoredKey)
 try { client.getResourceView(id) } catch (error: PassboltException.NotFound) { }
 ```
 
-### Resource views are records
+### Read resource views as records
 
 `get_resource_view` and `list_resource_views` returned JSON text; they return a `ResourceView`
 and a list of them. The fields every resource type shares are typed (`name`, `username`, `uris`,
 `description`, `password`, `totp`…); the others are the JSON objects `metadata_json` and
 `secret_json`. See [ResourceView](api.md#resourceview).
 
-```swift
-// Before
+```swift title="Before"
 let json = try client.listResourceViews(search: nil, withSecrets: false)
 let views = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]] ?? []
 let names = views.compactMap { $0["name"] as? String }
+```
 
-// After
+```swift title="After"
 let names = try client.listResourceViews().map(\.name)
 ```
 
-### Resources are written from records
+### Write resources from records
 
 `create_resource` took the JSON text of the new resource, `update_resource` the JSON text of the
 changes. They take a [`NewResource`](api.md#newresource) and a
-[`ResourceChanges`](api.md#resourcechanges). A JSON `"expired": null` cleared the expiry; it is
-`clear_expiry`. Fields without a typed field go in `metadata_fields_json` and
-`secret_fields_json`.
+[`ResourceChanges`](api.md#resourcechanges).
 
-```python
-# Before
+- A JSON `"expired": null` cleared the expiry; it is `clear_expiry`.
+- Fields without a typed field go in `metadata_fields_json` and `secret_fields_json`.
+
+```python title="Before"
 created = client.create_resource(json.dumps({"name": "GitHub", "username": "ada", "password": "…"}))
 client.update_resource(created.id, json.dumps({"password": "new", "expired": None}))
+```
 
-# After
+```python title="After"
 created = client.create_resource(passbolt.NewResource(name="GitHub", username="ada", password="…"))
 client.update_resource(created.id, passbolt.ResourceChanges(password="new", clear_expiry=True))
 ```
 
-### Defaults
+### Leave out default arguments
 
 Optional arguments and record fields have defaults, in the languages that have default arguments
 (Kotlin, Swift, Python, Ruby, C#): `list_resources()`, `list_folders()`, `create_folder(name)`,
 `fetch_server_key(url)`, `LoginOptions(server_public_key=…)`. The defaults of each method are in
-the [API reference](api.md#methods). Calls that give every argument keep working, except
-`share_resource` and `share_folder`.
+the [API reference](api.md#methods).
 
-### `share_resource` and `share_folder`: the permission type first
+Calls that give every argument keep working, except `share_resource` and `share_folder`.
+
+### Pass the permission type first to `share_resource` and `share_folder`
 
 The permission type comes before the users and groups, which are empty by default.
 
-```kotlin
-// Before
+```kotlin title="Before"
 client.shareResource(id, listOf(userId), emptyList(), 7)
 client.shareFolder(id, listOf(userId), emptyList(), 7, true)
+```
 
-// After
+```kotlin title="After"
 client.shareResource(id, permissionType = 7, userIds = listOf(userId))
 client.shareFolder(id, permissionType = 7, userIds = listOf(userId), withContent = true)
 ```
 
-### `login_with_options` is gone
+### Replace `login_with_options` with `login_with_config`
 
-`login_with_config` takes its options, in a `LoginOptions`:
+`login_with_options` is gone. `login_with_config` takes its options, in a `LoginOptions`:
 
-```swift
-// Before
+```swift title="Before"
 let client = try PassboltClient.loginWithOptions(
     serverUrl: url, privateKeyArmored: key, passphrase: passphrase,
     tlsSkipVerify: false, proxy: proxy, mfaTotpToken: totpSecret)
+```
 
-// After
+```swift title="After"
 let client = try PassboltClient.loginWithConfig(
     serverUrl: url, privateKeyArmored: key, passphrase: passphrase,
     options: LoginOptions(proxy: proxy, mfaTotpToken: totpSecret))
 ```
 
-### `logout` fails like any other call
+### Handle `logout` errors
 
-`logout` ignored the answer of the server. It returns its error: a server that cannot be reached
-or refuses the logout raises `PassboltError` (`PassboltException`), and Swift's `logout()` is
-`throws`. The server session then ends when it expires.
+`logout` ignored the answer of the server. It now fails like any other call:
 
-```kotlin
-// Before: logout() never threw
+- A server that cannot be reached or refuses the logout raises `PassboltError`
+  (`PassboltException`).
+- Swift's `logout()` is `throws`.
+- After a failed logout, the server session ends when it expires.
+
+```kotlin title="Before"
+// logout() never threw
 client.logout()
+```
 
-// After
+```kotlin title="After"
 try {
     client.logout()
 } catch (error: PassboltException) {
@@ -150,12 +168,16 @@ and Ruby keep the blocking client. Nothing changes for the code that uses `Passb
 
 ## Python
 
-The package is imported as `passbolt`, over the generated module `passbolt._ffi`. `passbolt.Client`
-logs in with keyword options and logs out at the end of a `with` block; the errors are
-subclasses of `passbolt.PassboltError`.
+Breaking changes:
 
-```python
-# Before
+- The package is imported as `passbolt`, over the generated module `passbolt._ffi`. It was
+  `passbolt_ffi`.
+- `passbolt.Client` logs in with keyword options and logs out at the end of a `with` block.
+- The errors are subclasses of `passbolt.PassboltError`.
+
+The changes of [every FFI binding](#every-ffi-binding) apply too.
+
+```python title="Before"
 import passbolt_ffi
 
 options = passbolt_ffi.FfiLoginOptions(
@@ -171,8 +193,9 @@ except passbolt_ffi.PassboltFfiError.Api as error:
     print(error.status)
 finally:
     client.logout()
+```
 
-# After
+```python title="After"
 import passbolt
 
 with passbolt.Client.login(url, private_key, passphrase, server_public_key=server_key) as client:
@@ -185,12 +208,16 @@ with passbolt.Client.login(url, private_key, passphrase, server_public_key=serve
 
 ## Ruby
 
-`require "passbolt"` gives `Passbolt::Client`, with keyword options, flags as keywords and a block
-that logs out; the errors are `Passbolt::Error`. `require "passbolt_sdk"` still loads the gem, and
-the generated module stays `PassboltFfi`, with the new type names.
+Breaking changes:
 
-```ruby
-# Before
+- `require "passbolt"` gives `Passbolt::Client`, with keyword options, flags as keywords and a
+  block that logs out.
+- The errors are `Passbolt::Error`.
+
+`require "passbolt_sdk"` still loads the gem, and the generated module stays `PassboltFfi`, with
+the new type names.
+
+```ruby title="Before"
 require "passbolt_sdk"
 
 client = PassboltFfi::PassboltClient.login(url, private_key, passphrase)
@@ -202,8 +229,9 @@ rescue PassboltFfi::PassboltFfiError::NotFound
 ensure
   client.logout
 end
+```
 
-# After
+```ruby title="After"
 require "passbolt"
 
 Passbolt::Client.login(url, private_key, passphrase) do |client|
@@ -215,6 +243,8 @@ end
 ```
 
 ## Go
+
+Breaking changes:
 
 - The generated package was `passbolt_ffi`; it is `passbolt`. With the import name `passbolt`,
   nothing changes.
@@ -228,16 +258,16 @@ end
 - The error is `*passbolt.PassboltError`, its variants `*PassboltErrorAuth`,
   `*PassboltErrorAPI`, `*PassboltErrorNotFound`…
 
-```go
-// Before
+```go title="Before"
 defer client.Destroy()
 defer client.Logout()
 search := "github"
 viewsJSON, err := client.ListResourceViews(&search, false)
 // … json.Unmarshal into []map[string]any, then view["id"]
 err = client.ShareResource(resourceID, []string{userID}, []string{}, 7)
+```
 
-// After
+```go title="After"
 defer client.Close()
 views, err := client.ListResourceViews(&passbolt.ResourceViewListOptions{Search: "github"})
 // … views[0].ID, views[0].Name
@@ -247,26 +277,29 @@ err = client.ShareResource(resourceID, passbolt.Share{
 })
 ```
 
-`passbolt.Call` and `passbolt.Run` are new: they stop waiting for a call when a
-`context.Context` ends.
+New: `passbolt.Call` and `passbolt.Run` stop waiting for a call when a `context.Context` ends.
 
 ## Java
 
-The records are Java records, read with their accessors (`created.id()`, `view.name()`). The
-records you write have builders that start from their
-defaults: `LoginOptionsBuilder`, `NewResourceBuilder`, `ResourceChangesBuilder`,
-`TotpDataBuilder`. Java has no default arguments: the methods still take every argument.
+Breaking changes:
 
-```java
-// Before
+- The records are Java records, read with their accessors (`created.id()`, `view.name()`).
+- The records you write have builders that start from their defaults: `LoginOptionsBuilder`,
+  `NewResourceBuilder`, `ResourceChangesBuilder`, `TotpDataBuilder`.
+
+Java has no default arguments: the methods still take every argument. The jar declares the
+automatic module name `com.passbolt.sdk`.
+
+```java title="Before"
 FfiLoginOptions options = new FfiLoginOptions(
     false, null, null, serverPublicKey, null, null, null, null);
 PassboltClient client = PassboltClient.loginWithConfig(url, privateKey, passphrase, options);
 String viewsJson = client.listResourceViews("github", false);
 client.createResource("{\"name\": \"GitHub\", \"password\": \"…\"}");
 client.shareResource(resourceId, List.of(userId), List.of(), 7);
+```
 
-// After
+```java title="After"
 LoginOptions options = new LoginOptionsBuilder().serverPublicKey(serverPublicKey).build();
 PassboltClient client = PassboltClient.loginWithConfig(url, privateKey, passphrase, options);
 List<ResourceView> views = client.listResourceViews("github", false);
@@ -274,14 +307,18 @@ client.createResource(new NewResourceBuilder("GitHub").password("…").build());
 client.shareResource(resourceId, 7, List.of(userId), List.of());
 ```
 
-The jar declares the automatic module name `com.passbolt.sdk`.
-
 ## Android
 
-The AAR depends on `org.jetbrains.kotlinx:kotlinx-coroutines-core`, for the `suspend` functions
-of `AsyncPassboltClient`. Maven Central brings it along; with the AAR file of a release, add it:
+Breaking changes:
 
-```kotlin
+- The AAR depends on `org.jetbrains.kotlinx:kotlinx-coroutines-core`, for the `suspend`
+  functions of `AsyncPassboltClient`. Maven Central brings it along; with the AAR file of a
+  release, add it.
+- The changes of [every FFI binding](#every-ffi-binding) apply: `LoginOptions`,
+  `PassboltException`, `ResourceView`, `NewResource`, `ResourceChanges`, and the permission type
+  first in `shareResource` and `shareFolder`.
+
+```kotlin title="After"
 dependencies {
     implementation(files("libs/passbolt-sdk-android-<version>.aar"))
     implementation("net.java.dev.jna:jna:5.14.0@aar")
@@ -289,19 +326,19 @@ dependencies {
 }
 ```
 
-The changes of [every FFI binding](#every-ffi-binding) apply: `LoginOptions`,
-`PassboltException`, `ResourceView`, `NewResource`, `ResourceChanges`, and the permission type
-first in `shareResource` and `shareFolder`.
-
 ## Swift
 
-The module is still `import PassboltSDK`, over a C module renamed `PassboltSDKFFI`. The package
-also builds for macOS 12. The release assets are `PassboltSDK-<version>.zip` (it was
-`PassboltSDK-ios-<version>.zip`) and `PassboltSDKFFI.xcframework.zip`. The records are `Codable`,
-and the errors describe themselves with the Rust messages (`localizedDescription`).
+Breaking changes:
 
-```swift
-// Before
+- The release assets are `PassboltSDK-<version>.zip` (it was `PassboltSDK-ios-<version>.zip`) and
+  `PassboltSDKFFI.xcframework.zip`.
+- The C module is renamed `PassboltSDKFFI`. The module is still `import PassboltSDK`.
+- `logout()` throws, and the error is `PassboltError`.
+
+The package also builds for macOS 12. The records are `Codable`, and the errors describe
+themselves with the Rust messages (`localizedDescription`).
+
+```swift title="Before"
 do {
     let client = try PassboltClient.login(
         serverUrl: url, privateKeyArmored: key, passphrase: passphrase)
@@ -309,8 +346,9 @@ do {
 } catch PassboltFfiError.Auth(let reason) {
     print("login refused: \(reason)")
 }
+```
 
-// After
+```swift title="After"
 do {
     let client = try PassboltClient.login(
         serverUrl: url, privateKeyArmored: key, passphrase: passphrase)
@@ -323,12 +361,21 @@ do {
 ## .NET
 
 The types of the 0.1.1 package were all `internal`, generated with the default access of
-uniffi-bindgen-cs: code outside the package could not call them. They are public. The stateless
-functions are static methods of `PassboltFfi` (`PassboltFfi.FetchServerKey`,
-`PassboltFfi.GetKeyFingerprint`), the exception is `PassboltException`, the records are C#
-records, and the arguments with a default can be left out, by name:
+uniffi-bindgen-cs: code outside the package could not call them.
 
-```csharp
+Breaking changes:
+
+- The types are public.
+- The stateless functions are static methods of `PassboltFfi` (`PassboltFfi.FetchServerKey`,
+  `PassboltFfi.GetKeyFingerprint`).
+- The exception is `PassboltException`.
+- The records are C# records.
+- The arguments with a default can be left out, by name.
+
+The package holds the native libraries under `runtimes/<rid>/native` once, with the XML
+documentation.
+
+```csharp title="After"
 using var client = PassboltClient.Login("https://passbolt.example.com", privateKey, passphrase);
 foreach (var view in client.ListResourceViews(search: "github"))
 {
@@ -338,10 +385,9 @@ client.ShareResource(resourceId, permissionType: 7, userIds: [userId]);
 client.Logout();
 ```
 
-The package holds the native libraries under `runtimes/<rid>/native` once, with the XML
-documentation.
-
 ## JavaScript
+
+Breaking changes:
 
 - The methods with optional arguments take an options object, with camelCase keys.
 - Errors are `Error`s named `PassboltError` with a `code` (`NOT_FOUND`, `API` with the HTTP
@@ -350,9 +396,10 @@ documentation.
 - `checkPasswordPwned` returns a `number`; it was a `bigint`.
 - `logout` rejects with the error of the server; it ignored it.
 - Each session has its own `csrfTokenProvider`.
-- New: a `fetch` login option, also taken by `fetchServerKey`, sends the requests in place of the
-  global `fetch`: undici's with a proxy or a certificate authority under Node.
 - Node.js 20.19 or later.
+
+New: a `fetch` login option, also taken by `fetchServerKey`, sends the requests in place of the
+global `fetch`: undici's with a proxy or a certificate authority under Node.
 
 | Before | After |
 |---|---|
@@ -367,8 +414,7 @@ documentation.
 | `createGroup(name, memberIds, managerIds)` | `createGroup({ name, memberIds, managerIds })` |
 | `updateGroup(id, name, addMemberIds, addManagerIds, removeMemberIds)` | `updateGroup(id, { name, addMemberIds, addManagerIds, removeMemberIds })` |
 
-```ts
-// Before
+```ts title="Before"
 const views = await session.listResourceViews("github", false);
 await session.shareResource(id, [userId], [], 7);
 try {
@@ -376,8 +422,9 @@ try {
 } catch (error) {
   console.error((error as Error).message);
 }
+```
 
-// After
+```ts title="After"
 const views = await session.listResourceViews({ search: "github" });
 await session.shareResource(id, { userIds: [userId], permissionType: 7 });
 try {
@@ -392,20 +439,30 @@ The full list of methods and codes is on the [JavaScript](javascript.md) page.
 
 ## Rust
 
-`PassboltSdk::logout` returns `Result<(), PassboltError>`: an error means the server may still
-hold the session, until it expires.
+Breaking changes:
 
-```rust
-// Before
+- `PassboltSdk::logout` returns `Result<(), PassboltError>`: an error means the server may still
+  hold the session, until it expires.
+
+```rust title="Before"
 client.logout().await;
+```
 
-// After
+```rust title="After"
 client.logout().await?;
 ```
 
 ## CLI
 
-No breaking change: the commands, flags, environment variables and outputs stay the same. A
-failed logout at the end of a command prints `Warning: failed to log out: …` on stderr and the
-command keeps its result. New: `passbolt tui`, `passbolt generate`, and `--generate` on
-`create resource` and `update resource`.
+No breaking change: the commands, flags, environment variables and outputs stay the same.
+
+- A failed logout at the end of a command prints `Warning: failed to log out: …` on stderr, and
+  the command keeps its result.
+- New: `passbolt tui`, `passbolt generate`, and `--generate` on `create resource` and
+  `update resource`.
+
+## Related
+
+- [API reference](api.md): every method, function and record of the FFI bindings.
+- [JavaScript](javascript.md): the npm package, its methods and error codes.
+- [Go](go.md#options): the option structs of the Go binding.

@@ -16,6 +16,7 @@ const given = {
   userId: "string",
   groupId: "string",
   folderId: "string",
+  internalCaPem: "string",
   session: 'import("@switch-case/passbolt-sdk").PassboltSession',
   browser:
     "{ cookies: { get(details: { name: string; url: string }): Promise<{ value: string } | null> } }",

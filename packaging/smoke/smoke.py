@@ -1,6 +1,8 @@
 # The installed wheel loads its native library, maps Rust errors to Python exceptions and
 # exposes the Python names of the generated bindings.
 import asyncio
+import os
+from pathlib import Path
 
 import passbolt
 from passbolt import _ffi
@@ -50,3 +52,14 @@ print("ok: generator")
 
 # The awaited call runs on the SDK's runtime and raises with its fields, as the blocking one.
 print(f"ok: async {asyncio.run(refused_login())!r}")
+
+# The OpenPGP engine of the native library encrypts and decrypts in this host: a test key of the
+# repository, CI checking the engine each package is built with.
+engine = passbolt.openpgp_engine()
+expected = os.environ.get("PASSBOLT_EXPECTED_ENGINE")
+assert expected is None or engine == expected, f"engine {engine}, expected {expected}"
+keys = Path(os.environ.get("PASSBOLT_SMOKE_KEYS", "crates/passbolt-sdk/tests/fixtures/keys"))
+armored = passbolt.encrypt_message(b"smoke", [(keys / "erin_public.asc").read_text()])
+private_key = (keys / "erin_private.asc").read_text()
+assert passbolt.decrypt_message(armored, private_key, "erin-passphrase") == b"smoke"
+print(f"ok: {engine} encrypts and decrypts")

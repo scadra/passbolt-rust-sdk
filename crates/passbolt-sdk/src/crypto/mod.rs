@@ -10,13 +10,16 @@
 // @link          https://www.passbolt.com Passbolt(tm)
 // @since         0.1.0
 
-//! `OpenPGP` operations, run by the engine a key was read with: rpgp unless another is chosen.
+//! `OpenPGP` operations, run by the engine a key was read with: by default gopenpgp when it is
+//! built, else OpenPGP.js, else rpgp.
 
 #[cfg(all(feature = "gopenpgp", not(target_arch = "wasm32")))]
 mod gopenpgp;
 #[cfg(feature = "openpgpjs")]
 mod openpgpjs;
 mod rpgp;
+#[cfg(all(feature = "sequoia", not(target_arch = "wasm32")))]
+mod sequoia;
 
 #[cfg(test)]
 mod engine_tests;
@@ -33,6 +36,8 @@ pub use self::gopenpgp::Gopenpgp;
 #[cfg(feature = "openpgpjs")]
 pub use self::openpgpjs::OpenPgpJs;
 pub use self::rpgp::Rpgp;
+#[cfg(all(feature = "sequoia", not(target_arch = "wasm32")))]
+pub use self::sequoia::Sequoia;
 use crate::error::CryptoError;
 
 /// What an engine keeps of a key it read.
@@ -138,6 +143,13 @@ impl OpenPgp {
         Self::new(Gopenpgp)
     }
 
+    /// The Sequoia engine, on Nettle.
+    #[cfg(all(feature = "sequoia", not(target_arch = "wasm32")))]
+    #[must_use]
+    pub fn sequoia() -> Self {
+        Self::new(Sequoia)
+    }
+
     /// The OpenPGP.js engine on `openpgp`, the OpenPGP.js module of the page.
     #[cfg(all(feature = "openpgpjs", target_arch = "wasm32"))]
     #[must_use]
@@ -186,8 +198,22 @@ impl OpenPgp {
 }
 
 impl Default for OpenPgp {
+    /// gopenpgp, the library of go-passbolt, when the `gopenpgp` feature is built (natively);
+    /// else OpenPGP.js, the library of the browser extension, when the `openpgpjs` feature is
+    /// built (the default); else rpgp.
     fn default() -> Self {
-        Self::rpgp()
+        #[cfg(all(feature = "gopenpgp", not(target_arch = "wasm32")))]
+        return Self::gopenpgp();
+        #[cfg(all(
+            feature = "openpgpjs",
+            not(all(feature = "gopenpgp", not(target_arch = "wasm32")))
+        ))]
+        return openpgpjs::default_engine();
+        #[cfg(not(any(
+            feature = "openpgpjs",
+            all(feature = "gopenpgp", not(target_arch = "wasm32"))
+        )))]
+        return Self::rpgp();
     }
 }
 
@@ -416,8 +442,16 @@ mod tests {
     }
 
     #[test]
-    fn test_the_default_engine_is_rpgp() {
-        assert_eq!(OpenPgp::default().name(), "rpgp");
+    fn test_the_default_engine_is_gopenpgp_else_openpgpjs() {
+        let expected = if cfg!(feature = "gopenpgp") {
+            "gopenpgp"
+        } else if cfg!(feature = "openpgpjs") {
+            "openpgpjs"
+        } else {
+            "rpgp"
+        };
+
+        assert_eq!(OpenPgp::default().name(), expected);
     }
 
     #[rstest]

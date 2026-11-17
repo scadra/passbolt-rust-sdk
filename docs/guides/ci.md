@@ -5,19 +5,22 @@ sidebar_position: 2
 
 # CI pipelines
 
-The CLI reads all its settings from `PASSBOLT_*` variables: a pipeline needs no config file. Its
-secrets come from the secret store of the CI, and `passbolt exec` hands them to the job without
-printing them.
+Run the CLI in GitHub Actions or GitLab CI with an account of its own, and hand secrets to your
+jobs without printing them.
 
-## A dedicated account
+The CLI reads all its settings from `PASSBOLT_*` variables, so a pipeline needs no config file.
+The secrets come from the secret store of your CI, and `passbolt exec` hands them to the job.
+
+## Prerequisites
+
+- The `passbolt` CLI on a trusted machine, to create the account and read the server key. See
+  [installation](../getting-started/installation.md).
+- A place in your CI for secrets and variables: repository or environment secrets on GitHub,
+  CI/CD variables on GitLab.
+
+## 1. Create a dedicated account
 
 Create a Passbolt user for the CI, with its own OpenPGP key, instead of using a person's account:
-
-- Share with it only the resources the pipeline reads, with the `1` (read) permission. A group
-  such as `ci` makes this easy to review (see [sharing](sharing.md)).
-- Its key and passphrase are only in the CI secret store. If they leak, disable or delete this
-  user and nobody else is affected.
-- Its actions show under its own name on the server.
 
 ```bash
 passbolt create user --username ci@example.com --firstname CI --lastname Pipeline --role user
@@ -26,27 +29,19 @@ passbolt create user --username ci@example.com --firstname CI --lastname Pipelin
 The user then completes the setup in the browser extension, as any user does, and exports its
 private key from there.
 
-## Settings
+A dedicated account keeps the pipeline apart from people:
 
-| Variable | Content | Where it comes from |
-|---|---|---|
-| `PASSBOLT_SERVER_ADDRESS` | `https://passbolt.example.com` | CI variable |
-| `PASSBOLT_USER_PRIVATE_KEY` | The armored private key of the CI account | CI secret |
-| `PASSBOLT_USER_PRIVATE_KEY_FILE` | Or: the path of a file holding it | CI secret file |
-| `PASSBOLT_USER_PASSWORD` | Its passphrase | CI secret |
-| `PASSBOLT_SERVER_PUBLIC_KEY` | The pinned server key (see below) | CI variable |
-| `PASSBOLT_MFA_MODE` | `noninteractive-totp` when the account has TOTP | CI variable |
-| `PASSBOLT_MFA_TOTP_TOKEN` | The TOTP secret of the account | CI secret |
+- Share with it only the resources the pipeline reads, with the `1` (read) permission. A group
+  such as `ci` makes this easy to review. See [sharing](sharing.md).
+- Its key and passphrase live only in the CI secret store. If they leak, disable or delete this
+  user and nobody else is affected.
+- Its actions show under its own name on the server.
 
-Every setting of [configuration](../cli/configuration.md) has such a variable. An empty variable
-counts as unset. Without `PASSBOLT_USER_PASSWORD`, the CLI asks for the passphrase on stdin and
-the job fails on `EOF`.
-
-## Pinning the server key
+## 2. Pin the server key
 
 `passbolt verify` saves the server key in a config file, and each later login checks that the
-server holds the matching private key. A CI job starts with no config file: give it the key in
-`PASSBOLT_SERVER_PUBLIC_KEY` instead.
+server holds the matching private key. A CI job starts with no config file, so you give it the
+key in `PASSBOLT_SERVER_PUBLIC_KEY` instead.
 
 Get the key once, from a trusted machine, with the settings of the CI account:
 
@@ -56,33 +51,67 @@ export PASSBOLT_USER_PRIVATE_KEY_FILE=ci-private.asc
 passbolt --config ./ci.toml verify
 ```
 
-`ci.toml` then holds `server_public_key`, and `metadata_key_fingerprint` when the account has no
-MFA. Secrets given by a variable are never written to it. Copy the value of `server_public_key`
-(the armored block, without the quotes) into the CI variable `PASSBOLT_SERVER_PUBLIC_KEY`, and
-`metadata_key_fingerprint` into `PASSBOLT_METADATA_KEY_FINGERPRINT` if the pipeline writes
-shared resources. Delete `ci.toml` afterwards.
+`ci.toml` now holds `server_public_key`, and `metadata_key_fingerprint` when the account has no
+MFA. Secrets given by a variable are never written to it.
+
+1. Copy the value of `server_public_key` (the armored block, without the quotes) into the CI
+   variable `PASSBOLT_SERVER_PUBLIC_KEY`.
+2. If the pipeline writes shared resources, copy `metadata_key_fingerprint` into
+   `PASSBOLT_METADATA_KEY_FINGERPRINT`.
+3. Delete `ci.toml`.
 
 With the key set, a login to a server that cannot decrypt a fresh token for it fails. After a
 change of the server key, confirmed by your administrator, run `verify --force` again and update
 the variable.
 
-## MFA
+## 3. Store the settings
 
-An account with TOTP needs `PASSBOLT_MFA_MODE=noninteractive-totp` and the TOTP secret (the
-base32 secret of the authenticator setup, not a 6-digit code) in `PASSBOLT_MFA_TOTP_TOKEN`. The
-CLI computes the code. If the runner clock drifts, set `PASSBOLT_MFA_TOTP_OFFSET` (for example
-`-30s`). The CLI sends at most 3 codes per session. See [MFA](../cli/authentication.md#mfa).
+| Variable | Content | Where it comes from |
+|---|---|---|
+| `PASSBOLT_SERVER_ADDRESS` | `https://passbolt.example.com` | CI variable |
+| `PASSBOLT_USER_PRIVATE_KEY` | The armored private key of the CI account | CI secret |
+| `PASSBOLT_USER_PRIVATE_KEY_FILE` | Or: the path of a file holding it | CI secret file |
+| `PASSBOLT_USER_PASSWORD` | Its passphrase | CI secret |
+| `PASSBOLT_SERVER_PUBLIC_KEY` | The pinned server key, from step 2 | CI variable |
+| `PASSBOLT_MFA_MODE` | `noninteractive-totp` when the account has TOTP | CI variable |
+| `PASSBOLT_MFA_TOTP_TOKEN` | The TOTP secret of the account | CI secret |
+
+Every setting of [configuration](../cli/configuration.md) has such a variable. An empty variable
+counts as unset.
+
+:::caution
+Without `PASSBOLT_USER_PASSWORD`, the CLI asks for the passphrase on stdin, and the job fails on
+`EOF`.
+:::
+
+## 4. Answer MFA
+
+If the account has TOTP, set `PASSBOLT_MFA_MODE=noninteractive-totp` and put the TOTP secret in
+`PASSBOLT_MFA_TOTP_TOKEN`: the base32 secret of the authenticator setup, not a 6-digit code. The
+CLI computes the code.
+
+- If the runner clock drifts, set `PASSBOLT_MFA_TOTP_OFFSET`, for example `-30s`.
+- The CLI sends at most 3 codes per session.
 
 An account without MFA can keep the default mode: no code is asked for when the server does not
-ask.
+ask. See [MFA](../cli/authentication.md#mfa).
 
-## GitHub Actions
+## 5. Add the job
+
+Both examples install a pinned version of the CLI, check it, and run `deploy.sh` through
+`passbolt exec`.
+
+- The release archives are named `passbolt-cli-<version>-<target>.tar.gz`. The musl one runs on
+  any x86_64 Linux. Pin the version, and check the archive against `SHA256SUMS`.
+- `deploy.sh` finds the decrypted password in `$DB_PASSWORD`. See [injecting secrets](exec.md).
+
+### GitHub Actions
 
 Store `PASSBOLT_USER_PRIVATE_KEY`, `PASSBOLT_USER_PASSWORD` and `PASSBOLT_MFA_TOTP_TOKEN` as
-repository or environment secrets, and `PASSBOLT_SERVER_ADDRESS`, `PASSBOLT_SERVER_PUBLIC_KEY`
+repository or environment secrets. Store `PASSBOLT_SERVER_ADDRESS`, `PASSBOLT_SERVER_PUBLIC_KEY`
 and `DB_RESOURCE_ID` as variables.
 
-```yaml
+```yaml title=".github/workflows/deploy.yml"
 name: Deploy
 
 on:
@@ -121,25 +150,22 @@ jobs:
         run: passbolt exec -- ./deploy.sh
 ```
 
-- The release archives are named `passbolt-cli-<version>-<target>.tar.gz`; the musl one runs on
-  any x86_64 Linux. Pin the version, and check the archive against `SHA256SUMS` as above.
-- The secrets are given to the step that needs them only, not to the whole job: other steps, and
-  the actions they run, do not see them.
-- `deploy.sh` finds the decrypted password in `$DB_PASSWORD`. See [injecting secrets](exec.md).
+The secrets are given to the step that needs them, not to the whole job: other steps, and the
+actions they run, do not see them.
 
-## GitLab CI
+### GitLab CI
 
 Under **Settings > CI/CD > Variables**, add:
 
 - `PASSBOLT_SERVER_ADDRESS`, `PASSBOLT_SERVER_PUBLIC_KEY` and `DB_RESOURCE_ID`, as plain
-  variables;
-- `PASSBOLT_USER_PRIVATE_KEY_FILE`, of type **File**, holding the private key: GitLab writes it
-  to a file and puts the path of that file in the variable;
+  variables.
+- `PASSBOLT_USER_PRIVATE_KEY_FILE`, of type **File**, holding the private key. GitLab writes it
+  to a file and puts the path of that file in the variable.
 - `PASSBOLT_USER_PASSWORD` and `PASSBOLT_MFA_TOTP_TOKEN`, **masked** and **protected**.
 
 A masked variable must fit on one line, which an armored key does not: hence the File variable.
 
-```yaml
+```yaml title=".gitlab-ci.yml"
 deploy:
   image: alpine:3.20
   variables:
@@ -161,10 +187,10 @@ deploy:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 ```
 
-Protected variables are only given to pipelines of protected branches and tags: the rule above
-runs the job on the default branch only.
+GitLab gives protected variables only to pipelines of protected branches and tags, so the rule
+above runs the job on the default branch only.
 
-## Keeping secrets out of the logs
+## Keep secrets out of the logs
 
 - Prefer `passbolt exec`: the secret goes into the environment of the command, never into the
   log or the command line.
@@ -178,8 +204,16 @@ runs the job on the default branch only.
 
 - GitLab masks the masked variables only. A password read with `get resource` is not one of them.
 - Do not run `set -x` in a script that handles a secret: the shell prints each command with its
-  arguments. Do not pass a secret as an argument either (`--password "$value"`): other processes
-  of the runner can read the command line.
-- `--debug` prints the requests and the settings, never the secrets.
-  `passbolt exec --debug` names each variable it fills, not its value.
+  arguments.
+- Do not pass a secret as an argument (`--password "$value"`): other processes of the runner can
+  read the command line.
+- `--debug` prints the requests and the settings, never the secrets. `passbolt exec --debug`
+  names each variable it fills, not its value.
 - Do not write a secret to `$GITHUB_ENV`, an artifact or the cache: they outlive the job.
+
+## Next steps
+
+- [Injecting secrets](exec.md): hand secrets to Docker, Terraform or Ansible.
+- [Scripting](scripting.md): read the JSON output with `jq`.
+- [Configuration](../cli/configuration.md): every `PASSBOLT_*` variable.
+- [Authentication](../cli/authentication.md#mfa): MFA modes.

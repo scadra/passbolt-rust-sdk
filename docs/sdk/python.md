@@ -5,15 +5,23 @@ sidebar_position: 4
 
 # Python
 
+Use the `passbolt` package to log in to Passbolt and read, write and share secrets from Python,
+with blocking calls or asyncio.
+
+## Installation
+
+The package is on PyPI as `switch-case-passbolt-sdk`. It needs Python 3.9 or later, on Linux
+(x86_64, aarch64), macOS or Windows.
+
 ```bash
 pip install switch-case-passbolt-sdk
 ```
 
-Python 3.9 or later, on Linux (x86_64, aarch64), macOS and Windows. The package is `passbolt`:
-the calls of `passbolt.Client` block, those of `passbolt.AsyncClient` are awaited. It ships type
-hints (`py.typed`).
+You import it as `passbolt`. It ships type hints (`py.typed`).
 
-## Log in and list
+## Initialize
+
+Log in with `passbolt.Client.login`. Its calls block; for asyncio, see [Async calls](#async-calls).
 
 ```python
 import os
@@ -33,30 +41,21 @@ with passbolt.Client.login(
 The `with` block logs out at the end; without it, call `client.logout()`. A failed logout raises
 its `PassboltError`, unless the block is already leaving on an exception.
 
-## asyncio
+## Login options
 
-`passbolt.AsyncClient` has the methods of `Client` as coroutines, and the same login keywords.
-The requests run on the SDK's own threads: the event loop goes on meanwhile, and
-`asyncio.gather` runs several at once. `async with` logs out at the end, as `with` does.
+`login` takes these keywords after the URL, the key and the passphrase. Every keyword is optional.
 
-```python
-import asyncio
+| Keyword | Type | Description |
+|---|---|---|
+| `server_public_key` | `str` | The armored server key pinned with `passbolt.fetch_server_key`. |
+| `metadata_key_fingerprint` | `str` | The pinned fingerprint of the shared metadata key. |
+| `mfa_totp_token` | `str` | The base32 TOTP secret, for an account with TOTP. |
+| `timeout_seconds` | `int` | Seconds a request may take. Default: 60; `0` waits forever. |
+| `tls_skip_verify` | `bool` | Skip the certificate check. Default: `False`. |
+| `proxy` | `str` | The proxy URL. |
+| `client_certificate_pem`, `client_key_pem` | `str` | The PEM certificate and key, for mTLS. |
 
-import passbolt
-
-
-async def names(private_key: str, passphrase: str) -> list[str]:
-    async with await passbolt.AsyncClient.login(
-        "https://passbolt.example.com", private_key, passphrase
-    ) as client:
-        views, folders = await asyncio.gather(
-            client.list_resource_views("github"), client.list_folders()
-        )
-        print(len(folders), "folders")
-        return [view.name for view in views]
-```
-
-## Pinning the server, MFA, TLS
+### Pin the server key
 
 ```python
 server_key = passbolt.fetch_server_key("https://passbolt.example.com")
@@ -76,14 +75,29 @@ client = passbolt.Client.login(
 )
 ```
 
-Every keyword is optional.
+## Read resources
 
-## Reading and writing
+The calls return typed objects: `passbolt.ResourceView`, `passbolt.Resource`, `passbolt.Folder`,
+`passbolt.User`… A `ResourceView` holds the fields every resource type shares, decrypted; the
+others, custom fields and icon among them, are the JSON objects `metadata_json` and
+`secret_json`.
+
+### Read a password
 
 ```python
 view = client.get_resource_view(resource_id)
 print(view.password)
+```
 
+## Create and share resources
+
+`create_resource` takes a `passbolt.NewResource`, `update_resource` a `passbolt.ResourceChanges`.
+The fields you leave out keep their default. `passbolt.PermissionType` holds `READ`, `UPDATE`,
+`OWNER` and `REVOKE`.
+
+### Create, update, share and move a resource
+
+```python
 created = client.create_resource(
     passbolt.NewResource(name="GitHub", username="ada", password="…")
 )
@@ -94,16 +108,13 @@ folder = client.create_folder("Ops")
 client.move_resource(created.id, folder.id)
 ```
 
-The calls return typed objects: `passbolt.ResourceView`, `passbolt.Resource`,
-`passbolt.Folder`, `passbolt.User`… A `ResourceView` holds the fields every resource type shares,
-decrypted; the others, custom fields and icon among them, are the JSON objects `metadata_json` and
-`secret_json`. The fields left out of `NewResource` and `ResourceChanges` keep their default.
+## Generate a password
 
-## Generating passwords
+Generate passwords from character sets, passphrases of words of the EFF list, and PIN codes, as
+the browser extension does. Start from the password policies of the organization or from settings
+of your own: a setting you leave out keeps the default of Passbolt.
 
-As the browser extension: passwords from character sets, passphrases of words of the EFF list,
-PIN codes, from the password policies of the organization or settings of your own. A setting
-left out keeps the default of Passbolt.
+### Generate secrets and rate them
 
 ```python
 policies = client.get_password_policies()  # the organization's: generator and settings
@@ -119,10 +130,15 @@ print(passbolt.secret_strength(password))  # Strength.VERY_STRONG, as the extens
 print(passbolt.secret_entropy(password))   # in bits
 ```
 
-Without arguments, `generate_password`, `generate_passphrase` and `generate_secret` use the
-defaults of Passbolt: 18 characters of every set but emoji.
+Without arguments, `generate_password` and `generate_secret` use the defaults of Passbolt: 18
+characters of every set but emoji. `generate_passphrase` gives 9 lowercase words joined by spaces.
 
-## Errors
+## Handle errors
+
+`passbolt.PassboltError` is the base of `TransportError`, `AuthError`, `CryptoError`, `ApiError`
+(with the HTTP `status`), `NotFoundError`, `ConfigError` and `InvalidArgumentError`.
+
+### Catch a crypto error and an API error
 
 ```python
 try:
@@ -135,10 +151,40 @@ except passbolt.PassboltError as error:
     print("failed:", error)
 ```
 
-`passbolt.PassboltError` is the base of `TransportError`, `AuthError`, `CryptoError`, `ApiError`,
-`NotFoundError`, `ConfigError` and `InvalidArgumentError`.
+## Async calls
+
+`passbolt.AsyncClient` has the methods of `Client` as coroutines, and the same login keywords.
+The requests run on the SDK's own threads: the event loop goes on meanwhile, and
+`asyncio.gather` runs several at once. `async with` logs out at the end, as `with` does.
+
+### Run two requests at once
+
+```python
+import asyncio
+
+import passbolt
+
+
+async def names(private_key: str, passphrase: str) -> list[str]:
+    async with await passbolt.AsyncClient.login(
+        "https://passbolt.example.com", private_key, passphrase
+    ) as client:
+        views, folders = await asyncio.gather(
+            client.list_resource_views("github"), client.list_folders()
+        )
+        print(len(folders), "folders")
+        return [view.name for view in views]
+```
+
+## Method names
 
 The methods are those of the [overview](README.md#what-the-api-covers), in snake_case:
-`list_folders`, `create_folder`, `delete_user_with_transfer`, `set_resource_tags`… The
-optional arguments have defaults (`list_resources(favorites_only=True)`). The generated bindings stay available as
-`passbolt._ffi`.
+`list_folders`, `create_folder`, `delete_user_with_transfer`, `set_resource_tags`… The optional
+arguments have defaults (`list_resources(favorites_only=True)`). The generated bindings stay
+available as `passbolt._ffi`.
+
+## Related
+
+- [Overview](README.md): the concepts shared by every language.
+- [API reference](api.md): every method, function and record.
+- [Upgrading](upgrading.md): the breaking changes since the 0.1.1 packages.

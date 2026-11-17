@@ -5,18 +5,27 @@ sidebar_position: 6
 
 # Backups
 
-`passbolt export keepass` writes the resources an account can read to an encrypted KeePass file;
-`passbolt export csv` writes them in clear, for another password manager. Run on a schedule,
-they give a copy of the vault that opens without the Passbolt server.
+Export your vault on a schedule to a KeePass file that opens without the Passbolt server, and
+restore it with `passbolt import`.
 
+`passbolt export keepass` writes the resources an account can read to an encrypted KeePass file.
+`passbolt export csv` writes them in clear, for another password manager.
+
+:::note
 An export holds what the account can read, decrypted: not the permissions, the groups, the users
 or the history. It does not replace a backup of the server (its database and its keys), which
 the administrator makes.
+:::
 
-## The account
+## Prerequisites
 
-Use a dedicated account with read access to what must be backed up, as for
-[CI pipelines](ci.md#a-dedicated-account), and a config file for it alone:
+- A dedicated Passbolt account with read access to what must be backed up, as for
+  [CI pipelines](ci.md#1-create-a-dedicated-account).
+- A system user `backup` on the machine that runs the backups.
+
+## 1. Configure the account
+
+Give the account a config file of its own:
 
 ```bash
 sudo -u backup passbolt --config /etc/passbolt-backup/config.toml configure \
@@ -25,51 +34,66 @@ sudo -u backup passbolt --config /etc/passbolt-backup/config.toml configure \
 sudo -u backup passbolt --config /etc/passbolt-backup/config.toml verify
 ```
 
-`configure` saves the content of the key file, readable by its owner only (`0600`); the key file
-itself can then be removed. The passphrase is left out of the file here: it comes from a
-variable at each run (see below). An account with TOTP also needs
-`PASSBOLT_MFA_MODE=noninteractive-totp` and `PASSBOLT_MFA_TOTP_TOKEN`
-(see [MFA](../cli/authentication.md#mfa)).
+- `configure` saves the content of the key file, readable by its owner only (`0600`). You can
+  then remove the key file itself.
+- The passphrase stays out of the file: it comes from a variable at each run (see step 3).
+- An account with TOTP also needs `PASSBOLT_MFA_MODE=noninteractive-totp` and
+  `PASSBOLT_MFA_TOTP_TOKEN` (see [MFA](../cli/authentication.md#mfa)).
 
-## Locking the KeePass file
+## 2. Choose how to lock the KeePass file
 
-The KeePass file is locked by a password, a key file, or both.
+| Lock | Flags | Asked for at each run |
+|---|---|---|
+| A key file | `--keyfile` | Nothing. |
+| A password | `-p`, or a prompt read from stdin | The password. |
+| Both | `-p` with `--keyfile` | Nothing. |
 
-- **A key file**, given with `--keyfile`: nothing is asked for. Keep the key file away from the
-  backups, on another machine or medium: whoever holds both opens the backup.
+### A key file
 
-  ```bash
-  passbolt export keepass -f vault.kdbx --keyfile /etc/passbolt-backup/backup.key
-  ```
-
-  Any file can be a key file; create one with `head -c 64 /dev/urandom > backup.key`, or with
-  KeePassXC.
-
-- **A password**: `-p` takes it, but puts it on the command line, where `ps` shows it. Without
-  `-p` and without `--keyfile`, the CLI asks `Enter KeePass Password:`, and reads the answer from
-  stdin when stdin is not a terminal. Pipe it from a variable:
-
-  ```bash
-  printf '%s\n' "$KDBX_PASSWORD" | passbolt export keepass -f vault.kdbx
-  ```
-
-  An empty answer writes a file without a password: make sure the variable is set
-  (`${KDBX_PASSWORD:?}`). For this to work, the passphrase of the account must come from
-  `PASSBOLT_USER_PASSWORD`, and the MFA must not be interactive: otherwise their prompts read
-  stdin first.
-
-- **Both**: `-p` with `--keyfile`. With `--keyfile` and without `-p`, nothing is asked for and
-  the file is locked by the key file alone: the stdin answer above only applies without a key
-  file.
-
-`--kdbx-version v4` writes KDBX 4 (Argon2) instead of KDBX 3.1. `--folder-id <UUID>` exports one
-folder and its sub-folders only. See [export keepass](../cli/commands/export-keepass.md).
-
-## The backup script
-
-`/usr/local/bin/passbolt-backup`:
+Nothing is asked for:
 
 ```bash
+passbolt export keepass -f vault.kdbx --keyfile /etc/passbolt-backup/backup.key
+```
+
+Any file can be a key file. Create one with `head -c 64 /dev/urandom > backup.key`, or with
+KeePassXC.
+
+:::caution
+Keep the key file away from the backups, on another machine or medium: whoever holds both opens
+the backup.
+:::
+
+### A password
+
+`-p` takes the password, but puts it on the command line, where `ps` shows it. Without `-p` and
+without `--keyfile`, the CLI asks `Enter KeePass Password:`, and reads the answer from stdin when
+stdin is not a terminal. Pipe it from a variable:
+
+```bash
+printf '%s\n' "$KDBX_PASSWORD" | passbolt export keepass -f vault.kdbx
+```
+
+- An empty answer writes a file without a password: make sure the variable is set
+  (`${KDBX_PASSWORD:?}`).
+- For this to work, the passphrase of the account must come from `PASSBOLT_USER_PASSWORD`, and
+  the MFA must not be interactive: otherwise their prompts read stdin first.
+
+### Both
+
+Give `-p` with `--keyfile`. With `--keyfile` and without `-p`, nothing is asked for and the file
+is locked by the key file alone: the stdin answer above only applies without a key file.
+
+### Other options
+
+- `--kdbx-version v4` writes KDBX 4 (Argon2) instead of KDBX 3.1.
+- `--folder-id <UUID>` exports one folder and its sub-folders only.
+
+See [export keepass](../cli/commands/export-keepass.md).
+
+## 3. Write the backup script
+
+```bash title="/usr/local/bin/passbolt-backup"
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
@@ -96,31 +120,31 @@ find "$dir" -name 'passbolt-*.kdbx' -mtime +30 -delete
 - To export one folder only, add `--folder-id <UUID>`.
 - To lock the file with a password instead of the key file, replace the `passbolt` line with
   `printf '%s\n' "${KDBX_PASSWORD:?}" | passbolt … export keepass -f "$file" --kdbx-version v4`,
-  and add `KDBX_PASSWORD` to the variables below.
+  and add `KDBX_PASSWORD` to the environment file below.
 
-The passphrase of the account lives in `/etc/passbolt-backup/env`, mode `0600`:
+Put the passphrase of the account in an environment file, mode `0600`:
 
-```bash
+```bash title="/etc/passbolt-backup/env"
 PASSBOLT_USER_PASSWORD=...
 ```
 
-## cron
+## 4. Schedule it
 
-`/etc/cron.d/passbolt-backup`:
+Use cron or a systemd timer.
 
-```text
+### With cron
+
+```text title="/etc/cron.d/passbolt-backup"
 SHELL=/bin/bash
 15 2 * * * backup set -a; . /etc/passbolt-backup/env; set +a; /usr/local/bin/passbolt-backup >> /var/log/passbolt-backup.log 2>&1
 ```
 
-`set -a` exports the variables read from the file; they are not on the command line. cron runs
-the line as `backup`: the file must be owned by that user.
+`set -a` exports the variables read from the file, so they are not on the command line. cron runs
+the line as `backup`: the environment file must be owned by that user.
 
-## systemd timer
+### With a systemd timer
 
-`/etc/systemd/system/passbolt-backup.service`:
-
-```ini
+```ini title="/etc/systemd/system/passbolt-backup.service"
 [Unit]
 Description=Passbolt backup
 Wants=network-online.target
@@ -136,9 +160,7 @@ PrivateTmp=true
 NoNewPrivileges=true
 ```
 
-`/etc/systemd/system/passbolt-backup.timer`:
-
-```ini
+```ini title="/etc/systemd/system/passbolt-backup.timer"
 [Unit]
 Description=Daily Passbolt backup
 
@@ -151,6 +173,8 @@ Persistent=true
 WantedBy=timers.target
 ```
 
+Enable the timer:
+
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now passbolt-backup.timer
@@ -161,7 +185,18 @@ journalctl -u passbolt-backup.service             # its output
 systemd reads `EnvironmentFile` as root, before switching to `User=`: the file can stay owned by
 root, mode `0600`.
 
-## CSV
+## 5. Check a backup
+
+Open it with KeePassXC, or check it from the command line:
+
+```bash
+keepassxc-cli ls -R -k /etc/passbolt-backup/backup.key /var/backups/passbolt/passbolt-20261110.kdbx
+```
+
+The database and its top group are named `passbolt export`, with one sub-group per Passbolt
+folder.
+
+## Export to CSV
 
 A CSV export is not encrypted. Write it only where it is encrypted otherwise, and keep it as
 little as possible:
@@ -173,21 +208,10 @@ gpg --encrypt --recipient backup@example.com /secure/passbolt.csv
 shred -u /secure/passbolt.csv
 ```
 
-The formats are listed in [export csv](../cli/commands/export-csv.md). `csv-kdbx` keeps the
-folder path in the `Group` column and the TOTP.
+`csv-kdbx` keeps the folder path in the `Group` column, and the TOTP. The other formats are in
+[export csv](../cli/commands/export-csv.md).
 
-## Checking a backup
-
-Open it with KeePassXC, or check it from the command line:
-
-```bash
-keepassxc-cli ls -R -k /etc/passbolt-backup/backup.key /var/backups/passbolt/passbolt-20261110.kdbx
-```
-
-The database and its top group are named `passbolt export`, with one sub-group per Passbolt
-folder.
-
-## Restoring
+## Restore a backup
 
 Restoring is an [import](migration.md): `passbolt import` reads a KDBX file, opened with its
 password, its key file, or both.
@@ -197,7 +221,17 @@ passbolt import -f /var/backups/passbolt/passbolt-20261110.kdbx --keyfile /etc/p
 passbolt import -f vault.kdbx -p "$KDBX_PASSWORD"    # a file locked by a password
 ```
 
+The `-p` of `import` has no prompt: it takes the password on the command line.
+
 The resources are created again, as new resources, in a new folder `import-<date>`, personal to
-the account that imports them. Their old IDs, permissions and history are not restored: share
-them again (see [sharing](sharing.md)), and update the `passbolt://<UUID>` references of scripts
-to the new IDs. The `-p` of `import` has no prompt: it takes the password on the command line.
+the account that imports them. Their old IDs, permissions and history are not restored:
+
+- Share them again. See [sharing](sharing.md).
+- Update the `passbolt://<UUID>` references of your scripts to the new IDs.
+
+## Next steps
+
+- [export keepass](../cli/commands/export-keepass.md) and
+  [export csv](../cli/commands/export-csv.md): every export option.
+- [Migration](migration.md): what `passbolt import` does with a file.
+- [Sharing](sharing.md): share the restored resources again.

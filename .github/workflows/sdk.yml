@@ -16,6 +16,11 @@ on:
       - scripts/sdk-bindings.sh
       - crates/passbolt-ffi/**
       - crates/passbolt-wasm/**
+      # The OpenPGP engines the packages are built with.
+      - crates/passbolt-sdk/Cargo.toml
+      - crates/passbolt-sdk/build.rs
+      - crates/passbolt-sdk/gopenpgp/**
+      - crates/passbolt-sdk/src/crypto/**
       - docs/sdk/go.md
       - docs/sdk/java.md
       - docs/sdk/javascript.md
@@ -80,7 +85,9 @@ jobs:
           - { target: x86_64-unknown-linux-musl, os: ubuntu-22.04, ffi: false }
           - { target: x86_64-apple-darwin, os: macos-15, ffi: true }
           - { target: aarch64-apple-darwin, os: macos-15, ffi: true }
-          - { target: x86_64-pc-windows-msvc, os: windows-2022, ffi: true }
+          # Built with MinGW, which links the Go archive of gopenpgp (MSVC does not); run on Windows
+          # by the windows job.
+          - { target: x86_64-pc-windows-gnu, os: ubuntu-22.04, ffi: true }
     defaults:
       run:
         shell: bash
@@ -100,18 +107,53 @@ jobs:
           key: ${{ matrix.target }}
       - if: endsWith(matrix.target, '-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - if: endsWith(matrix.target, '-windows-gnu')
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      # gopenpgp, the default engine of the released binaries, is built with Go.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: crates/passbolt-sdk/gopenpgp/go.mod
+          cache-dependency-path: crates/passbolt-sdk/gopenpgp/go.sum
       - name: CLI
-        run: cargo build --release --locked -p passbolt-cli --target "$TARGET"
+        run: cargo build --release --locked -p passbolt-cli --target "$TARGET" --features gopenpgp
       # The bindings are generated from the UniFFI metadata symbols: a stripped library has none.
       - name: SDK library
         if: matrix.ffi
         env:
           CARGO_PROFILE_RELEASE_STRIP: "false"
-        run: cargo build --release --locked -p passbolt-ffi --lib --target "$TARGET"
+        run: cargo build --release --locked -p passbolt-ffi --lib --target "$TARGET" --features gopenpgp
+      # A DLL that needs the MinGW runtime DLLs (libgcc_s, libwinpthread) does not load on a
+      # Windows without them: only system DLLs may be imported.
+      - name: Windows imports
+        if: endsWith(matrix.target, '-windows-gnu')
+        run: |
+          for file in target/$TARGET/release/passbolt.exe target/$TARGET/release/passbolt_ffi.dll; do
+            imports=$(x86_64-w64-mingw32-objdump -p "$file" | sed -n 's/.*DLL Name: //p')
+            echo "$file: $imports"
+            ! grep -Eiq '^(libgcc|libwinpthread|libstdc)' <<< "$imports"
+          done
+      # The tests of the SDK and the bindings with the engine of the packages, on the system they
+      # are built for (the Intel macOS one has no runner).
+      - name: Tests
+        if: "!contains(matrix.target, 'x86_64-apple') && !contains(matrix.target, 'windows')"
+        run: |
+          cargo test --release --locked --target "$TARGET" -p passbolt-sdk -p passbolt-ffi \
+            --features passbolt-sdk/gopenpgp
+      # The tests of the SDK and the bindings, run on Windows by the windows job.
+      - name: Windows tests
+        if: endsWith(matrix.target, '-windows-gnu')
+        run: |
+          mkdir -p windows-tests
+          cargo test --release --locked --no-run --target "$TARGET" -p passbolt-sdk -p passbolt-ffi \
+            --features passbolt-sdk/gopenpgp --message-format json \
+            | jq -r 'select(.profile.test == true) | .executable // empty' \
+            | xargs -I{} cp {} windows-tests/
+          ls windows-tests
       # Go links the static library: it also needs the system libraries Rust prints, without
-      # colours: cgo refuses a flag holding an escape code.
+      # colours: cgo refuses a flag holding an escape code. No gopenpgp in it: a Go program
+      # cannot link a second Go runtime.
       - name: SDK static library
-        if: matrix.ffi && runner.os != 'Windows'
+        if: matrix.ffi && !contains(matrix.target, 'windows')
         run: |
           cargo rustc --color never --release --locked -p passbolt-ffi --lib --crate-type staticlib \
             --target "$TARGET" -- --print native-static-libs 2> static.log || { cat static.log; exit 1; }
@@ -141,7 +183,7 @@ jobs:
             fi
           fi
       - name: Smoke test
-        if: "!contains(matrix.target, 'x86_64-apple')"
+        if: "!contains(matrix.target, 'x86_64-apple') && !contains(matrix.target, 'windows')"
         run: |
           exe=""
           [[ "$TARGET" == *windows* ]] && exe=".exe"
@@ -155,6 +197,11 @@ jobs:
         with:
           name: native-${{ matrix.target }}
           path: native/
+      - if: endsWith(matrix.target, '-windows-gnu')
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-tests
+          path: windows-tests/
 
   # Binding sources of every UniFFI language, read from the Linux library.
   bindings:
@@ -204,7 +251,8 @@ jobs:
           - { os: ubuntu-22.04-arm, target: aarch64, smoke: true }
           - { os: macos-15, target: x86_64, smoke: false }
           - { os: macos-15, target: aarch64, smoke: true }
-          - { os: windows-2022, target: x64, smoke: true }
+          # Built with MinGW (see the native job); smoke-tested on Windows by the windows job.
+          - { os: ubuntu-22.04, target: x86_64-pc-windows-gnu, smoke: false }
     steps:
       - uses: actions/checkout@v4
       - name: Version from the tag
@@ -214,6 +262,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # gopenpgp, the default engine of the wheels, is built with Go: in the manylinux container
+      # for Linux wheels, the Go of go.mod.
+      - if: endsWith(matrix.target, '-windows-gnu')
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - uses: actions/setup-go@v5
+        if: runner.os == 'macOS' || endsWith(matrix.target, '-windows-gnu')
+        with:
+          go-version-file: crates/passbolt-sdk/gopenpgp/go.mod
+          cache-dependency-path: crates/passbolt-sdk/gopenpgp/go.sum
       # maturin generates the bindings from the library: its UniFFI symbols must stay.
       - uses: PyO3/maturin-action@v1
         env:
@@ -222,10 +279,17 @@ jobs:
           working-directory: crates/passbolt-ffi
           target: ${{ matrix.target }}
           manylinux: "2_28"
-          args: --release --locked --out dist
+          before-script-linux: |
+            go_version=$(sed -n 's/^go //p' crates/passbolt-sdk/gopenpgp/go.mod)
+            arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+            curl -fsSL "https://go.dev/dl/go${go_version}.linux-${arch}.tar.gz" | tar -C /usr/local -xz
+            ln -sf /usr/local/go/bin/go /usr/local/bin/go
+          args: --release --locked --out dist --features gopenpgp
       - name: Smoke test
         if: matrix.smoke
         shell: bash
+        env:
+          PASSBOLT_EXPECTED_ENGINE: gopenpgp
         run: |
           python -m pip install --no-index --find-links crates/passbolt-ffi/dist switch-case-passbolt-sdk
           python packaging/smoke/smoke.py
@@ -281,6 +345,8 @@ jobs:
       - name: Documentation examples
         working-directory: build/smoke
         run: |
+          # The TLS and proxies example sends its requests with undici's fetch.
+          npm install --no-audit --no-fund undici@6.21.0 @types/node@22.10.2
           node ../../packaging/smoke/doc-examples.mjs ../../docs/sdk/javascript.md examples/docs
           node ../../packaging/smoke/doc-examples.mjs ../../packaging/js/README.md examples/readme
           npx tsc --strict --noEmit --target es2022 --lib esnext,dom --module nodenext examples/*/*.mts
@@ -321,7 +387,7 @@ jobs:
           declare -A prefix=(
             [x86_64-unknown-linux-gnu]=linux-x86-64 [aarch64-unknown-linux-gnu]=linux-aarch64
             [x86_64-apple-darwin]=darwin-x86-64 [aarch64-apple-darwin]=darwin-aarch64
-            [x86_64-pc-windows-msvc]=win32-x86-64
+            [x86_64-pc-windows-gnu]=win32-x86-64
           )
           for target in "${!prefix[@]}"; do
             mkdir -p "build/resources/${prefix[$target]}"
@@ -341,6 +407,8 @@ jobs:
           jar --create --file "dist/$name-sources.jar" -C bindings/java . -C packaging/java/src .
           cp jna.jar "dist/jna-$JNA.jar"
       - name: Smoke test
+        env:
+          PASSBOLT_EXPECTED_ENGINE: gopenpgp
         run: |
           javac -cp "dist/*" -d build/smoke packaging/smoke/Smoke.java
           java -cp "dist/*:build/smoke" Smoke
@@ -381,7 +449,7 @@ jobs:
           declare -A rid=(
             [x86_64-unknown-linux-gnu]=linux-x64 [aarch64-unknown-linux-gnu]=linux-arm64
             [x86_64-apple-darwin]=osx-x64 [aarch64-apple-darwin]=osx-arm64
-            [x86_64-pc-windows-msvc]=win-x64
+            [x86_64-pc-windows-gnu]=win-x64
           )
           for target in "${!rid[@]}"; do
             mkdir -p "$pkg/runtimes/${rid[$target]}/native"
@@ -390,6 +458,8 @@ jobs:
           done
           dotnet pack "$pkg" -c Release -p:Version="${{ needs.version.outputs.sdk }}" -o dist
       - name: Smoke test
+        env:
+          PASSBOLT_EXPECTED_ENGINE: gopenpgp
         run: |
           dotnet run --project packaging/smoke/Smoke.csproj \
             -p:SdkVersion="${{ needs.version.outputs.sdk }}" -p:SdkSource="$PWD/dist"
@@ -453,7 +523,11 @@ jobs:
           gofmt -w "$pkg"
           cp LICENSE "$pkg/"
           tar czf "dist/passbolt-sdk-go-${{ needs.version.outputs.sdk }}.tar.gz" -C build/go passbolt-sdk-go
+      # The Go module has no gopenpgp: a Go program cannot link a second Go runtime.
       - name: Smoke test
+        env:
+          PASSBOLT_EXPECTED_ENGINE: openpgpjs
+          PASSBOLT_SMOKE_KEYS: ${{ github.workspace }}/crates/passbolt-sdk/tests/fixtures/keys
         run: |
           mkdir -p build/smoke && cd build/smoke
           module="github.com/$GO_REPOSITORY"
@@ -499,7 +573,7 @@ jobs:
           declare -A platform=(
             [x86_64-unknown-linux-gnu]=linux-x86_64 [aarch64-unknown-linux-gnu]=linux-aarch64
             [x86_64-apple-darwin]=darwin-x86_64 [aarch64-apple-darwin]=darwin-aarch64
-            [x86_64-pc-windows-msvc]=windows-x86_64
+            [x86_64-pc-windows-gnu]=windows-x86_64
           )
           for target in "${!platform[@]}"; do
             mkdir -p "$pkg/lib/native/${platform[$target]}"
@@ -509,6 +583,8 @@ jobs:
           (cd "$pkg" && SDK_VERSION="${{ needs.version.outputs.sdk }}" gem build passbolt-sdk.gemspec)
           mv "$pkg"/*.gem dist/
       - name: Smoke test
+        env:
+          PASSBOLT_EXPECTED_ENGINE: gopenpgp
         run: |
           gem install --no-document dist/*.gem
           ruby packaging/smoke/smoke.rb
@@ -537,6 +613,11 @@ jobs:
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
+      # gopenpgp, the default engine of the framework, is built with Go and the Xcode SDKs.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: crates/passbolt-sdk/gopenpgp/go.mod
+          cache-dependency-path: crates/passbolt-sdk/gopenpgp/go.sum
       - uses: actions/download-artifact@v4
         with:
           name: bindings
@@ -544,7 +625,8 @@ jobs:
       - name: Static libraries
         run: |
           for target in $TARGETS; do
-            cargo rustc --release --locked -p passbolt-ffi --lib --crate-type staticlib --target "$target"
+            cargo rustc --release --locked -p passbolt-ffi --lib --crate-type staticlib \
+              --target "$target" --features gopenpgp
           done
       - name: Package
         run: |
@@ -575,6 +657,8 @@ jobs:
         run: xcodebuild build -scheme PassboltSDK -destination 'generic/platform=iOS Simulator' -quiet
       # Links the library and runs it: a Rust error arrives as a PassboltFfiError.
       - name: Smoke test, macOS
+        env:
+          PASSBOLT_EXPECTED_ENGINE: gopenpgp
         run: |
           cp -R packaging/smoke/swift build/smoke-swift
           swift run --package-path build/smoke-swift
@@ -606,13 +690,18 @@ jobs:
           name: bindings
           path: bindings
       - run: cargo install --locked cargo-ndk --version "$CARGO_NDK"
+      # gopenpgp, the default engine of the AAR, is built with Go and the NDK clang cargo-ndk sets.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: crates/passbolt-sdk/gopenpgp/go.mod
+          cache-dependency-path: crates/passbolt-sdk/gopenpgp/go.sum
       # The NDK of the runner image: `env.` only reads the workflow's variables, not the runner's.
       - name: Native libraries
         run: |
           export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
           test -d "$ANDROID_NDK_HOME"
           cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 -o build/android/jniLibs \
-            build --release --locked -p passbolt-ffi --lib
+            build --release --locked -p passbolt-ffi --lib --features gopenpgp
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -638,9 +727,76 @@ jobs:
           path: dist/*
 
   # Everything in one artifact; a tag also publishes it as a GitHub release.
+  # The Windows binaries, built with MinGW on Linux, run on Windows: the tests of the SDK and of
+  # the bindings, the CLI, and the Python, Java and .NET packages, each encrypting and
+  # decrypting with gopenpgp in its own host.
+  windows:
+    name: Windows
+    needs: [version, native, python, java, dotnet]
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    env:
+      PASSBOLT_EXPECTED_ENGINE: gopenpgp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-tests
+          path: windows-tests
+      - name: Tests of the SDK and the bindings
+        run: |
+          for test in windows-tests/*.exe; do
+            echo "== $test"
+            "$test"
+          done
+      - uses: actions/download-artifact@v4
+        with:
+          name: cli-x86_64-pc-windows-gnu
+          path: cli
+      - name: CLI
+        run: |
+          7z x -ocli cli/*.zip > /dev/null
+          cli/passbolt-cli-*/passbolt.exe --version
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-python-ubuntu-22.04-x86_64-pc-windows-gnu
+          path: wheels
+      - name: Python
+        run: |
+          python -m pip install --no-index --find-links wheels switch-case-passbolt-sdk
+          python packaging/smoke/smoke.py
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-java
+          path: java
+      - name: Java
+        run: |
+          javac -cp "java/*" -d build/smoke packaging/smoke/Smoke.java
+          java -cp "java/*;build/smoke" Smoke
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdk-dotnet
+          path: dotnet
+      - name: .NET
+        run: |
+          dotnet run --project packaging/smoke/Smoke.csproj \
+            -p:SdkVersion="${{ needs.version.outputs.sdk }}" -p:SdkSource="$(cygpath -w "$PWD/dotnet")"
+
   payload:
     name: Payload
-    needs: [version, native, python, js, java, dotnet, go, ruby, ios, android]
+    needs: [version, native, python, js, java, dotnet, go, ruby, ios, android, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
