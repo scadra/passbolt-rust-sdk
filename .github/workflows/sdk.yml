@@ -81,8 +81,9 @@ jobs:
         include:
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, ffi: true }
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, ffi: true }
-          # Static binary for any Linux; no SDK library (musl cdylibs are not portable).
-          - { target: x86_64-unknown-linux-musl, os: ubuntu-22.04, ffi: false }
+          # Static binary for any Linux; no SDK library (musl cdylibs are not portable). OpenPGP.js:
+          # a Go archive crashes at start under musl (golang/go#13492).
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-22.04, ffi: false, gopenpgp: false }
           - { target: x86_64-apple-darwin, os: macos-15, ffi: true }
           - { target: aarch64-apple-darwin, os: macos-15, ffi: true }
           # Built with MinGW, which links the Go archive of gopenpgp (MSVC does not); run on Windows
@@ -93,6 +94,8 @@ jobs:
         shell: bash
     env:
       TARGET: ${{ matrix.target }}
+      CLI_FEATURES: ${{ matrix.gopenpgp != false && '--features gopenpgp' || '' }}
+      TEST_FEATURES: ${{ matrix.gopenpgp != false && '--features passbolt-ffi/gopenpgp' || '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Version from the tag
@@ -115,7 +118,7 @@ jobs:
           go-version-file: crates/passbolt-sdk/gopenpgp/go.mod
           cache-dependency-path: crates/passbolt-sdk/gopenpgp/go.sum
       - name: CLI
-        run: cargo build --release --locked -p passbolt-cli --target "$TARGET" --features gopenpgp
+        run: cargo build --release --locked -p passbolt-cli --target "$TARGET" $CLI_FEATURES
       # The bindings are generated from the UniFFI metadata symbols: a stripped library has none.
       - name: SDK library
         if: matrix.ffi
@@ -138,14 +141,14 @@ jobs:
         if: "!contains(matrix.target, 'x86_64-apple') && !contains(matrix.target, 'windows')"
         run: |
           cargo test --release --locked --target "$TARGET" -p passbolt-sdk -p passbolt-ffi \
-            --features passbolt-sdk/gopenpgp
+            $TEST_FEATURES
       # The tests of the SDK and the bindings, run on Windows by the windows job.
       - name: Windows tests
         if: endsWith(matrix.target, '-windows-gnu')
         run: |
           mkdir -p windows-tests
           cargo test --release --locked --no-run --target "$TARGET" -p passbolt-sdk -p passbolt-ffi \
-            --features passbolt-sdk/gopenpgp --message-format json \
+            --features passbolt-ffi/gopenpgp --message-format json \
             | jq -r 'select(.profile.test == true) | .executable // empty' \
             | xargs -I{} cp {} windows-tests/
           ls windows-tests
@@ -262,15 +265,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # gopenpgp, the default engine of the wheels, is built with Go: in the manylinux container
-      # for Linux wheels, the Go of go.mod.
+      # gopenpgp, the default engine of the wheels, is built with Go.
       - if: endsWith(matrix.target, '-windows-gnu')
         run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
       - uses: actions/setup-go@v5
-        if: runner.os == 'macOS' || endsWith(matrix.target, '-windows-gnu')
         with:
           go-version-file: crates/passbolt-sdk/gopenpgp/go.mod
           cache-dependency-path: crates/passbolt-sdk/gopenpgp/go.sum
+      # The manylinux container only mounts the workspace: the Go of the runner goes in it.
+      - if: runner.os == 'Linux' && !endsWith(matrix.target, '-windows-gnu')
+        run: cp -r "$(go env GOROOT)" crates/passbolt-ffi/.go
       # maturin generates the bindings from the library: its UniFFI symbols must stay.
       - uses: PyO3/maturin-action@v1
         env:
@@ -278,12 +282,12 @@ jobs:
         with:
           working-directory: crates/passbolt-ffi
           target: ${{ matrix.target }}
-          manylinux: "2_28"
+          # The Windows wheel builds on the runner, with its MinGW and Go.
+          manylinux: ${{ endsWith(matrix.target, '-windows-gnu') && 'off' || '2_28' }}
+          # Runs inside the manylinux container, from crates/passbolt-ffi, under set -euo pipefail.
           before-script-linux: |
-            go_version=$(sed -n 's/^go //p' crates/passbolt-sdk/gopenpgp/go.mod)
-            arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
-            curl -fsSL "https://go.dev/dl/go${go_version}.linux-${arch}.tar.gz" | tar -C /usr/local -xz
-            ln -sf /usr/local/go/bin/go /usr/local/bin/go
+            ln -sf "$PWD/.go/bin/go" /usr/local/bin/go
+            go version
           args: --release --locked --out dist --features gopenpgp
       - name: Smoke test
         if: matrix.smoke
@@ -690,18 +694,23 @@ jobs:
           name: bindings
           path: bindings
       - run: cargo install --locked cargo-ndk --version "$CARGO_NDK"
-      # gopenpgp, the default engine of the AAR, is built with Go and the NDK clang cargo-ndk sets.
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: crates/passbolt-sdk/gopenpgp/go.mod
-          cache-dependency-path: crates/passbolt-sdk/gopenpgp/go.sum
+      # OpenPGP.js, the engine of the AAR: Go builds no C archive for Android, so no gopenpgp.
+      # bindgen writes the QuickJS bindings with libclang, from the NDK headers.
+      - run: sudo apt-get update && sudo apt-get install -y libclang-dev
       # The NDK of the runner image: `env.` only reads the workflow's variables, not the runner's.
+      # On failure, the errors of the build become annotations.
       - name: Native libraries
+        shell: bash
         run: |
           export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
           test -d "$ANDROID_NDK_HOME"
-          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 -o build/android/jniLibs \
-            build --release --locked -p passbolt-ffi --lib --features gopenpgp
+          export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          if ! cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 -o build/android/jniLibs \
+            build --release --locked -p passbolt-ffi --lib 2>&1 | tee build.log; then
+            grep -iE 'error|panicked|fatal|undefined' build.log | tail -n 40 \
+              | sed 's/%/%25/g' | awk 'BEGIN { printf "::error title=cargo ndk::" } { printf "%s%%0A", $0 } END { print "" }'
+            exit 1
+          fi
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -714,11 +723,14 @@ jobs:
         run: |
           gradle -p packaging/android --no-daemon assembleRelease
           aar=packaging/android/build/outputs/aar/passbolt-sdk-release.aar
+          # Listed to files: grep -q would close a pipe unzip still writes to.
+          unzip -l "$aar" > aar.txt
           for abi in arm64-v8a armeabi-v7a x86_64 x86; do
-            unzip -l "$aar" | grep -q "jni/$abi/libpassbolt_ffi.so"
+            grep -q "jni/$abi/libpassbolt_ffi.so" aar.txt || { echo "::error::no jni/$abi/libpassbolt_ffi.so in the AAR"; exit 1; }
           done
           unzip -p "$aar" classes.jar > classes.jar
-          unzip -l classes.jar | grep -q 'com/passbolt/sdk/PassboltClient.class'
+          unzip -l classes.jar > classes.txt
+          grep -q 'com/passbolt/sdk/PassboltClient.class' classes.txt || { echo "::error::no PassboltClient class in the AAR"; exit 1; }
           mkdir -p dist
           cp "$aar" "dist/passbolt-sdk-android-${{ needs.version.outputs.sdk }}.aar"
       - uses: actions/upload-artifact@v4

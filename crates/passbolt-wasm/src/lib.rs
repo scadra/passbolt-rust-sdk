@@ -1621,7 +1621,6 @@ mod tests {
 
 #[cfg(all(test, target_arch = "wasm32"))]
 mod wasm_tests {
-    use futures_executor::block_on;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     use super::*;
@@ -1701,8 +1700,9 @@ mod wasm_tests {
     #[wasm_bindgen_test]
     async fn test_login_answers_gpgauth_with_the_provided_csrf_token() {
         let token = format!("gpgauthv1.3.0|36|{}|gpgauthv1.3.0", uuid::Uuid::new_v4());
-        let challenge =
-            block_on(encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()])).unwrap();
+        let challenge = encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()])
+            .await
+            .unwrap();
         let global = js_sys::global();
         let real_fetch = js_sys::Reflect::get(&global, &"fetch".into()).unwrap();
         js_sys::Reflect::set(&global, &"fetch".into(), &passbolt_fetch(&challenge)).unwrap();
@@ -1727,8 +1727,9 @@ mod wasm_tests {
     /// Run `test` with `fetch` answering as [`passbolt_fetch`] does.
     async fn with_passbolt_fetch<T>(test: impl std::future::Future<Output = T>) -> T {
         let token = format!("gpgauthv1.3.0|36|{}|gpgauthv1.3.0", uuid::Uuid::new_v4());
-        let challenge =
-            block_on(encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()])).unwrap();
+        let challenge = encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()])
+            .await
+            .unwrap();
         let global = js_sys::global();
         let real_fetch = js_sys::Reflect::get(&global, &"fetch".into()).unwrap();
         js_sys::Reflect::set(&global, &"fetch".into(), &passbolt_fetch(&challenge)).unwrap();
@@ -1815,10 +1816,12 @@ mod wasm_tests {
     }
 
     #[wasm_bindgen_test]
-    fn test_decrypt_message_with_wrong_key_is_error() {
-        let armored = block_on(encrypt_message(b"for betty", vec![BETTY_PUBLIC.into()])).unwrap();
+    async fn test_decrypt_message_with_wrong_key_is_error() {
+        let armored = encrypt_message(b"for betty", vec![BETTY_PUBLIC.into()])
+            .await
+            .unwrap();
 
-        let result = block_on(decrypt_message(&armored, SERVER_PRIVATE, ""));
+        let result = decrypt_message(&armored, SERVER_PRIVATE, "").await;
 
         assert!(result.is_err());
     }

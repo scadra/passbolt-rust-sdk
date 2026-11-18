@@ -204,7 +204,9 @@ times slower than in the browser extension. GopenPGP runs operations in parallel
 
 | Package | Engine |
 |---|---|
-| CLI binaries of the releases, Python wheels, Java, .NET, Ruby, Android, Swift, on Windows too | GopenPGP |
+| CLI binaries of the releases, Python wheels, Java, .NET, Ruby, Swift, on Windows too | GopenPGP |
+| Android AAR | OpenPGP.js: Go builds no C archive for Android |
+| Static Linux CLI binary (`x86_64-unknown-linux-musl`) | OpenPGP.js: under musl, the Go runtime crashes at start ([golang/go#13492](https://github.com/golang/go/issues/13492)) |
 | Go module | OpenPGP.js: a Go program cannot link a second Go runtime |
 | JavaScript / TypeScript (npm) | OpenPGP.js |
 | `cargo install` of the CLI, the `passbolt-sdk` crate | OpenPGP.js; GopenPGP with `--features gopenpgp` (needs Go) |

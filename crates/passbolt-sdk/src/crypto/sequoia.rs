@@ -62,12 +62,15 @@ impl PrivateKey {
     /// Its secret keys, unlocked with `passphrase`; refused when it does not unlock them.
     fn unlock(&self, passphrase: &str) -> Result<Vec<Key<SecretParts, UnspecifiedRole>>, String> {
         let digest: [u8; 32] = Sha256::digest(passphrase.as_bytes()).into();
-        let mut unlocked = self
+        let held = self
             .unlocked
             .lock()
-            .map_err(|_| "the unlocked keys are unusable".to_owned())?;
-        if let Some(held) = unlocked.as_ref().filter(|held| held.passphrase == digest) {
-            return Ok(held.keys.clone());
+            .map_err(|_| "the unlocked keys are unusable".to_owned())?
+            .as_ref()
+            .filter(|held| held.passphrase == digest)
+            .map(|held| held.keys.clone());
+        if let Some(keys) = held {
+            return Ok(keys);
         }
         let password = Password::from(passphrase);
         let keys = self
@@ -83,7 +86,10 @@ impl PrivateKey {
                     .map_err(|error| format!("unlock key: {error}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        *unlocked = Some(Unlocked {
+        *self
+            .unlocked
+            .lock()
+            .map_err(|_| "the unlocked keys are unusable".to_owned())? = Some(Unlocked {
             passphrase: digest,
             keys: keys.clone(),
         });

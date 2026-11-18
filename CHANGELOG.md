@@ -25,14 +25,15 @@ This project adheres to [Semantic Versioning](http://semver.org/).
 ### Changed
 - OpenPGP engines: the default engine is GopenPGP when the `gopenpgp` feature is built, else
   OpenPGP.js (`openpgpjs`, now a default feature), else rPGP. The released CLI binaries and the
-  Python, Java, .NET, Ruby, Android and Swift packages are built with GopenPGP; the Go module
-  and JavaScript use OpenPGP.js. In JavaScript, without the `openpgp` option, the SDK
+  Python, Java, .NET, Ruby and Swift packages are built with GopenPGP; the Go module,
+  JavaScript, Android (Go builds no C archive for it) and the static Linux CLI (musl, where the
+  Go runtime crashes) use OpenPGP.js. In JavaScript, without the `openpgp` option, the SDK
   uses the OpenPGP.js 6.1.1 it bundles. `passbolt-cli` and `passbolt-ffi` get a `gopenpgp`
   feature. The GopenPGP engine runs operations in parallel
 - Windows binaries and packages are built with MinGW (`x86_64-pc-windows-gnu`), which links
   GopenPGP: the CLI archive is now `passbolt-cli-<version>-x86_64-pc-windows-gnu.zip`
-- CI runs the tests of the SDK and the bindings with GopenPGP on every system the packages are
-  built for (Linux x64, arm64 and musl, macOS arm64, Windows), and the Python, Java and .NET
+- CI runs the tests of the SDK and the bindings with the engine of the packages on every system
+  they are built for (Linux x64, arm64 and musl, macOS arm64, Windows), and the Python, Java and .NET
   smoke tests on Windows; every smoke test encrypts and decrypts, and checks the engine
 - Crate license changed from MIT to AGPL-3.0-or-later
 - README follows the Passbolt repositories layout (license, about, contributing, credits)

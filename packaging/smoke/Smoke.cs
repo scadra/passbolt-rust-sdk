@@ -13,7 +13,7 @@ if (expected is not null && engine != expected)
 var keys = Environment.GetEnvironmentVariable("PASSBOLT_SMOKE_KEYS") ?? "crates/passbolt-sdk/tests/fixtures/keys";
 var armored = PassboltFfi.EncryptMessage(
     System.Text.Encoding.UTF8.GetBytes("smoke"),
-    new List<string> { File.ReadAllText(Path.Combine(keys, "erin_public.asc")) });
+    new[] { File.ReadAllText(Path.Combine(keys, "erin_public.asc")) });
 var plaintext = PassboltFfi.DecryptMessage(
     armored, File.ReadAllText(Path.Combine(keys, "erin_private.asc")), "erin-passphrase");
 if (System.Text.Encoding.UTF8.GetString(plaintext) != "smoke")

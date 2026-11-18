@@ -60,12 +60,14 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y nettle-dev libclang-dev
       - run: go vet ./... && go test -race ./...
         working-directory: crates/passbolt-sdk/gopenpgp
-      - run: cargo clippy --workspace --all-targets --features passbolt-sdk/gopenpgp,passbolt-sdk/sequoia -- -D warnings
-      - run: cargo test --workspace --features passbolt-sdk/gopenpgp,passbolt-sdk/sequoia
+      - run: cargo clippy --workspace --all-targets --features passbolt-ffi/gopenpgp,passbolt-sdk/sequoia -- -D warnings
+      - run: cargo test --workspace --features passbolt-ffi/gopenpgp,passbolt-sdk/sequoia
 
   wasm:
     name: WASM tests (Node)
     runs-on: ubuntu-latest
+    # A test that blocks on a promise never ends: Node cannot run it while the test waits.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

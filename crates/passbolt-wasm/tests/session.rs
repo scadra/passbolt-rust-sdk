@@ -17,7 +17,6 @@
 // WASM is single-threaded: futures don't need Send.
 #![allow(clippy::future_not_send)]
 
-use futures_executor::block_on;
 use passbolt_wasm::{
     encrypt_message, generate_password, generate_secret, get_key_fingerprint, is_passbolt_error,
     secret_strength, PassboltSession,
@@ -65,10 +64,11 @@ impl Passbolt {
     /// Installs a `fetch` answering the `GPGAuth` login of ada and `/users/me.json`. As Node
     /// keeps no cookie, the session and `csrfToken` cookies it sets come back only if the
     /// client keeps them: without the session cookie, the server answers 403.
-    fn new() -> Self {
+    async fn new() -> Self {
         let token = format!("gpgauthv1.3.0|36|{}|gpgauthv1.3.0", uuid::Uuid::new_v4());
-        let challenge =
-            block_on(encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()])).unwrap();
+        let challenge = encrypt_message(token.as_bytes(), vec![ADA_PUBLIC.into()])
+            .await
+            .unwrap();
         let factory = js_sys::Function::new_with_args(
             "challenge, userId, armoredKey, fingerprint, routes",
             r#"
@@ -233,7 +233,7 @@ fn fixture(json: &str) -> Value {
 
 #[wasm_bindgen_test]
 async fn a_folder_is_created_at_the_root() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     passbolt.on("POST", "/folders.json", &fixture(FOLDER));
 
     let folder = ok(passbolt
@@ -250,7 +250,7 @@ async fn a_folder_is_created_at_the_root() {
 
 #[wasm_bindgen_test]
 async fn a_folder_is_renamed() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     let folder_path = format!("/folders/{FOLDER_ID}.json");
     passbolt.on("PUT", &folder_path, &fixture(FOLDER));
 
@@ -268,7 +268,7 @@ async fn a_folder_is_renamed() {
 
 #[wasm_bindgen_test]
 async fn a_folder_is_deleted_with_its_content() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     let folder_path = format!("/folders/{FOLDER_ID}.json");
     passbolt.on("DELETE", &folder_path, &Value::Null);
 
@@ -283,7 +283,7 @@ async fn a_folder_is_deleted_with_its_content() {
 
 #[wasm_bindgen_test]
 async fn the_folder_tree_nests_a_folder_in_its_parent() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     let mut child = fixture(FOLDER);
     child["id"] = json!("5f6e7d8c-0000-4000-8000-0000000000f2");
     child["name"] = json!("Databases");
@@ -300,7 +300,7 @@ async fn the_folder_tree_nests_a_folder_in_its_parent() {
 
 #[wasm_bindgen_test]
 async fn the_session_gives_the_user_and_the_server() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
 
     let session = passbolt.login().await;
 
@@ -310,7 +310,7 @@ async fn the_session_gives_the_user_and_the_server() {
 
 #[wasm_bindgen_test]
 async fn the_session_sends_its_requests_with_the_given_fetch() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     passbolt.on("GET", "/folders.json", &json!([]));
     let global_fetch =
         js_sys::Function::new_no_args("return Promise.reject(new Error('the global fetch'));");
@@ -332,7 +332,7 @@ async fn the_session_sends_its_requests_with_the_given_fetch() {
 
 #[wasm_bindgen_test]
 async fn the_favorite_resources_are_listed() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     passbolt.on("GET", "/resources.json", &json!([]));
 
     ok(passbolt
@@ -348,7 +348,7 @@ async fn the_favorite_resources_are_listed() {
 
 #[wasm_bindgen_test]
 async fn a_misspelled_filter_is_refused_before_the_request() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
 
     let listed = passbolt
         .login()
@@ -368,7 +368,7 @@ async fn a_misspelled_filter_is_refused_before_the_request() {
 
 #[wasm_bindgen_test]
 async fn a_missing_resource_throws_a_not_found_passbolt_error() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
 
     let resource = passbolt
         .login()
@@ -386,7 +386,7 @@ async fn a_missing_resource_throws_a_not_found_passbolt_error() {
 
 #[wasm_bindgen_test]
 async fn a_resource_is_added_to_the_favorites() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     passbolt.on(
         "POST",
         &format!("/favorites/resource/{RESOURCE_ID}.json"),
@@ -404,7 +404,7 @@ async fn a_resource_is_added_to_the_favorites() {
 
 #[wasm_bindgen_test]
 async fn resources_are_deleted_one_by_one() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     for id in [RESOURCE_ID, OTHER_RESOURCE_ID] {
         passbolt.on("DELETE", &format!("/resources/{id}.json"), &Value::Null);
     }
@@ -423,7 +423,7 @@ async fn resources_are_deleted_one_by_one() {
 
 #[wasm_bindgen_test]
 async fn a_user_is_created_with_the_id_of_their_role() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     passbolt.on("GET", "/roles.json", &fixture(ROLES));
     passbolt.on("POST", "/users.json", &fixture(USERS)["betty"]);
 
@@ -448,7 +448,7 @@ async fn a_user_is_created_with_the_id_of_their_role() {
 
 #[wasm_bindgen_test]
 async fn a_group_is_created_with_its_managers_and_members() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     passbolt.on("POST", "/groups.json", &fixture(GROUP));
 
     ok(passbolt
@@ -484,7 +484,7 @@ async fn a_group_is_created_with_its_managers_and_members() {
 
 #[wasm_bindgen_test]
 async fn a_group_is_renamed() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     let group_path = format!("/groups/{GROUP_ID}.json");
     passbolt.on("GET", &group_path, &fixture(GROUP));
     passbolt.on("PUT", &group_path, &fixture(GROUP));
@@ -503,7 +503,7 @@ async fn a_group_is_renamed() {
 
 #[wasm_bindgen_test]
 async fn the_delete_blockers_of_a_user_are_listed() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     passbolt.on_status(
         "DELETE",
         &format!("/users/{BETTY_ID}/dry-run.json"),
@@ -528,7 +528,7 @@ async fn the_delete_blockers_of_a_user_are_listed() {
 
 #[wasm_bindgen_test]
 async fn a_user_without_blockers_is_deleted_without_transfer() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     let user_path = format!("/users/{BETTY_ID}.json");
     passbolt.on(
         "DELETE",
@@ -548,7 +548,7 @@ async fn a_user_without_blockers_is_deleted_without_transfer() {
 
 #[wasm_bindgen_test]
 async fn a_blocked_user_gives_what_they_own_to_their_successor() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     let user_path = format!("/users/{BETTY_ID}.json");
     passbolt.on_status(
         "DELETE",
@@ -578,7 +578,7 @@ async fn a_blocked_user_gives_what_they_own_to_their_successor() {
 
 #[wasm_bindgen_test]
 async fn a_successor_without_access_is_refused_before_the_deletion() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     let user_path = format!("/users/{BETTY_ID}.json");
     passbolt.on_status(
         "DELETE",
@@ -599,7 +599,7 @@ async fn a_successor_without_access_is_refused_before_the_deletion() {
 
 #[wasm_bindgen_test]
 async fn the_tags_of_a_resource_are_replaced() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     let tags_path = format!("/tags/{RESOURCE_ID}.json");
     passbolt.on("POST", &tags_path, &json!([fixture(TAG)]));
 
@@ -618,7 +618,7 @@ async fn the_tags_of_a_resource_are_replaced() {
 
 #[wasm_bindgen_test]
 async fn the_password_expiry_settings_are_saved_from_a_js_object() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     passbolt.on(
         "POST",
         "/password-expiry/settings.json",
@@ -645,7 +645,7 @@ async fn the_password_expiry_settings_are_saved_from_a_js_object() {
 
 #[wasm_bindgen_test]
 async fn invalid_password_expiry_settings_are_refused_before_the_request() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
 
     let saved = passbolt
         .login()
@@ -666,7 +666,7 @@ async fn invalid_password_expiry_settings_are_refused_before_the_request() {
 
 #[wasm_bindgen_test]
 async fn the_resource_types_are_listed_with_their_schema() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     passbolt.on("GET", "/resource-types.json", &fixture(RESOURCE_TYPES));
 
     let resource_types = ok(passbolt.login().await.list_resource_types().await);
@@ -681,7 +681,7 @@ async fn the_resource_types_are_listed_with_their_schema() {
 
 #[wasm_bindgen_test]
 async fn the_metadata_keys_settings_are_saved() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     passbolt.on(
         "POST",
         "/metadata/keys/settings.json",
@@ -706,7 +706,7 @@ async fn the_metadata_keys_settings_are_saved() {
 
 #[wasm_bindgen_test]
 async fn a_change_sends_the_csrf_token_of_the_cookie() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     passbolt.on("POST", "/folders.json", &fixture(FOLDER));
 
     ok(passbolt
@@ -734,15 +734,15 @@ async fn openpgp_js() -> JsValue {
 
 #[wasm_bindgen_test]
 async fn a_session_on_openpgp_js_reads_what_rpgp_wrote() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     passbolt.on("GET", "/resource-types.json", &fixture(RESOURCE_TYPES));
     let options = js_sys::Object::new();
     js_sys::Reflect::set(&options, &"openpgp".into(), &openpgp_js().await).unwrap();
-    let secret = block_on(encrypt_message(
-        br#"{"password":"s3cret"}"#,
-        vec![ADA_PUBLIC.into()],
-    ))
-    .unwrap();
+    let rpgp = passbolt_sdk::OpenPgp::rpgp();
+    let ada_public = rpgp.parse_public_key(ADA_PUBLIC).unwrap();
+    let secret = passbolt_sdk::crypto::encrypt_message(br#"{"password":"s3cret"}"#, &[&ada_public])
+        .await
+        .unwrap();
 
     // The login decrypts the challenge and checks the key with OpenPGP.js.
     let session = ok(PassboltSession::login(
@@ -760,7 +760,7 @@ async fn a_session_on_openpgp_js_reads_what_rpgp_wrote() {
 
 #[wasm_bindgen_test]
 async fn the_password_policies_generate_the_secret_of_the_organization() {
-    let passbolt = Passbolt::new();
+    let passbolt = Passbolt::new().await;
     passbolt.on(
         "GET",
         "/password-policies/settings.json",

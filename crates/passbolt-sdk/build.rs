@@ -12,9 +12,11 @@
 
 //! With the `gopenpgp` feature, builds `gopenpgp/` as a C archive with Go (`GO`, else `go`)
 //! and links it. cgo compiles with the C compiler of the target: `CC_<target>` or `TARGET_CC`
-//! as cc-rs reads them (cargo-ndk sets them), else `musl-gcc` for musl and the MinGW gcc for
-//! Windows (MSVC does not link a Go archive); Apple targets get the clang target of their
-//! minimum version, and iOS its SDK.
+//! as cc-rs reads them (cargo-ndk sets them), else the MinGW gcc for Windows (MSVC does not
+//! link a Go archive); Apple targets get the clang target of their minimum version, and iOS its
+//! SDK. musl is refused: it calls the initializers of a Go archive without `argc` and `argv`,
+//! and the Go runtime crashes at start (golang/go#13492). Android too: Go builds no C archive
+//! for it.
 
 use std::env;
 use std::path::PathBuf;
@@ -41,12 +43,27 @@ fn main() {
     if arch == "wasm32" {
         return;
     }
+    assert!(
+        target_env != "musl",
+        "gopenpgp does not run on musl (golang/go#13492): build {triple} without the gopenpgp feature"
+    );
+    assert!(
+        os != "android",
+        "Go builds no C archive for Android: build {triple} without the gopenpgp feature"
+    );
     println!("cargo:rerun-if-changed=gopenpgp");
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     let go = env::var("GO").unwrap_or_else(|_| "go".into());
     let mut command = Command::new(&go);
     command
-        .args(["build", "-buildmode=c-archive", "-trimpath", "-o"])
+        // No VCS stamp: git refuses a checkout another user owns, as in a build container.
+        .args([
+            "build",
+            "-buildmode=c-archive",
+            "-trimpath",
+            "-buildvcs=false",
+            "-o",
+        ])
         .arg(out_dir.join(format!("lib{ARCHIVE}.a")))
         .arg(".")
         .current_dir("gopenpgp")
@@ -77,8 +94,6 @@ fn main() {
         }
         "windows" => println!("cargo:rustc-link-lib=dylib=ws2_32"),
         "linux" => println!("cargo:rustc-link-lib=dylib=pthread"),
-        // The Go runtime writes its crashes to the Android log.
-        "android" => println!("cargo:rustc-link-lib=dylib=log"),
         _ => {}
     }
 }
@@ -104,7 +119,6 @@ fn c_compiler(triple: &str, arch: &str, target_env: &str) -> Option<String> {
         .iter()
         .find_map(|name| env::var(name).ok())
         .or_else(|| match target_env {
-            "musl" => Some("musl-gcc".to_owned()),
             "gnu" if triple.contains("-windows-") => Some(format!("{arch}-w64-mingw32-gcc")),
             _ => None,
         })
